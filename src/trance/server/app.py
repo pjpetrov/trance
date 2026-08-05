@@ -423,13 +423,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 raise HTTPException(400, (
                     f"{step.verify_with!r} cannot verify — it has no way to inspect a result. "
                     f"Choose one of: {', '.join(allowed) or '(none configured)'}."))
-        if session.status == "running":
-            session.flow.replace_pending(steps)
-        else:
-            session.flow = Flow(steps=steps)
-        bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
+        # Same rule whether or not a run is live: only in-flight steps are
+        # immutable. Editing a finished or failed step re-queues it.
+        outcome = session.flow.apply_edits(steps)
+        bus.emit("flow_updated", session_id,
+                 payload={"flow": session.flow.to_dict(), **outcome})
         touch(session)
-        return session.flow.to_dict()
+        if outcome["requeued"]:
+            ensure_running(session)
+        return {**session.flow.to_dict(), **outcome}
 
     @app.post("/api/sessions/{session_id}/resume-pending")
     def resume_pending(session_id: str):

@@ -290,7 +290,9 @@ function renderFlowEditor() {
 
 function stepCard(step, index) {
   const card = el("div", "step-card");
-  const editable = step.status === "pending" || !step.status;
+  // Only a step whose agent is mid-flight is locked; a failed or finished one
+  // is a plan you may correct, and correcting it re-queues it.
+  const editable = !["running", "verifying"].includes(step.status);
   card.draggable = editable;
   card.dataset.index = index;
   const role = state.roles[step.role];
@@ -325,7 +327,11 @@ function stepCard(step, index) {
   verify.onchange = () => { step.verify_with = verify.value || null; };
 
   head.append(roleSelect, verify);
-  if (step.status && step.status !== "pending") head.append(el("span", "badge", step.status));
+  if (step.status && step.status !== "pending") {
+    const tag = el("span", "badge", step.status);
+    if (!editable) tag.title = "This step is running — edit it once it settles";
+    head.append(tag);
+  }
 
   const remove = el("button", null, "✕");
   remove.disabled = !editable;
@@ -374,7 +380,8 @@ $("save-flow").onclick = async () => {
   });
   state.session.flow = flow;
   renderFlowEditor();
-  toast("Flow saved.");
+  const n = (flow.requeued || []).length;
+  toast(n ? `Flow saved — ${n} edited step(s) re-queued to run again.` : "Flow saved.");
 };
 
 $("start-run").onclick = async () => {

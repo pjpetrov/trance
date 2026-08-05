@@ -79,29 +79,62 @@ class Flow:
     def next_pending(self) -> Step | None:
         return next((s for s in self.steps if s.status == "pending"), None)
 
-    def replace_pending(self, steps: list[Step]) -> list[str]:
-        """Swap in a new set of not-yet-started steps, preserving history.
+    #: A step whose agent is mid-flight cannot be edited — everything else can.
+    LOCKED = ("running", "verifying")
+    #: Statuses that mean "this will not run again unless you say so".
+    TERMINAL = ("done", "failed", "blocked", "skipped")
 
-        Called when the user edits the flow mid-run. Steps that already ran are
-        immutable — rewriting history would make the trace a lie.
+    def apply_edits(self, steps: list[Step]) -> dict:
+        """Apply an edited step list, keeping only in-flight steps immutable.
+
+        The event trace is append-only regardless; a step is a *plan*, and a
+        plan you cannot correct after it failed is not much use. So a failed,
+        blocked or finished step is editable, and changing what it says re-queues
+        it — editing a step you already ran means you want it run again.
         """
-        finished = [s for s in self.steps if s.status not in ("pending",)]
-        finished_ids = {s.id for s in finished}
-        incoming = [s for s in steps if s.id not in finished_ids]
-        # Carry over any live objects so queued steering survives the edit.
-        existing = {s.id: s for s in self.steps if s.status == "pending"}
-        merged = []
-        for step in incoming:
-            current = existing.get(step.id)
-            if current is not None:
-                current.role, current.task = step.role, step.task
-                current.verify_with, current.max_attempts = step.verify_with, step.max_attempts
-                current.entry = step.entry
-                merged.append(current)
-            else:
-                merged.append(step)
-        self.steps = finished + merged
-        return [s.id for s in merged]
+        locked = {s.id: s for s in self.steps if s.status in self.LOCKED}
+        current = {s.id: s for s in self.steps}
+        result: list[Step] = []
+        requeued: list[str] = []
+
+        for incoming in steps:
+            existing = current.get(incoming.id)
+            if existing is None:
+                result.append(incoming)          # a brand new step
+                continue
+            if existing.id in locked:
+                result.append(existing)          # mid-flight: untouchable
+                continue
+
+            changed = (
+                existing.role != incoming.role
+                or existing.task != incoming.task
+                or existing.verify_with != incoming.verify_with
+                or existing.entry != incoming.entry
+            )
+            existing.role, existing.task = incoming.role, incoming.task
+            existing.verify_with = incoming.verify_with
+            existing.max_attempts = incoming.max_attempts
+            existing.entry = incoming.entry
+            if changed and existing.status in self.TERMINAL:
+                existing.status = "pending"
+                existing.attempts = []           # a re-queued step starts clean
+                requeued.append(existing.id)
+            result.append(existing)
+
+        # A locked step can never be dropped by an edit that raced with it.
+        kept = {s.id for s in result}
+        for step_id, step in locked.items():
+            if step_id not in kept:
+                result.append(step)
+
+        self.steps = result
+        return {"requeued": requeued, "locked": list(locked)}
+
+    def replace_pending(self, steps: list[Step]) -> list[str]:
+        """Backwards-compatible wrapper around apply_edits()."""
+        self.apply_edits(steps)
+        return [s.id for s in self.steps if s.status == "pending"]
 
     @property
     def progress(self) -> dict:

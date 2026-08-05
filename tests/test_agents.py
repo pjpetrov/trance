@@ -8,7 +8,7 @@ from trance.agents.roles import BUILTIN_ROLES, AgentRole
 from trance.agents.runner import TRIMMED, fit_context
 from trance.agents.tools import AgentTools
 from trance.config import Config
-from trance.flow import Flow, Step
+from trance.flow import Attempt, Flow, Step
 from trance.worker.client import salvage_tool_calls
 
 
@@ -171,25 +171,75 @@ def test_salvage_refuses_tools_the_role_does_not_have():
 
 # ------------------------------------------------------------------ flow
 
-def test_replace_pending_preserves_finished_steps():
-    done = Step(role="backend", task="done work", status="done")
-    todo = Step(role="tester", task="old task")
-    flow = Flow(steps=[done, todo])
-    flow.replace_pending([Step(role="frontend", task="new task")])
-    assert [s.status for s in flow.steps] == ["done", "pending"]
-    assert flow.steps[0].task == "done work"  # history is immutable
-    assert flow.steps[1].task == "new task"
+def _edit(step, **changes):
+    """A copy of `step` with the same id and some fields changed."""
+    edited = Step(role=step.role, task=step.task, verify_with=step.verify_with,
+                  max_attempts=step.max_attempts, entry=step.entry)
+    edited.id = step.id
+    for key, value in changes.items():
+        setattr(edited, key, value)
+    return edited
 
 
-def test_replace_pending_keeps_queued_steering():
+def test_editing_a_failed_step_requeues_it():
+    """A plan you cannot correct after it failed is not much use."""
+    failed = Step(role="frontend", task="build it", status="failed",
+                  verify_with="tester", attempts=[Attempt(n=1, verdict="FAIL")])
+    flow = Flow(steps=[failed])
+
+    outcome = flow.apply_edits([_edit(failed, verify_with="factchecker")])
+    assert outcome["requeued"] == [failed.id]
+    assert flow.steps[0].status == "pending"
+    assert flow.steps[0].verify_with == "factchecker"
+    assert flow.steps[0].attempts == []       # a re-queued step starts clean
+
+
+def test_editing_a_finished_step_requeues_it_too():
+    done = Step(role="backend", task="old task", status="done")
+    flow = Flow(steps=[done])
+    flow.apply_edits([_edit(done, task="new task")])
+    assert flow.steps[0].status == "pending" and flow.steps[0].task == "new task"
+
+
+def test_a_cosmetic_edit_does_not_requeue():
+    done = Step(role="backend", task="t", status="done", max_attempts=2)
+    flow = Flow(steps=[done])
+    outcome = flow.apply_edits([_edit(done, max_attempts=5)])
+    assert outcome["requeued"] == []
+    assert flow.steps[0].status == "done" and flow.steps[0].max_attempts == 5
+
+
+def test_a_step_in_flight_cannot_be_edited_or_removed():
+    running = Step(role="backend", task="original", status="running")
+    flow = Flow(steps=[running])
+
+    flow.apply_edits([_edit(running, task="hijacked")])
+    assert flow.steps[0].task == "original" and flow.steps[0].status == "running"
+
+    flow.apply_edits([])                       # try to delete it mid-flight
+    assert [s.id for s in flow.steps] == [running.id]
+
+
+def test_editing_keeps_queued_steering_on_a_pending_step():
     todo = Step(role="backend", task="t")
     todo.steering.append("use SQLModel")
     flow = Flow(steps=[todo])
-    edited = Step(role="backend", task="t revised")
-    edited.id = todo.id
-    flow.replace_pending([edited])
+    flow.apply_edits([_edit(todo, task="t revised")])
     assert flow.steps[0].steering == ["use SQLModel"]
     assert flow.steps[0].task == "t revised"
+
+
+def test_steps_can_be_added_reordered_and_deleted():
+    a = Step(role="backend", task="a", status="done")
+    b = Step(role="tester", task="b")
+    flow = Flow(steps=[a, b])
+    fresh = Step(role="frontend", task="c")
+
+    flow.apply_edits([fresh, _edit(b), _edit(a)])
+    assert [s.task for s in flow.steps] == ["c", "b", "a"]
+
+    flow.apply_edits([_edit(b)])
+    assert [s.task for s in flow.steps] == ["b"]
 
 
 # ------------------------------------------------------------ agent library
