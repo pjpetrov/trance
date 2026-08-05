@@ -135,14 +135,40 @@ def chat(
     )
 
     proposal = None
+    truncated_call = False
     for call in response.tool_calls:
-        if call.name == "propose_flow":
-            proposal = _normalize(call.arguments, roles)
+        if call.name != "propose_flow":
+            continue
+        if call.malformed:
+            truncated_call = True
+            continue
+        proposal = _normalize(call.arguments, roles)
 
     text = response.text.strip()
+    cut_off = response.finish_reason == "length"
+
+    # A reply cut off mid-sentence — or worse, mid-reasoning — should say so.
+    # Showing the fragment reads as an answer the orchestrator meant to give.
+    if cut_off or truncated_call:
+        limit = config.max_tokens
+        notice = (
+            f"⚠️ My reply was cut off: it hit the {limit}-token output limit for the "
+            f"orchestrator model"
+            + (", so the plan it was building never arrived." if truncated_call
+               else ".")
+            + f"\n\nRaise **max_tokens** for the orchestrator in ⚙ settings (2048 is "
+              f"tight for a model that thinks before answering; try 8192), or ask for a "
+              f"shorter plan — for example 'just list the steps'."
+        )
+        text = f"{notice}\n\n---\n\n{text}" if text else notice
+
     if proposal and not text:
         text = proposal.get("summary", "Here is the plan I propose.")
-    return {"text": text, "proposal": proposal}
+    if not text:
+        text = ("I did not produce a reply. This usually means the model returned only "
+                "reasoning and no answer — try asking again, or raise max_tokens.")
+
+    return {"text": text, "proposal": proposal, "truncated": cut_off or truncated_call}
 
 
 def _normalize(arguments: dict, roles: list) -> dict:

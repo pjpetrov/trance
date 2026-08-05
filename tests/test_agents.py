@@ -970,3 +970,78 @@ def test_check_and_fixer_are_pulled_onto_the_team():
     ]}, _roles())
     assert set(out["team"]) == {"backend", "factchecker", "reviewer"}
 
+
+
+# --------------------------------------------- reasoning and truncation
+
+def test_inline_reasoning_never_reaches_the_user():
+    """Regression: the orchestrator's chain of thought was shown as its answer."""
+    from trance.worker.client import split_reasoning
+
+    visible, reasoning = split_reasoning(
+        "<think>The user wants a game. Let me plan.</think>Here is the plan.")
+    assert visible == "Here is the plan."
+    assert "Let me plan" in reasoning
+
+
+def test_an_unclosed_think_tag_means_it_was_cut_off():
+    from trance.worker.client import split_reasoning
+
+    visible, reasoning = split_reasoning("<think>Wait, the tool allows specifying")
+    assert visible == ""                     # better nothing than half a thought
+    assert "Wait, the tool allows" in reasoning
+
+
+def test_plain_answers_are_untouched():
+    from trance.worker.client import split_reasoning
+
+    assert split_reasoning("Just an answer.") == ("Just an answer.", "")
+    assert split_reasoning("") == ("", "")
+
+
+def test_parse_routes_inline_reasoning_out_of_the_text():
+    from trance.worker.client import _parse
+
+    r = _parse({"choices": [{"message": {
+        "content": "<thinking>hmm</thinking>The answer.",
+        "reasoning_content": "channelled"}}]})
+    assert r.text == "The answer."
+    assert "hmm" in r.reasoning and "channelled" in r.reasoning
+
+
+def test_a_truncated_orchestrator_reply_says_so(monkeypatch, tmp_path):
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    class Fake:
+        def complete(self, messages, tools=None):
+            return ChatResponse(
+                text="", finish_reason="length",
+                tool_calls=[ToolCall(id="1", name="propose_flow", arguments={},
+                                     malformed=True)])
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: Fake())
+    result = orchestrator.chat(messages=[{"role": "user", "content": "build it"}],
+                               project_dir=tmp_path, config=ModelConfig(max_tokens=2048),
+                               bus=EventBus(), session_id="s")
+    assert result["truncated"] is True
+    assert result["proposal"] is None
+    assert "cut off" in result["text"] and "2048" in result["text"]
+    assert "max_tokens" in result["text"]
+
+
+def test_an_empty_reply_is_reported_rather_than_shown_blank(monkeypatch, tmp_path):
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    monkeypatch.setattr(orchestrator, "client_for",
+                        lambda config: type("F", (), {
+                            "complete": lambda self, m, tools=None: ChatResponse(text="")})())
+    result = orchestrator.chat(messages=[{"role": "user", "content": "hi"}],
+                               project_dir=tmp_path, config=ModelConfig(),
+                               bus=EventBus(), session_id="s")
+    assert "did not produce a reply" in result["text"]

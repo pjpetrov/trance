@@ -44,7 +44,9 @@ context_window = 32768
 # The orchestrator — the agent you chat with — is configured here, not per-role.
 [orchestrator]
 provider = "llama"
-max_tokens = 2048
+# A reasoning model spends most of its output thinking before it answers, and
+# the plan arrives as a tool call after that. 2048 truncates mid-thought.
+max_tokens = 8192
 
 # Defaults for working agents. Any role may override provider/model in the UI.
 [worker]

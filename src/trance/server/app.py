@@ -393,7 +393,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(502, str(exc))
 
         session.chat.append(ChatMessage(role="orchestrator", content=result["text"]))
-        bus.emit("chat", session_id, agent="orchestrator", payload={"content": result["text"]})
+        bus.emit("chat", session_id, agent="orchestrator",
+                 payload={"content": result["text"], "truncated": result.get("truncated")})
+        if result.get("truncated"):
+            bus.emit("warning", session_id, agent="orchestrator", payload={
+                "message": ("The orchestrator's reply hit its output limit. Raise "
+                            "max_tokens for the orchestrator model in settings."),
+            })
 
         if result["proposal"]:
             proposal = result["proposal"]

@@ -125,6 +125,39 @@ def salvage_tool_calls(text: str, known_names: set[str]) -> list[ToolCall]:
     return recovered
 
 
+#: Tags models use to mark internal reasoning inside `content`. Some templates
+#: route it to `reasoning_content`; others just write it inline, where it ends
+#: up shown to the user as if it were the answer.
+_THINK_TAGS = ("think", "thinking", "reasoning", "scratchpad")
+_THINK_BLOCK = re.compile(
+    r"<(" + "|".join(_THINK_TAGS) + r")\b[^>]*>(.*?)</\1\s*>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN = re.compile(
+    r"<(" + "|".join(_THINK_TAGS) + r")\b[^>]*>(.*)$", re.DOTALL | re.IGNORECASE)
+
+
+def split_reasoning(content: str) -> tuple[str, str]:
+    """Separate inline reasoning from the answer.
+
+    Returns (visible, reasoning). An *unclosed* tag means the response was cut
+    off mid-thought — everything after it is reasoning, and the visible part is
+    empty, which is the honest answer rather than showing half a thought.
+    """
+    if not content:
+        return "", ""
+    thoughts: list[str] = []
+
+    def take(match):
+        thoughts.append(match.group(2).strip())
+        return ""
+
+    visible = _THINK_BLOCK.sub(take, content)
+    unclosed = _THINK_OPEN.search(visible)
+    if unclosed:
+        thoughts.append(unclosed.group(2).strip())
+        visible = visible[: unclosed.start()]
+    return visible.strip(), "\n\n".join(t for t in thoughts if t)
+
+
 def _parse(body: dict) -> ChatResponse:
     try:
         choice = body["choices"][0]
@@ -148,11 +181,15 @@ def _parse(body: dict) -> ChatResponse:
             raw_arguments=raw_args, malformed=malformed,
         ))
 
+    visible, inline_reasoning = split_reasoning(message.get("content") or "")
+    reasoning = "\n\n".join(
+        part for part in (message.get("reasoning_content") or "", inline_reasoning) if part
+    )
     return ChatResponse(
-        text=message.get("content") or "",
+        text=visible,
         tool_calls=tool_calls,
         finish_reason=choice.get("finish_reason", "stop"),
         usage=body.get("usage", {}) or {},
-        reasoning=message.get("reasoning_content") or "",
+        reasoning=reasoning,
         raw_message=message,
     )

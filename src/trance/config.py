@@ -67,6 +67,11 @@ class AgentDefaults:
     max_tool_rounds: int = 8
 
 
+#: The orchestrator answers after thinking, so it needs more room than a worker
+#: whose output is a tool call.
+ORCHESTRATOR_MAX_TOKENS = 8192
+
+
 @dataclass
 class Config:
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
@@ -75,7 +80,8 @@ class Config:
     #: Defaults for working agents (backend, frontend, tester, ...).
     worker: AgentDefaults = field(default_factory=AgentDefaults)
     #: The orchestrator is configured here, in main settings, not per-role.
-    orchestrator: AgentDefaults = field(default_factory=AgentDefaults)
+    orchestrator: AgentDefaults = field(
+        default_factory=lambda: AgentDefaults(max_tokens=ORCHESTRATOR_MAX_TOKENS))
     curator: CuratorSettings = field(default_factory=CuratorSettings)
     max_recurate_rounds: int = 2
     runs_dir: str = "runs"
