@@ -15,47 +15,71 @@ from ..events import EventBus, summarize_messages
 from ..providers import client_for
 from .roles import BUILTIN_ROLES
 
-PROPOSE_FLOW_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "propose_flow",
-        "description": (
-            "Propose the agent team and the ordered work plan. Call this once you understand "
-            "the project well enough to name concrete tasks."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "summary": {"type": "string", "description": "One paragraph: what is being built."},
-                "team": {
-                    "type": "array",
-                    "description": "Which roles this project needs.",
-                    "items": {"type": "string", "enum": list(BUILTIN_ROLES)},
-                },
-                "steps": {
-                    "type": "array",
-                    "description": "Ordered work. Put the backend before the frontend that calls it.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "role": {"type": "string", "enum": list(BUILTIN_ROLES)},
-                            "task": {
-                                "type": "string",
-                                "description": "One concrete, verifiable piece of work, naming the files it touches.",
+def propose_flow_tool(roles: list) -> dict:
+    """Build the proposal schema from the live agent library.
+
+    Built dynamically, not from a hardcoded list, for two reasons: custom agent
+    types must be proposable, and `gates` must be constrained to agents that can
+    actually verify. A free-text field here is how a flow ended up "verified by
+    orchestrator" — an agent with no tools at all.
+    """
+    workers = [r.name for r in roles if r.name != "orchestrator"]
+    verifiers = [r.name for r in roles if r.verifier]
+    return {
+        "type": "function",
+        "function": {
+            "name": "propose_flow",
+            "description": (
+                "Propose the agent team and the ordered work plan. Call this once you "
+                "understand the project well enough to name concrete tasks."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string",
+                                "description": "One paragraph: what is being built."},
+                    "team": {
+                        "type": "array",
+                        "description": "Which agents this project needs.",
+                        "items": {"type": "string", "enum": workers},
+                    },
+                    "steps": {
+                        "type": "array",
+                        "description": ("Ordered work. Put the backend before the frontend "
+                                        "that calls it."),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {"type": "string", "enum": workers},
+                                "task": {
+                                    "type": "string",
+                                    "description": ("One concrete, verifiable piece of work, "
+                                                    "naming the files it touches."),
+                                },
+                                "gates": {
+                                    "type": "array",
+                                    "description": (
+                                        "Checks run after the work, in order. Each must pass "
+                                        "before the next runs; the first failure sends the work "
+                                        "back to this step's own role and then the whole chain "
+                                        "runs again. Only these agents can check work — no "
+                                        "other value is valid. Omit for planning steps."
+                                    ),
+                                    "items": {"type": "string", "enum": verifiers},
+                                },
+                                "max_attempts": {
+                                    "type": "integer",
+                                    "description": "How many times the work may be redone (1-4).",
+                                },
                             },
-                            "verify_with": {
-                                "type": "string",
-                                "description": "Role that checks this step, usually 'tester'. Omit for planning steps.",
-                            },
+                            "required": ["role", "task"],
                         },
-                        "required": ["role", "task"],
                     },
                 },
+                "required": ["summary", "team", "steps"],
             },
-            "required": ["summary", "team", "steps"],
         },
-    },
-}
+    }
 
 
 def chat(
@@ -65,18 +89,30 @@ def chat(
     config: ModelConfig,
     bus: EventBus,
     session_id: str,
+    roles: list | None = None,
 ) -> dict:
     """One orchestrator turn. Returns {'text', 'proposal'|None}."""
-    role = BUILTIN_ROLES["orchestrator"]
-    existing = _describe_project(project_dir)
+    roles = list(roles or BUILTIN_ROLES.values())
+    role = next((r for r in roles if r.name == "orchestrator"), BUILTIN_ROLES["orchestrator"])
+    verifiers = [r for r in roles if r.verifier]
+    workers = [r for r in roles if r.name != "orchestrator"]
+
     system = role.system_prompt + (
-        f"\n\nAvailable roles: {', '.join(f'{r.name} ({r.description})' for r in BUILTIN_ROLES.values())}"
-        f"\n\nProject directory: {project_dir}\n{existing}"
+        "\n\nAgents you can assign work to:\n"
+        + "\n".join(f"- {r.name}: {r.description}" for r in workers)
+        + "\n\nOnly these agents can CHECK another agent's work:\n"
+        + ("\n".join(f"- {r.name}: {r.description}" for r in verifiers) or "- (none)")
+        + "\n\nNever name any other agent as a check — an agent that cannot inspect a "
+          "result can only guess at a verdict. A step's checks run in order and any "
+          "failure sends the work back to that step's own role, so "
+          "'backend, checked by tester then reviewer' already means "
+          "develop → test → fix → test → review → fix → …"
+        f"\n\nProject directory: {project_dir}\n{_describe_project(project_dir)}"
     )
     full = [{"role": "system", "content": system}] + messages
 
     client = client_for(config)
-    response = client.complete(full, tools=[PROPOSE_FLOW_TOOL])
+    response = client.complete(full, tools=[propose_flow_tool(roles)])
 
     bus.emit(
         "model_call", session_id, agent="orchestrator",
@@ -92,7 +128,7 @@ def chat(
     proposal = None
     for call in response.tool_calls:
         if call.name == "propose_flow":
-            proposal = _normalize(call.arguments)
+            proposal = _normalize(call.arguments, roles)
 
     text = response.text.strip()
     if proposal and not text:
@@ -100,28 +136,53 @@ def chat(
     return {"text": text, "proposal": proposal}
 
 
-def _normalize(arguments: dict) -> dict:
-    """Coerce a model proposal into something the flow editor can render."""
-    steps = []
+def _normalize(arguments: dict, roles: list) -> dict:
+    """Coerce a model proposal into something the flow editor can render.
+
+    The schema constrains `gates` to verifiers, but a model can still emit a
+    value outside its own enum — so drop anything that cannot actually check.
+    """
+    known = {r.name: r for r in roles}
+    verifiers = {r.name for r in roles if r.verifier}
+    steps, dropped = [], []
+
     for raw in arguments.get("steps") or []:
         role = raw.get("role")
         task = (raw.get("task") or "").strip()
-        if role not in BUILTIN_ROLES or not task:
+        if role not in known or role == "orchestrator" or not task:
             continue
-        verify = raw.get("verify_with")
+
+        proposed = raw.get("gates") or []
+        if isinstance(proposed, str):
+            proposed = [proposed]
+        if not proposed and raw.get("verify_with"):
+            proposed = [raw["verify_with"]]
+
+        gates, seen = [], set()
+        for name in proposed:
+            if name in verifiers and name not in seen:
+                gates.append(name)
+                seen.add(name)
+            elif name not in verifiers:
+                dropped.append(f"{name} (on the {role} step)")
+
+        attempts = raw.get("max_attempts")
         steps.append({
-            "role": role,
-            "task": task,
-            "verify_with": verify if verify in BUILTIN_ROLES else None,
-            "max_attempts": 2,
+            "role": role, "task": task, "gates": gates,
+            "verify_with": None,
+            "max_attempts": max(1, min(4, int(attempts) if attempts else 2)),
         })
-    team = [name for name in (arguments.get("team") or []) if name in BUILTIN_ROLES]
-    # Anything a step needs must be on the team, whatever the model listed.
+
+    team = [n for n in (arguments.get("team") or []) if n in known and n != "orchestrator"]
     for step in steps:
-        for name in (step["role"], step.get("verify_with")):
-            if name and name not in team:
+        for name in [step["role"], *step["gates"]]:
+            if name not in team:
                 team.append(name)
-    return {"summary": arguments.get("summary", ""), "team": team, "steps": steps}
+
+    return {
+        "summary": arguments.get("summary", ""), "team": team, "steps": steps,
+        "dropped_checks": dropped,
+    }
 
 
 def _describe_project(project_dir: Path) -> str:

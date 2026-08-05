@@ -386,6 +386,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 config=config.for_orchestrator(),
                 bus=bus,
                 session_id=session_id,
+                roles=roles.all(),
             )
         except BackendError as exc:
             bus.emit("error", session_id, payload={"message": str(exc)})
@@ -402,7 +403,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             bus.emit("flow_proposed", session_id, payload={
                 "summary": proposal["summary"], "flow": session.flow.to_dict(),
                 "team": [r.to_dict() for r in session.team],
+                "dropped_checks": proposal.get("dropped_checks") or [],
             })
+            if proposal.get("dropped_checks"):
+                bus.emit("warning", session_id, agent="orchestrator", payload={
+                    "message": ("Dropped checks that cannot verify: "
+                                + ", ".join(proposal["dropped_checks"])),
+                })
         touch(session)
         return session.to_dict()
 

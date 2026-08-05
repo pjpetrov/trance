@@ -854,3 +854,84 @@ def test_legacy_single_verifier_still_works(tmp_path, monkeypatch):
     assert step.checks == ["tester"]
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: _Turn("PASS"))
     assert engine._run_gates(step, Attempt(n=1)) == "PASS"
+
+
+# ------------------------------------------- orchestrator proposals
+
+def _roles():
+    return list(BUILTIN_ROLES.values())
+
+
+def test_the_proposal_schema_only_offers_real_verifiers():
+    """Regression: verify_with was a free string, so the orchestrator could —
+    and did — propose itself as the verifier."""
+    from trance.agents.orchestrator import propose_flow_tool
+
+    step = propose_flow_tool(_roles())["function"]["parameters"]["properties"]["steps"]
+    props = step["items"]["properties"]
+    assert set(props["gates"]["items"]["enum"]) == {"tester", "reviewer", "factchecker"}
+    assert "orchestrator" not in props["role"]["enum"]     # it assigns work, not does it
+    assert "verify_with" not in props                      # replaced by the chain
+
+
+def test_the_schema_follows_the_live_library():
+    from trance.agents.orchestrator import propose_flow_tool
+
+    custom = AgentRole(name="auditor", title="Auditor", description="", system_prompt="",
+                       toolsets=["inspect"], verifier=True)
+    plain = AgentRole(name="dba", title="DBA", description="", system_prompt="",
+                      toolsets=["files"], paths=["migrations/**"])
+    schema = propose_flow_tool([*_roles(), custom, plain])
+    props = schema["function"]["parameters"]["properties"]["steps"]["items"]["properties"]
+    assert "auditor" in props["gates"]["items"]["enum"]     # custom verifier offered
+    assert "dba" not in props["gates"]["items"]["enum"]     # cannot verify
+    assert "dba" in props["role"]["enum"]                   # but can be assigned work
+
+
+def test_a_proposal_naming_a_non_verifier_has_it_dropped():
+    from trance.agents.orchestrator import _normalize
+
+    out = _normalize({"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "task": "t", "gates": ["orchestrator", "tester", "frontend"]},
+    ]}, _roles())
+    assert out["steps"][0]["gates"] == ["tester"]
+    assert any("orchestrator" in d for d in out["dropped_checks"])
+    assert any("frontend" in d for d in out["dropped_checks"])
+
+
+def test_the_orchestrator_cannot_assign_work_to_itself():
+    from trance.agents.orchestrator import _normalize
+
+    out = _normalize({"summary": "s", "team": ["orchestrator", "backend"], "steps": [
+        {"role": "orchestrator", "task": "do it myself"},
+        {"role": "backend", "task": "real work"},
+    ]}, _roles())
+    assert [s["role"] for s in out["steps"]] == ["backend"]
+    assert "orchestrator" not in out["team"]
+
+
+def test_duplicate_gates_in_a_proposal_are_collapsed():
+    from trance.agents.orchestrator import _normalize
+
+    out = _normalize({"summary": "s", "team": [], "steps": [
+        {"role": "backend", "task": "t", "gates": ["tester", "tester", "reviewer"]},
+    ]}, _roles())
+    assert out["steps"][0]["gates"] == ["tester", "reviewer"]
+
+
+def test_legacy_verify_with_in_a_proposal_becomes_a_chain():
+    from trance.agents.orchestrator import _normalize
+
+    out = _normalize({"summary": "s", "team": [], "steps": [
+        {"role": "backend", "task": "t", "verify_with": "tester"},
+    ]}, _roles())
+    assert out["steps"][0]["gates"] == ["tester"]
+
+
+def test_gates_pull_their_agents_onto_the_team():
+    from trance.agents.orchestrator import _normalize
+
+    out = _normalize({"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "task": "t", "gates": ["factchecker"]},
+    ]}, _roles())
+    assert set(out["team"]) == {"backend", "factchecker"}
