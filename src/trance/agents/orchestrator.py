@@ -56,20 +56,28 @@ def propose_flow_tool(roles: list) -> dict:
                                     "description": ("One concrete, verifiable piece of work, "
                                                     "naming the files it touches."),
                                 },
-                                "gates": {
-                                    "type": "array",
+                                "check": {
+                                    "type": "string",
                                     "description": (
-                                        "Checks run after the work, in order. Each must pass "
-                                        "before the next runs; the first failure sends the work "
-                                        "back to this step's own role and then the whole chain "
-                                        "runs again. Only these agents can check work — no "
-                                        "other value is valid. Omit for planning steps."
+                                        "Optional reality check run after the work. Passing "
+                                        "lets the flow move to the next step. Only these "
+                                        "agents can check work — no other value is valid."
                                     ),
-                                    "items": {"type": "string", "enum": verifiers},
+                                    "enum": verifiers,
                                 },
-                                "max_attempts": {
+                                "on_fail": {
+                                    "type": "string",
+                                    "description": (
+                                        "Optional agent that tries to fix a failed check "
+                                        "before this step runs again. Omit to let this "
+                                        "step's own role have another go."
+                                    ),
+                                    "enum": workers,
+                                },
+                                "max_loops": {
                                     "type": "integer",
-                                    "description": "How many times the work may be redone (1-4).",
+                                    "description": ("How many times this block may loop "
+                                                    "before the run is halted (1-4)."),
                                 },
                             },
                             "required": ["role", "task"],
@@ -103,10 +111,11 @@ def chat(
         + "\n\nOnly these agents can CHECK another agent's work:\n"
         + ("\n".join(f"- {r.name}: {r.description}" for r in verifiers) or "- (none)")
         + "\n\nNever name any other agent as a check — an agent that cannot inspect a "
-          "result can only guess at a verdict. A step's checks run in order and any "
-          "failure sends the work back to that step's own role, so "
-          "'backend, checked by tester then reviewer' already means "
-          "develop → test → fix → test → review → fix → …"
+          "result can only guess at a verdict.\n\n"
+          "Each step may have ONE check. If it passes, the flow moves on. If it fails, "
+          "the step's `on_fail` agent tries to fix the problem and then the step runs "
+          "again — that is the loop, bounded by max_loops. Exhausting the loop halts "
+          "the run, so set a check on work that must be right."
         f"\n\nProject directory: {project_dir}\n{_describe_project(project_dir)}"
     )
     full = [{"role": "system", "content": system}] + messages
@@ -152,30 +161,29 @@ def _normalize(arguments: dict, roles: list) -> dict:
         if role not in known or role == "orchestrator" or not task:
             continue
 
-        proposed = raw.get("gates") or []
-        if isinstance(proposed, str):
-            proposed = [proposed]
-        if not proposed and raw.get("verify_with"):
-            proposed = [raw["verify_with"]]
+        proposed = raw.get("check") or raw.get("verify_with")
+        if isinstance(proposed, list):
+            proposed = proposed[0] if proposed else None
+        check = proposed if proposed in verifiers else None
+        if proposed and not check:
+            dropped.append(f"{proposed} (as the check on the {role} step)")
 
-        gates, seen = [], set()
-        for name in proposed:
-            if name in verifiers and name not in seen:
-                gates.append(name)
-                seen.add(name)
-            elif name not in verifiers:
-                dropped.append(f"{name} (on the {role} step)")
+        fixer = raw.get("on_fail")
+        if fixer and (fixer not in known or fixer == "orchestrator" or not check):
+            dropped.append(f"{fixer} (as the fixer on the {role} step)")
+            fixer = None
 
-        attempts = raw.get("max_attempts")
+        loops = raw.get("max_loops") or raw.get("max_attempts")
         steps.append({
-            "role": role, "task": task, "gates": gates,
-            "verify_with": None,
-            "max_attempts": max(1, min(4, int(attempts) if attempts else 2)),
+            "role": role, "task": task, "check": check, "on_fail": fixer,
+            "max_loops": max(1, min(4, int(loops) if loops else 2)),
         })
 
     team = [n for n in (arguments.get("team") or []) if n in known and n != "orchestrator"]
     for step in steps:
-        for name in [step["role"], *step["gates"]]:
+        for name in [step["role"], step.get("check"), step.get("on_fail")]:
+            if not name:
+                continue
             if name not in team:
                 team.append(name)
 

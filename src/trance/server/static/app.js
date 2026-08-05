@@ -328,58 +328,68 @@ function stepCard(step, index) {
   task.disabled = !editable;
   task.oninput = () => { step.task = task.value; };
 
-  // The check chain: each one must pass before the next runs, and the first
-  // failure sends the work back to this step's own role.
-  step.gates = step.checks || step.gates || (step.verify_with ? [step.verify_with] : []);
+  // Three separate controls: the reality check, who fixes a failure, and how
+  // many times the block may loop before the run is halted.
   const gatesBox = el("div", "gates");
   const drawGates = () => {
     gatesBox.innerHTML = "";
-    const chain = el("div", "gate-chain");
-    chain.append(el("span", "gate-node gate-worker", step.role || "?"));
-    step.gates.forEach((name, i) => {
-      chain.append(el("span", "gate-arrow", "→"));
-      const node = el("span", "gate-node", name);
-      if (editable) {
-        const x = el("button", "gate-x", "✕");
-        x.title = "Remove this check";
-        x.onclick = () => { step.gates.splice(i, 1); drawGates(); };
-        node.append(x);
-      }
-      chain.append(node);
-    });
-    if (step.gates.length) {
-      chain.append(el("span", "gate-loop",
-        `↺ any failure → ${step.role}, max ${step.max_attempts} attempt(s)`));
-    }
-    gatesBox.append(chain);
 
-    if (!editable) return;
     const row = el("div", "row small");
-    const add = el("select", "compact");
-    const blank = el("option", null, "+ add check…");
-    blank.value = "";
-    add.append(blank);
-    Object.values(state.roles)
-      .filter((r) => r.verifier && !step.gates.includes(r.name))
-      .forEach((r) => {
-        const opt = el("option", null, r.name);
-        opt.value = r.name;
-        add.append(opt);
-      });
-    add.onchange = () => {
-      if (!add.value) return;
-      step.gates.push(add.value);
-      step.verify_with = null;      // the chain supersedes the legacy field
-      drawGates();
+    const field = (label, node) => {
+      const wrap = el("label", "inline-field", label);
+      wrap.append(node);
+      return wrap;
     };
-    const attempts = el("input", "compact");
-    attempts.type = "number";
-    attempts.min = 1;
-    attempts.value = step.max_attempts ?? 2;
-    attempts.title = "How many times the work may be redone before the step fails";
-    attempts.onchange = () => { step.max_attempts = Number(attempts.value) || 1; drawGates(); };
-    row.append(add, el("span", "muted small", "attempts"), attempts);
+
+    const check = el("select", "compact");
+    const none = el("option", null, "no check");
+    none.value = "";
+    check.append(none);
+    Object.values(state.roles).filter((r) => r.verifier).forEach((r) => {
+      const opt = el("option", null, r.name);
+      opt.value = r.name;
+      if (r.name === (step.check || "")) opt.selected = true;
+      check.append(opt);
+    });
+    check.disabled = !editable;
+    check.title = "Reality check run after the block. PASS moves the flow on.";
+    check.onchange = () => { step.check = check.value || null; drawGates(); };
+
+    const fixer = el("select", "compact");
+    const self = el("option", null, `${step.role} retries`);
+    self.value = "";
+    fixer.append(self);
+    Object.values(state.roles).filter((r) => r.name !== "orchestrator").forEach((r) => {
+      const opt = el("option", null, r.name);
+      opt.value = r.name;
+      if (r.name === (step.on_fail || "")) opt.selected = true;
+      fixer.append(opt);
+    });
+    fixer.disabled = !editable || !step.check;
+    fixer.title = "Who tries to fix a failed check before the block runs again";
+    fixer.onchange = () => { step.on_fail = fixer.value || null; drawGates(); };
+
+    const loops = el("input", "compact tiny");
+    loops.type = "number";
+    loops.min = 1;
+    loops.value = step.max_loops ?? 2;
+    loops.disabled = !editable || !step.check;
+    loops.title = "Loops allowed before the run is halted";
+    loops.onchange = () => { step.max_loops = Number(loops.value) || 1; drawGates(); };
+
+    row.append(field("check", check), field("on fail", fixer), field("loops", loops));
     gatesBox.append(row);
+
+    if (step.check) {
+      const who = step.on_fail || step.role;
+      gatesBox.append(el("div", "loop-note",
+        `${step.role} → ${step.check} · pass → next step · ` +
+        `fail → ${who} fixes → ${step.role} again · ` +
+        `${step.max_loops ?? 2} loop(s), then the run halts`));
+    } else {
+      gatesBox.append(el("div", "loop-note muted",
+        "No check — the flow moves on as soon as this block finishes."));
+    }
   };
   drawGates();
 
@@ -1244,11 +1254,10 @@ function renderFlowView() {
     node.append(task);
 
     const meta = el("div", "flow-meta");
-    const chain = step.checks || (step.verify_with ? [step.verify_with] : []);
-    if (chain.length) {
+    if (step.checker) {
       meta.append(el("div", "flow-chain",
-        `↳ ${chain.join(" → ")} · any failure loops back to ${step.role} ` +
-        `(max ${step.max_attempts})`));
+        `↳ ${step.checker} · fail → ${step.fixer} fixes → ${step.role} again ` +
+        `(${step.loop_limit} loop${step.loop_limit > 1 ? "s" : ""})`));
     }
     const attempts = step.attempts || [];
     if (attempts.length) {
@@ -1290,8 +1299,10 @@ function openStep(step, index) {
   const skip = el("button", null, "skip");
   skip.onclick = () => api(`/api/sessions/${state.session.id}/steps/${step.id}/skip`, { method: "POST" });
   head.append(rerun, skip);
-  const chain = step.checks || (step.verify_with ? [step.verify_with] : []);
-  if (chain.length) head.append(el("span", "badge", `checks: ${chain.join(" → ")}`));
+  if (step.checker) {
+    head.append(el("span", "badge", `check: ${step.checker}`));
+    head.append(el("span", "badge", `on fail: ${step.fixer}`));
+  }
   body.append(head);
 
   body.append(rowWithCopy("task", step.task || ""));

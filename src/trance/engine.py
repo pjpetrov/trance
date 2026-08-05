@@ -141,6 +141,12 @@ class FlowEngine:
     # ---------------------------------------------------------------- step
 
     def _execute(self, step: Step) -> None:
+        """Run one block, looping worker -> check -> fixer until it passes.
+
+        The loop can only be left by succeeding. Exhausting `max_loops` halts
+        the whole run rather than moving on, because a later step that depends
+        on this one would otherwise build on work that never passed its check.
+        """
         session = self.session
         role = session.role(step.role)
         if role is None:
@@ -149,17 +155,22 @@ class FlowEngine:
             self._emit("step_failed", step_id=step.id, payload={"reason": step.summary})
             return
 
-        for attempt_n in range(1, step.max_attempts + 1):
+        limit = step.loop_limit
+        feedback = ""
+
+        for loop in range(1, limit + 1):
             session.wait_if_paused()
             if session.stopping:
                 step.status = "pending"
                 return
 
             step.status = "running"
-            attempt = Attempt(n=attempt_n)
+            attempt = Attempt(n=loop)
             step.attempts.append(attempt)
-            self._emit("step_started", agent=role.name, step_id=step.id,
-                       payload={"task": step.task, "attempt": attempt_n, "role": role.to_dict()})
+            self._emit("step_started", agent=role.name, step_id=step.id, payload={
+                "task": step.task, "attempt": loop, "loop": loop, "of": limit,
+                "role": role.to_dict(),
+            })
             self.on_change()
 
             bundle_text, bundle_meta = self._curate(step, role)
@@ -168,19 +179,19 @@ class FlowEngine:
 
             steering = list(step.steering)
             step.steering.clear()
-            if attempt_n > 1 and step.attempts[-2].feedback:
-                previous = step.attempts[-2]
-                who = previous.failed_gate or "the verifier"
+            if feedback:
                 steering.append(
-                    f"Your previous attempt was rejected by {who}. Fix exactly this, then it "
-                    f"will be checked again:\n{previous.feedback}"
+                    f"This block did not pass its check on the previous pass. What the "
+                    f"check reported:\n{feedback}"
                 )
 
             turn = run_agent(
-                role=role, task=step.task, project=self.project, config=self.config.for_role(role),
-                bus=self.bus, session_id=session.id, step_id=step.id,
-                context_bundle=bundle_text, steering=steering, history=session.history,
-                graph_tools=self._graph_tools(role), should_stop=lambda: session.stopping,
+                role=role, task=step.task, project=self.project,
+                config=self.config.for_role(role), bus=self.bus,
+                session_id=session.id, step_id=step.id, context_bundle=bundle_text,
+                steering=steering, history=session.history,
+                graph_tools=self._graph_tools(role),
+                should_stop=lambda: session.stopping,
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
@@ -188,48 +199,107 @@ class FlowEngine:
 
             if turn.remit_violations:
                 self._supervise(step, role, turn.remit_violations)
-
             self._record_history(role.name, step, turn)
             self._reindex()
 
-            verdict = self._run_gates(step, attempt)
+            verdict = self._run_check(step, attempt)
             if verdict != "FAIL":
-                # "UNKNOWN" means verification did not happen — visible as
-                # blocked, not quietly green.
                 step.status = "blocked" if verdict == "UNKNOWN" else "done"
-                self._emit("step_finished", agent=role.name, step_id=step.id,
-                           payload={"status": step.status, "attempt": attempt_n,
-                                    "files": turn.files_written, "summary": step.summary,
-                                    "usage": turn.usage, "tool_calls": turn.tool_calls,
-                                    "verdict": verdict})
+                self._emit("step_finished", agent=role.name, step_id=step.id, payload={
+                    "status": step.status, "attempt": loop, "files": turn.files_written,
+                    "summary": step.summary, "usage": turn.usage,
+                    "tool_calls": turn.tool_calls, "verdict": verdict,
+                })
                 return
 
-            self._emit("step_retry", agent=role.name, step_id=step.id, payload={
-                "attempt": attempt_n, "feedback": attempt.feedback,
-                "failed_gate": attempt.failed_gate,
-                "message": (
-                    f"{role.title} will redo the work, then the checks "
-                    f"({' → '.join(step.checks)}) run again."),
-            })
+            feedback = attempt.feedback
+            if loop >= limit:
+                break
+
+            # The loop: an agent tries to fix what the check found, then the
+            # block runs again.
+            self._run_fixer(step, attempt, feedback, loop, limit)
 
         step.status = "failed"
-        last = step.attempts[-1] if step.attempts else None
         self._emit("step_failed", agent=role.name, step_id=step.id, payload={
-            "reason": (f"{last.failed_gate} kept rejecting the work"
-                       if last and last.failed_gate else "checks kept failing"),
-            "attempts": len(step.attempts), "max_attempts": step.max_attempts,
+            "reason": (f"the {step.checker} check never passed in {limit} loop(s)"
+                       if step.checker else "the block never succeeded"),
+            "attempts": len(step.attempts), "max_loops": limit, "halts_flow": True,
+        })
+        self._halt(step)
+
+    def _run_fixer(self, step: Step, attempt: Attempt, feedback: str,
+                   loop: int, limit: int) -> None:
+        """Hand the failure to the fixing agent before the block runs again."""
+        fixer = self.session.role(step.fixer)
+        if fixer is None or fixer.name == step.role:
+            self._emit("step_retry", agent=step.role, step_id=step.id, payload={
+                "attempt": loop, "feedback": feedback,
+                "message": f"{step.role} will try again (loop {loop + 1} of {limit}).",
+            })
+            return
+
+        self.session.wait_if_paused()
+        if self.session.stopping:
+            return
+
+        self._emit("fixing", agent=fixer.name, step_id=step.id, payload={
+            "message": (f"{fixer.title} will try to fix what {step.checker} found, "
+                        f"then {step.role} runs again (loop {loop + 1} of {limit})."),
+            "loop": loop, "of": limit,
+        })
+        self.on_change()
+
+        # The fixer's whole context is this prompt: the goal, what was produced,
+        # and exactly what the check objected to.
+        turn = run_agent(
+            role=fixer,
+            task=(
+                f"Another agent's work failed its check. Fix it.\n\n"
+                f"## What the step was asked to do\n{step.task}\n\n"
+                f"## What {step.role} reported\n{step.summary}\n\n"
+                f"## Files it changed\n{', '.join(attempt.files_written) or 'none'}\n\n"
+                f"## What {step.checker} objected to\n{feedback}\n\n"
+                f"Fix the cause of that objection. Change only what is needed — "
+                f"{step.role} will run again afterwards and the check will be repeated."
+            ),
+            project=self.project, config=self.config.for_role(fixer), bus=self.bus,
+            session_id=self.session.id, step_id=step.id, history=self.session.history,
+            graph_tools=self._graph_tools(fixer),
+            should_stop=lambda: self.session.stopping,
+        )
+        attempt.fix_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
+        attempt.fix_summary = _summarize(turn.text)
+        attempt.files_written += turn.files_written
+        self._record_history(fixer.name, step, turn)
+        self._emit("fixed", agent=fixer.name, step_id=step.id, payload={
+            "summary": attempt.fix_summary, "files": turn.files_written,
+        })
+
+    def _halt(self, step: Step) -> None:
+        """Stop the run: later steps would build on work that never passed."""
+        self.session.stop()
+        self.session.status = "error"
+        self.session.error = (
+            f"Halted at the {step.role} step: it never passed its "
+            f"{step.checker or 'check'} within {step.loop_limit} loop(s)."
+        )
+        self._emit("run_halted", agent=step.role, step_id=step.id, payload={
+            "message": self.session.error,
+            "hint": ("Raise the loop limit, change the fixing agent, or edit the step "
+                     "and re-run it."),
         })
 
     # ------------------------------------------------------------- verify
 
-    def _run_gates(self, step: Step, attempt: Attempt) -> str | None:
+    def _run_check(self, step: Step, attempt: Attempt) -> str | None:
         """Run each gate in order; the first FAIL stops the chain.
 
         Gates are sequential on purpose. If the tester fails there is no point
         asking the reviewer to read code that does not work yet, and the
         feedback the worker gets should be about one thing.
         """
-        checks = step.checks
+        checks = [step.checker] if step.checker else []
         if not checks:
             self._emit("verification_skipped", agent=step.role, step_id=step.id, payload={
                 "message": "No checks are set on this step, so nothing verified the result.",
@@ -320,7 +390,7 @@ class FlowEngine:
 
     def _verify(self, step: Step, attempt: Attempt) -> str | None:
         """Backwards-compatible entry point."""
-        return self._run_gates(step, attempt)
+        return self._run_check(step, attempt)
 
     # --------------------------------------------------------- supervision
 

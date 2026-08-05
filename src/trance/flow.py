@@ -40,8 +40,11 @@ class Attempt:
     verdict: str | None = None  # the deciding verdict for this attempt
     feedback: str = ""
     files_written: list[str] = field(default_factory=list)
-    #: Each gate that ran, in order, until one failed.
+    #: Each check that ran against this pass.
     gate_results: list[GateResult] = field(default_factory=list)
+    #: What the fixing agent did, when one ran.
+    fix_event_id: str | None = None
+    fix_summary: str = ""
 
     @property
     def failed_gate(self) -> str | None:
@@ -53,14 +56,19 @@ class Step:
     role: str
     task: str
     id: str = field(default_factory=new_step_id)
-    #: Ordered checks run after the work. Each must PASS before the next runs;
-    #: the first FAIL sends its feedback back to this step's own role, which
-    #: then redoes the work and the whole chain runs again. That is the loop:
-    #: develop -> test -> fix -> test -> review -> fix -> test -> review -> done.
+    #: Optional reality check run after the work. PASS lets the flow move on;
+    #: anything else opens the block's internal loop.
+    check: str | None = None
+    #: Who tries to fix a failed check. Empty means this step's own role has
+    #: another go. Either way the block then runs again.
+    on_fail: str | None = None
+    #: How many times the block may run before the flow is halted. The loop can
+    #: only be left by succeeding — exhausting it stops the run.
+    max_loops: int = 2
+
+    #: Legacy fields, still read when `check` is unset.
     gates: list[str] = field(default_factory=list)
-    #: Legacy single-gate field, still honoured when `gates` is empty.
     verify_with: str | None = None
-    #: How many times the work may be redone before the step is failed.
     max_attempts: int = 2
     #: Entry point for the context curator. Blank = no curated bundle (new code).
     entry: str = ""
@@ -71,25 +79,42 @@ class Step:
     summary: str = ""
 
     @property
+    def checker(self) -> str | None:
+        """The reality check, however it was configured."""
+        return self.check or (self.gates[0] if self.gates else None) or self.verify_with
+
+    @property
+    def fixer(self) -> str:
+        """Who addresses a failed check — a chosen agent, else this step's role."""
+        return self.on_fail or self.role
+
+    @property
+    def loop_limit(self) -> int:
+        return max(1, self.max_loops or self.max_attempts or 1)
+
+    @property
     def checks(self) -> list[str]:
-        """The gate chain, however it was configured."""
-        if self.gates:
-            return list(self.gates)
-        return [self.verify_with] if self.verify_with else []
+        """Legacy accessor; the UI and traces now use `checker`."""
+        return [self.checker] if self.checker else []
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["checks"] = self.checks
+        data["checker"] = self.checker
+        data["fixer"] = self.fixer
+        data["loop_limit"] = self.loop_limit
         return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "Step":
         data = dict(data)
         data.pop("attempts", None)
-        data.pop("checks", None)
-        # A single verify_with is just a one-gate chain.
-        if not data.get("gates") and data.get("verify_with"):
-            data["gates"] = [data["verify_with"]]
+        for derived in ("checks", "checker", "fixer", "loop_limit"):
+            data.pop(derived, None)
+        # Older shapes fold into `check`.
+        if not data.get("check"):
+            gates = data.get("gates") or []
+            data["check"] = (gates[0] if gates else None) or data.get("verify_with")
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
 
@@ -143,13 +168,15 @@ class Flow:
             changed = (
                 existing.role != incoming.role
                 or existing.task != incoming.task
-                or existing.checks != incoming.checks
+                or existing.checker != incoming.checker
+                or existing.fixer != incoming.fixer
                 or existing.entry != incoming.entry
             )
             existing.role, existing.task = incoming.role, incoming.task
-            existing.gates = list(incoming.gates)
-            existing.verify_with = incoming.verify_with
-            existing.max_attempts = incoming.max_attempts
+            existing.check = incoming.checker
+            existing.on_fail = incoming.on_fail
+            existing.max_loops = incoming.loop_limit
+            existing.gates, existing.verify_with = [], None
             existing.entry = incoming.entry
             if changed and existing.status in self.TERMINAL:
                 existing.status = "pending"

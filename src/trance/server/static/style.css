@@ -413,3 +413,14 @@ body { overflow-x: hidden; }
 }
 .gate-x:hover { color: var(--err); }
 .flow-node .flow-chain { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.inline-field {
+  display: inline-flex; align-items: center; gap: 6px; margin: 0;
+  font-size: 11.5px; color: var(--muted);
+}
+.inline-field select, .inline-field input { margin-top: 0; }
+input.tiny { width: 62px; min-width: 0; }
+.loop-note {
+  margin-top: 6px; font-size: 11.5px; color: var(--warn);
+  border-left: 2px solid var(--line); padding-left: 8px;
+}
+.loop-note.muted { color: var(--muted); }

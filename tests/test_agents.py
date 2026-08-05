@@ -173,8 +173,8 @@ def test_salvage_refuses_tools_the_role_does_not_have():
 
 def _edit(step, **changes):
     """A copy of `step` with the same id and some fields changed."""
-    edited = Step(role=step.role, task=step.task, verify_with=step.verify_with,
-                  max_attempts=step.max_attempts, entry=step.entry)
+    edited = Step(role=step.role, task=step.task, check=step.checker,
+                  on_fail=step.on_fail, max_loops=step.loop_limit, entry=step.entry)
     edited.id = step.id
     for key, value in changes.items():
         setattr(edited, key, value)
@@ -184,13 +184,13 @@ def _edit(step, **changes):
 def test_editing_a_failed_step_requeues_it():
     """A plan you cannot correct after it failed is not much use."""
     failed = Step(role="frontend", task="build it", status="failed",
-                  verify_with="tester", attempts=[Attempt(n=1, verdict="FAIL")])
+                  check="tester", attempts=[Attempt(n=1, verdict="FAIL")])
     flow = Flow(steps=[failed])
 
-    outcome = flow.apply_edits([_edit(failed, verify_with="factchecker")])
+    outcome = flow.apply_edits([_edit(failed, check="factchecker")])
     assert outcome["requeued"] == [failed.id]
     assert flow.steps[0].status == "pending"
-    assert flow.steps[0].verify_with == "factchecker"
+    assert flow.steps[0].checker == "factchecker"
     assert flow.steps[0].attempts == []       # a re-queued step starts clean
 
 
@@ -202,11 +202,11 @@ def test_editing_a_finished_step_requeues_it_too():
 
 
 def test_a_cosmetic_edit_does_not_requeue():
-    done = Step(role="backend", task="t", status="done", max_attempts=2)
+    done = Step(role="backend", task="t", status="done", max_loops=2)
     flow = Flow(steps=[done])
-    outcome = flow.apply_edits([_edit(done, max_attempts=5)])
+    outcome = flow.apply_edits([_edit(done, max_loops=5)])
     assert outcome["requeued"] == []
-    assert flow.steps[0].status == "done" and flow.steps[0].max_attempts == 5
+    assert flow.steps[0].status == "done" and flow.steps[0].loop_limit == 5
 
 
 def test_a_step_in_flight_cannot_be_edited_or_removed():
@@ -721,7 +721,7 @@ def test_the_refusal_message_points_at_write_file(project):
     assert "write_file creates parent directories" in refused.text
 
 
-# ------------------------------------------------------- gate chains
+# ------------------------------------------- block loop: check + fixer
 
 def _engine(tmp_path, team, bus=None):
     from trance.config import Config
@@ -750,110 +750,135 @@ class _Turn:
         self.salvaged_calls = 0
 
 
-def test_gates_run_in_order_and_stop_at_the_first_failure(tmp_path, monkeypatch):
-    from trance.flow import Attempt, Step
-
-    engine = _engine(tmp_path, ["backend", "tester", "reviewer"])
-    step = Step(role="backend", task="t", gates=["tester", "reviewer"])
-
-    ran = []
-
-    def fake(**kw):
-        ran.append(kw["role"].name)
-        return _Turn("FAIL", "the API returns 500") if kw["role"].name == "tester" else _Turn("PASS")
-
-    monkeypatch.setattr("trance.engine.run_agent", fake)
-    attempt = Attempt(n=1)
-    assert engine._run_gates(step, attempt) == "FAIL"
-    assert ran == ["tester"]                     # reviewer never ran
-    assert attempt.failed_gate == "tester"
-    assert "returns 500" in attempt.feedback
-
-
-def test_all_gates_must_pass(tmp_path, monkeypatch):
-    from trance.flow import Attempt, Step
-
-    engine = _engine(tmp_path, ["backend", "tester", "reviewer"])
-    step = Step(role="backend", task="t", gates=["tester", "reviewer"])
-    ran = []
-    monkeypatch.setattr("trance.engine.run_agent",
-                        lambda **kw: (ran.append(kw["role"].name), _Turn("PASS"))[1])
-
-    attempt = Attempt(n=1)
-    assert engine._run_gates(step, attempt) == "PASS"
-    assert ran == ["tester", "reviewer"]
-    assert [g.verdict for g in attempt.gate_results] == ["PASS", "PASS"]
-
-
-def test_a_failing_gate_sends_its_feedback_back_to_the_worker(tmp_path, monkeypatch):
-    """develop -> test -> fix -> test: the fix must know what the tester said."""
+def test_a_passing_check_lets_the_flow_move_on(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "tester"])
-    step = Step(role="backend", task="build it", gates=["tester"], max_attempts=2)
-    seen = []
-
-    def fake(**kw):
-        seen.append((kw["role"].name, kw.get("steering") or []))
-        if kw["role"].name == "tester":
-            return _Turn("FAIL" if len(seen) < 3 else "PASS", "assert 1 == 2 failed")
-        return _Turn(None, "wrote the file")
-
-    monkeypatch.setattr("trance.engine.run_agent", fake)
-    engine._execute(step)
-
-    # backend, tester(FAIL), backend(with feedback), tester(PASS)
-    assert [name for name, _ in seen] == ["backend", "tester", "backend", "tester"]
-    retry_steering = "\n".join(seen[2][1])
-    assert "rejected by tester" in retry_steering
-    assert "assert 1 == 2 failed" in retry_steering
-    assert step.status == "done"
-
-
-def test_a_reviewer_failure_also_loops_back_through_the_whole_chain(tmp_path, monkeypatch):
-    """review comments -> developer fixes -> test runs again -> review again."""
-    from trance.flow import Step
-
-    engine = _engine(tmp_path, ["backend", "tester", "reviewer"])
-    step = Step(role="backend", task="t", gates=["tester", "reviewer"], max_attempts=2)
+    engine = _engine(tmp_path, ["backend", "factchecker"])
+    step = Step(role="backend", task="t", check="factchecker")
     order = []
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: (order.append(kw["role"].name),
+                                      _Turn("PASS" if kw["role"].name == "factchecker" else None))[1])
+    engine._execute(step)
+    assert order == ["backend", "factchecker"]
+    assert step.status == "done"
+    assert not engine.session.stopping          # the flow continues
+
+
+def test_a_failed_check_sends_the_work_to_the_fixer_then_loops(tmp_path, monkeypatch):
+    """block -> check fails -> fixer -> block again -> check passes."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
+    step = Step(role="backend", task="build it", check="factchecker",
+                on_fail="reviewer", max_loops=3)
+    order, prompts = [], {}
 
     def fake(**kw):
         name = kw["role"].name
         order.append(name)
-        if name == "reviewer" and order.count("reviewer") == 1:
-            return _Turn("FAIL", "no error handling")
-        return _Turn("PASS") if name in ("tester", "reviewer") else _Turn(None, "done")
+        prompts[name] = kw["task"]
+        if name == "factchecker":
+            return _Turn("FAIL" if order.count("factchecker") == 1 else "PASS",
+                         "index.html is EMPTY")
+        return _Turn(None, f"{name} done")
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert order == ["backend", "tester", "reviewer",       # reviewer rejects
-                     "backend", "tester", "reviewer"]       # full chain re-runs
+    assert order == ["backend", "factchecker", "reviewer", "backend", "factchecker"]
+    assert step.status == "done"
+    # The fixer's whole context is its prompt.
+    assert "index.html is EMPTY" in prompts["reviewer"]
+    assert "build it" in prompts["reviewer"]
+    assert "factchecker" in prompts["reviewer"]
+
+
+def test_without_a_fixer_the_block_simply_runs_again(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker"])
+    step = Step(role="backend", task="t", check="factchecker", max_loops=2)
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        if kw["role"].name == "factchecker":
+            return _Turn("FAIL" if order.count("factchecker") == 1 else "PASS", "empty")
+        return _Turn(None, "done")
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert order == ["backend", "factchecker", "backend", "factchecker"]
     assert step.status == "done"
 
 
-def test_the_chain_gives_up_after_max_attempts(tmp_path, monkeypatch):
+def test_exhausting_the_loop_limit_halts_the_whole_flow(tmp_path, monkeypatch):
+    """The loop can only be left by succeeding."""
+    from trance.events import EventBus
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "tester"])
-    step = Step(role="backend", task="t", gates=["tester"], max_attempts=2)
+    bus = EventBus()
+    seen = []
+    bus.subscribe_sync(seen.append)
+    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"], bus)
+    step = Step(role="backend", task="t", check="factchecker",
+                on_fail="reviewer", max_loops=2)
+
     monkeypatch.setattr("trance.engine.run_agent",
-                        lambda **kw: _Turn("FAIL", "still broken")
-                        if kw["role"].name == "tester" else _Turn(None, "tried"))
+                        lambda **kw: _Turn("FAIL", "still empty")
+                        if kw["role"].name == "factchecker" else _Turn(None, "tried"))
     engine._execute(step)
+
     assert step.status == "failed"
     assert len(step.attempts) == 2
+    assert engine.session.stopping                       # the run is stopped
+    assert engine.session.status == "error"
+    halted = [e for e in seen if e.type == "run_halted"]
+    assert halted and "never passed" in halted[0].payload["message"]
 
 
-def test_legacy_single_verifier_still_works(tmp_path, monkeypatch):
-    from trance.flow import Attempt, Step
+def test_no_fixer_runs_on_the_final_loop(tmp_path, monkeypatch):
+    """Fixing after the last check would be work nothing ever verifies."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
+    step = Step(role="backend", task="t", check="factchecker",
+                on_fail="reviewer", max_loops=1)
+    order = []
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: (order.append(kw["role"].name),
+                                      _Turn("FAIL", "no") if kw["role"].name == "factchecker"
+                                      else _Turn(None, "x"))[1])
+    engine._execute(step)
+    assert order == ["backend", "factchecker"]           # reviewer never ran
+    assert step.status == "failed"
+
+
+def test_a_block_without_a_check_just_runs_once(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])
+    step = Step(role="backend", task="t")
+    order = []
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: (order.append(kw["role"].name), _Turn(None, "done"))[1])
+    engine._execute(step)
+    assert order == ["backend"] and step.status == "done"
+
+
+def test_legacy_verify_with_is_read_as_the_check(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    step = Step.from_dict({"role": "backend", "task": "t", "verify_with": "tester"})
+    assert step.checker == "tester" and step.fixer == "backend"
 
     engine = _engine(tmp_path, ["backend", "tester"])
-    step = Step(role="backend", task="t", verify_with="tester")
-    assert step.checks == ["tester"]
-    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: _Turn("PASS"))
-    assert engine._run_gates(step, Attempt(n=1)) == "PASS"
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn("PASS") if kw["role"].name == "tester"
+                        else _Turn(None, "d"))
+    engine._execute(step)
+    assert step.status == "done"
 
 
 # ------------------------------------------- orchestrator proposals
@@ -867,11 +892,11 @@ def test_the_proposal_schema_only_offers_real_verifiers():
     and did — propose itself as the verifier."""
     from trance.agents.orchestrator import propose_flow_tool
 
-    step = propose_flow_tool(_roles())["function"]["parameters"]["properties"]["steps"]
-    props = step["items"]["properties"]
-    assert set(props["gates"]["items"]["enum"]) == {"tester", "reviewer", "factchecker"}
+    props = (propose_flow_tool(_roles())["function"]["parameters"]
+             ["properties"]["steps"]["items"]["properties"])
+    assert set(props["check"]["enum"]) == {"tester", "reviewer", "factchecker"}
     assert "orchestrator" not in props["role"]["enum"]     # it assigns work, not does it
-    assert "verify_with" not in props                      # replaced by the chain
+    assert "orchestrator" not in props["on_fail"]["enum"]
 
 
 def test_the_schema_follows_the_live_library():
@@ -881,22 +906,31 @@ def test_the_schema_follows_the_live_library():
                        toolsets=["inspect"], verifier=True)
     plain = AgentRole(name="dba", title="DBA", description="", system_prompt="",
                       toolsets=["files"], paths=["migrations/**"])
-    schema = propose_flow_tool([*_roles(), custom, plain])
-    props = schema["function"]["parameters"]["properties"]["steps"]["items"]["properties"]
-    assert "auditor" in props["gates"]["items"]["enum"]     # custom verifier offered
-    assert "dba" not in props["gates"]["items"]["enum"]     # cannot verify
-    assert "dba" in props["role"]["enum"]                   # but can be assigned work
+    props = (propose_flow_tool([*_roles(), custom, plain])["function"]["parameters"]
+             ["properties"]["steps"]["items"]["properties"])
+    assert "auditor" in props["check"]["enum"]        # custom verifier offered
+    assert "dba" not in props["check"]["enum"]        # cannot verify
+    assert "dba" in props["role"]["enum"]             # but can be assigned work
+    assert "dba" in props["on_fail"]["enum"]          # and can be a fixer
 
 
-def test_a_proposal_naming_a_non_verifier_has_it_dropped():
+def test_a_proposal_naming_a_non_verifier_as_the_check_drops_it():
     from trance.agents.orchestrator import _normalize
 
     out = _normalize({"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "t", "gates": ["orchestrator", "tester", "frontend"]},
+        {"role": "backend", "task": "t", "check": "orchestrator"},
     ]}, _roles())
-    assert out["steps"][0]["gates"] == ["tester"]
+    assert out["steps"][0]["check"] is None
     assert any("orchestrator" in d for d in out["dropped_checks"])
-    assert any("frontend" in d for d in out["dropped_checks"])
+
+
+def test_a_fixer_without_a_check_is_dropped():
+    from trance.agents.orchestrator import _normalize
+
+    out = _normalize({"summary": "s", "team": [], "steps": [
+        {"role": "backend", "task": "t", "on_fail": "reviewer"},
+    ]}, _roles())
+    assert out["steps"][0]["on_fail"] is None      # nothing could ever fail
 
 
 def test_the_orchestrator_cannot_assign_work_to_itself():
@@ -910,28 +944,29 @@ def test_the_orchestrator_cannot_assign_work_to_itself():
     assert "orchestrator" not in out["team"]
 
 
-def test_duplicate_gates_in_a_proposal_are_collapsed():
-    from trance.agents.orchestrator import _normalize
-
-    out = _normalize({"summary": "s", "team": [], "steps": [
-        {"role": "backend", "task": "t", "gates": ["tester", "tester", "reviewer"]},
-    ]}, _roles())
-    assert out["steps"][0]["gates"] == ["tester", "reviewer"]
-
-
-def test_legacy_verify_with_in_a_proposal_becomes_a_chain():
+def test_legacy_verify_with_in_a_proposal_becomes_the_check():
     from trance.agents.orchestrator import _normalize
 
     out = _normalize({"summary": "s", "team": [], "steps": [
         {"role": "backend", "task": "t", "verify_with": "tester"},
     ]}, _roles())
-    assert out["steps"][0]["gates"] == ["tester"]
+    assert out["steps"][0]["check"] == "tester"
 
 
-def test_gates_pull_their_agents_onto_the_team():
+def test_max_loops_is_clamped():
+    from trance.agents.orchestrator import _normalize
+
+    out = _normalize({"summary": "s", "team": [], "steps": [
+        {"role": "backend", "task": "t", "check": "tester", "max_loops": 99},
+    ]}, _roles())
+    assert out["steps"][0]["max_loops"] == 4
+
+
+def test_check_and_fixer_are_pulled_onto_the_team():
     from trance.agents.orchestrator import _normalize
 
     out = _normalize({"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "t", "gates": ["factchecker"]},
+        {"role": "backend", "task": "t", "check": "factchecker", "on_fail": "reviewer"},
     ]}, _roles())
-    assert set(out["team"]) == {"backend", "factchecker"}
+    assert set(out["team"]) == {"backend", "factchecker", "reviewer"}
+
