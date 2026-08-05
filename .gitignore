@@ -1,0 +1,15 @@
+# runtime state: sessions, traces, provider/agent registries, API keys
+/runs/
+*.bak
+
+# per-repo index built by the indexer
+.trance/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# node
+node_modules/

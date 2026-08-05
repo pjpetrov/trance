@@ -1,0 +1,34 @@
+[project]
+name = "trance"
+version = "0.1.0"
+description = "Context-minimizing coding agent: index a repo into a call graph, curate minimal context bundles, trace every agent run."
+requires-python = ">=3.11"
+dependencies = [
+    "tree-sitter>=0.23",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "typer>=0.12",
+    "rich>=13.7",
+    "jsonschema>=4.22",
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.52.1",
+    "anthropic>=0.120.2",
+]
+
+[project.optional-dependencies]
+# PHASE 2: real LSP-backed resolution.
+lsp = ["python-lsp-jsonrpc>=1.1"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+trance = "trance.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trance"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,482 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/petrovs/trance/schemas/trace_event.schema.json",
+  "title": "Trance trace event",
+  "description": "One structured event per agent invocation or tool call. Written as JSON Lines to runs/<run_id>/trace.jsonl. The inspection UI (PHASE 3) reads nothing else.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "run_id",
+    "ts",
+    "type"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "description": "ULID/uuid, unique within the run"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "parent_event_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Forms the timeline tree: a tool call's parent is the agent event that issued it."
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_ms": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "run_start",
+        "index",
+        "curate",
+        "agent",
+        "tool_call",
+        "diff",
+        "run_end",
+        "error"
+      ]
+    },
+    "actor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "orchestrator",
+        "curator",
+        "worker",
+        "indexer",
+        null
+      ],
+      "description": "Which component emitted this event."
+    },
+    "task": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Natural-language task description."
+    },
+    "model": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "e.g. claude-haiku-4-5-20251001"
+        },
+        "temperature": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "context_bundle": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "The exact payload this invocation received. The point of the whole project \u2014 never summarize it here, store it verbatim.",
+      "additionalProperties": false,
+      "required": [
+        "entry",
+        "max_hops",
+        "items",
+        "stats"
+      ],
+      "properties": {
+        "entry": {
+          "type": "string",
+          "description": "Entry-point qualname."
+        },
+        "max_hops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "config": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "CuratorConfig as given."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "qualname",
+              "file_path",
+              "start_line",
+              "end_line",
+              "hops",
+              "include"
+            ],
+            "properties": {
+              "qualname": {
+                "type": "string"
+              },
+              "file_path": {
+                "type": "string"
+              },
+              "lang": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "function",
+                  "method",
+                  "class",
+                  "module",
+                  "variable"
+                ]
+              },
+              "start_line": {
+                "type": "integer"
+              },
+              "end_line": {
+                "type": "integer"
+              },
+              "hops": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "include": {
+                "type": "string",
+                "enum": [
+                  "body",
+                  "signature"
+                ]
+              },
+              "est_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "unresolved": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Call names static analysis could not place \u2014 candidates for a worker get_definition() call."
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rendered": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Verbatim prompt text of the bundle."
+        },
+        "stats": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "est_tokens",
+            "symbols"
+          ],
+          "properties": {
+            "symbols": {
+              "type": "integer"
+            },
+            "files_touched": {
+              "type": "integer"
+            },
+            "chars": {
+              "type": "integer"
+            },
+            "est_tokens": {
+              "type": "integer"
+            },
+            "baseline_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Tokens if we had sent every touched file in full. Savings = 1 - est_tokens/baseline_tokens."
+            },
+            "unresolved": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "graph_slice": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "The call-graph subset that produced the bundle, for rendering against the full repo graph.",
+      "additionalProperties": false,
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "qualname"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "qualname": {
+                "type": "string"
+              },
+              "hops": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "src",
+              "dst"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "src": {
+                "type": "integer"
+              },
+              "dst": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "dst_name": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "call",
+                  "http"
+                ]
+              },
+              "resolution": {
+                "type": "string",
+                "enum": [
+                  "lsp",
+                  "same_file",
+                  "same_dir",
+                  "unique_global",
+                  "ambiguous",
+                  "unresolved"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "tool": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Set on type=tool_call. These are the lazy context pulls the worker makes when the curator under-fetched.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "get_definition",
+            "get_callers",
+            "get_callees",
+            "search_symbols",
+            "read_span"
+          ]
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "result_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "hit": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "false = the symbol was not found."
+        }
+      }
+    },
+    "usage": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "cache_read_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_write_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "estimated": {
+          "type": "boolean",
+          "description": "true when counts come from the char heuristic, not the API."
+        }
+      }
+    },
+    "output": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stop_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_context": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Symbols the worker said it still needs; the orchestrator loops these back to the curator."
+        }
+      }
+    },
+    "diff": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "unified": {
+          "type": "string"
+        },
+        "files_changed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "insertions": {
+          "type": "integer"
+        },
+        "deletions": {
+          "type": "integer"
+        },
+        "applied": {
+          "type": "boolean"
+        }
+      }
+    },
+    "error": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "traceback": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "meta": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>trance</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">trance</div>
+  <div id="session-bar"></div>
+  <div id="now-working" class="now-working"></div>
+  <div class="spacer"></div>
+  <button id="open-agents" class="icon-btn" title="Agents &amp; permissions">👥</button>
+  <button id="open-settings" class="icon-btn" title="Providers &amp; models">⚙</button>
+</header>
+
+<main>
+  <!-- ── Screen 1: pick or create a project ────────────────────── -->
+  <section id="screen-home" class="screen active">
+    <div class="panel narrow">
+      <h1>Start a project</h1>
+      <p class="muted">Describe what you want built. The orchestrator proposes a team and a
+        work order; you edit it before anything runs.</p>
+      <p class="muted small">Workspace: <code id="workspace-path">…</code>
+        <span class="hint">New projects land here. Change it with <code>trance serve --workspace DIR</code>.</span></p>
+      <p class="muted small">Sessions stored in: <code id="state-path">…</code>
+        <span class="hint">This is where the list below comes from. It follows the directory
+          trance was started in unless you pass <code>--runs-dir</code>.</span></p>
+      <label>Project name<input id="new-name" placeholder="orders service"></label>
+      <label>Project directory
+        <input id="new-dir" placeholder="/home/petrovs/projects/orders">
+        <span class="hint">Created if it doesn't exist. Agents may only write inside it.</span>
+        <span id="dir-check" class="check-result"></span>
+      </label>
+      <button id="create-session" class="primary">Create</button>
+
+      <h2>Existing sessions</h2>
+      <div id="session-list" class="list"></div>
+    </div>
+  </section>
+
+  <!-- ── Screen 2: orchestrator chat + flow editor ─────────────── -->
+  <section id="screen-plan" class="screen">
+    <div class="split">
+      <div class="panel">
+        <h2>Orchestrator</h2>
+        <div id="chat-log" class="chat-log"></div>
+        <div class="chat-input">
+          <textarea id="chat-text" rows="3" placeholder="Describe the project…"></textarea>
+          <button id="chat-send" class="primary">Send</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Flow</h2>
+          <div class="row">
+            <button id="add-step">+ step</button>
+            <button id="save-flow">Save</button>
+            <button id="start-run" class="primary">Run</button>
+          </div>
+        </div>
+        <p class="muted small">Drag to reorder. Order is the execution order — a step that
+          depends on another must come after it.</p>
+        <div id="flow-editor" class="flow-editor"></div>
+        <p class="muted small">Agents, their permissions and their models are configured in
+          <b>👥 Agents</b>. Only agents marked <i>can verify</i> appear in the verifier dropdown.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Screen 3: live run ────────────────────────────────────── -->
+  <section id="screen-run" class="screen">
+    <div class="run-head">
+      <div id="run-status"></div>
+      <div id="activity-strip" class="activity-strip"></div>
+      <div class="row">
+        <button id="btn-pause">Pause</button>
+        <button id="btn-resume">Resume</button>
+        <button id="btn-stop" class="danger">Stop</button>
+        <button id="btn-back-plan">Edit flow</button>
+      </div>
+    </div>
+    <div class="split run-split">
+      <div class="panel">
+        <h2>Pipeline</h2>
+        <div class="flow-toolbar">
+          <label class="row small"><input type="checkbox" id="compact-done" checked> collapse finished</label>
+          <span id="flow-progress" class="muted small"></span>
+        </div>
+        <div id="flow-view" class="flow-view"></div>
+        <h2>Agent scores</h2>
+        <p class="muted small">From this run's tool calls, verdicts and retries.</p>
+        <div id="score-list" class="score-list"></div>
+        <h2>Steer</h2>
+        <p class="muted small">Queued onto the next prompt of the target step(s).</p>
+        <select id="steer-target"></select>
+        <textarea id="steer-note" rows="3" placeholder="e.g. use SQLModel, not raw SQL"></textarea>
+        <button id="steer-send">Send steering</button>
+      </div>
+      <div class="panel console-panel">
+        <div class="panel-head">
+          <h2>Console</h2>
+          <div class="row small">
+            <span id="console-scope" class="muted small"></span>
+            <label class="row small" title="Include reads and graph lookups">
+              <input type="checkbox" id="show-reads"> reads</label>
+            <label class="row small" title="Stay pinned to the newest entry">
+              <input type="checkbox" id="follow" checked> follow</label>
+          </div>
+        </div>
+        <div id="console" class="console"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Settings: define providers, attach them to agents by shortname -->
+<div id="settings" class="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Providers &amp; models</h2>
+      <button id="close-settings" class="icon-btn">✕</button>
+    </div>
+    <p class="muted small">Each provider has a <b>shortname</b> — that is the handle you attach to an
+      agent. Anthropic uses its own API; OpenAI, Ollama and llama.cpp share the OpenAI-compatible one.</p>
+    <h3>Models</h3>
+    <p class="muted small">A model is a named <b>provider + model id</b> pair. This is the single
+      thing you assign to an agent — no picking an endpoint and a model separately.</p>
+    <div id="preset-list" class="provider-list"></div>
+    <div class="row"><button id="add-preset" class="primary">+ Add model</button></div>
+
+    <h3>Providers (endpoints &amp; credentials)</h3>
+    <div id="provider-list" class="provider-list"></div>
+    <div class="row"><button id="add-provider">+ Add provider</button></div>
+    <h3>Orchestrator</h3>
+    <p class="muted small">The agent you chat with. Set from here, not per-role.</p>
+    <div id="orchestrator-settings" class="row"></div>
+  </div>
+</div>
+
+<!-- Agents: edit each agent type's permissions, model, description, prompt -->
+<div id="agents" class="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Agents &amp; permissions</h2>
+      <button id="close-agents" class="icon-btn">✕</button>
+    </div>
+    <p class="muted small">Editing an agent type applies everywhere it's used. The <b>remit</b> is
+      enforced at the tool boundary — a write outside it is refused, not just discouraged.</p>
+    <div id="agent-list" class="provider-list"></div>
+    <div class="row"><button id="add-agent" class="primary">+ Add agent type</button></div>
+  </div>
+</div>
+
+<!-- Step detail: full context for one step, with room to read it -->
+<div id="step-modal" class="modal step-modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="step-title">Step</h2>
+      <button id="close-step" class="icon-btn">✕</button>
+    </div>
+    <div id="step-body"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

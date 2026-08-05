@@ -1,0 +1,164 @@
+"""A project session: the chat with the orchestrator, the team, the flow, the run.
+
+One session == one project == one directory == one live view in the UI.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import threading
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .agents.roles import AgentRole, BUILTIN_ROLES, default_team
+from .flow import Flow
+
+SessionStatus = ("planning", "ready", "running", "paused", "finished", "error")
+
+
+@dataclass
+class ChatMessage:
+    role: str  # "user" | "orchestrator"
+    content: str
+    ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+
+@dataclass
+class Session:
+    name: str
+    project_dir: str
+    id: str = field(default_factory=lambda: f"s_{uuid.uuid4().hex[:10]}")
+    status: str = "planning"
+    chat: list[ChatMessage] = field(default_factory=list)
+    team: list[AgentRole] = field(default_factory=default_team)
+    flow: Flow = field(default_factory=Flow)
+    #: Rolling record of what each step produced, fed to later agents.
+    history: list[dict] = field(default_factory=list)
+    error: str | None = None
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+    # Runtime-only; never serialized.
+    _pause: threading.Event = field(default_factory=threading.Event, repr=False)
+    _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    _thread: object = field(default=None, repr=False)
+
+    # ---------------------------------------------------------------- state
+
+    def role(self, name: str) -> AgentRole | None:
+        return next((r for r in self.team if r.name == name), None) or BUILTIN_ROLES.get(name)
+
+    @property
+    def paused(self) -> bool:
+        return self._pause.is_set()
+
+    def pause(self) -> None:
+        self._pause.set()
+
+    def resume(self) -> None:
+        self._pause.clear()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._pause.clear()
+
+    @property
+    def stopping(self) -> bool:
+        return self._stop.is_set()
+
+    def wait_if_paused(self) -> None:
+        while self._pause.is_set() and not self._stop.is_set():
+            self._pause.wait(0.2)
+
+    # ------------------------------------------------------------ serialize
+
+    def to_dict(self, include_flow: bool = True) -> dict:
+        data = {
+            "id": self.id,
+            "name": self.name,
+            "project_dir": self.project_dir,
+            "status": self.status,
+            "paused": self.paused,
+            "chat": [vars(m) for m in self.chat],
+            "team": [r.to_dict() for r in self.team],
+            "history": self.history,
+            "error": self.error,
+            "created_at": self.created_at,
+        }
+        if include_flow:
+            data["flow"] = self.flow.to_dict()
+            data["progress"] = self.flow.progress
+        return data
+
+    def save(self, root: Path) -> Path:
+        path = Path(root) / self.id / "session.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf8")
+        return path
+
+    @classmethod
+    def load(cls, path: Path) -> "Session":
+        data = json.loads(Path(path).read_text(encoding="utf8"))
+        session = cls(
+            id=data["id"], name=data["name"], project_dir=data["project_dir"],
+            status=data.get("status", "planning"), created_at=data.get("created_at", ""),
+            history=data.get("history", []),
+        )
+        session.chat = [ChatMessage(**m) for m in data.get("chat", [])]
+        session.team = [AgentRole.from_dict(r) for r in data.get("team", [])] or default_team()
+        session.flow = Flow.from_dict(data.get("flow", {}))
+        return session
+
+
+class SessionStore:
+    """In-memory registry, persisted to disk so runs survive a restart."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._sessions: dict[str, Session] = {}
+        self._lock = threading.Lock()
+        self._load_existing()
+
+    def _load_existing(self) -> None:
+        for path in sorted(self.root.glob("*/session.json")):
+            try:
+                session = Session.load(path)
+            except Exception:
+                continue
+            if session.status in ("running", "paused"):
+                session.status = "ready"  # nothing is running after a restart
+            self._sessions[session.id] = session
+
+    def create(self, name: str, project_dir: str) -> Session:
+        session = Session(name=name, project_dir=project_dir)
+        with self._lock:
+            self._sessions[session.id] = session
+        session.save(self.root)
+        return session
+
+    def get(self, session_id: str) -> Session | None:
+        return self._sessions.get(session_id)
+
+    def all(self) -> list[Session]:
+        return sorted(self._sessions.values(), key=lambda s: s.created_at, reverse=True)
+
+    def save(self, session: Session) -> None:
+        session.save(self.root)
+
+    def delete(self, session_id: str) -> bool:
+        """Forget a session and remove it from disk.
+
+        Popping the in-memory entry alone is not a delete: `_load_existing`
+        rebuilds the store from disk on startup, so a session deleted in the UI
+        would reappear after a restart.
+        """
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
+        if session is None:
+            return False
+        session.stop()
+        shutil.rmtree(self.root / session_id, ignore_errors=True)
+        return True

@@ -1,0 +1,14 @@
+{
+  "run_id": "run_40aef5eef26d",
+  "task": "add cursor-based pagination to the orders endpoint",
+  "repo": "/home/petrovs/trance/samples/sample-app",
+  "started_at": "2026-08-05T17:10:23.088+00:00",
+  "ended_at": "2026-08-05T17:10:23.090+00:00",
+  "status": "ok",
+  "events": 4,
+  "totals": {
+    "input_tokens": 663,
+    "output_tokens": 0
+  },
+  "trace": "trace.jsonl"
+}

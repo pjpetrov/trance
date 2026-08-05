@@ -1,0 +1,187 @@
+"""The worker's lazy-context tools, backed by the same SQLite graph.
+
+These exist so an under-fetching curator costs one tool round trip instead of a
+hallucination. Every call is traced with `hit` and `result_tokens`; a run with
+many calls means the curator's hop limit or budget was too tight for that task.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from ..db import GraphDB
+from ..model import Symbol, estimate_tokens
+
+MAX_RESULTS = 12
+
+
+def specs() -> list[dict]:
+    """OpenAI-format tool definitions."""
+
+    def _sym_tool(name: str, description: str) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Function/class name, or a qualified name like path/to/file.py::Class.method",
+                        }
+                    },
+                    "required": ["symbol"],
+                },
+            },
+        }
+
+    return [
+        _sym_tool("get_definition", "Return the full source code of a symbol."),
+        _sym_tool("get_callers", "List the symbols that call the given symbol."),
+        _sym_tool("get_callees", "List the symbols that the given symbol calls."),
+        {
+            "type": "function",
+            "function": {
+                "name": "search_symbols",
+                "description": "Find indexed symbols whose name or path matches a pattern.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"pattern": {"type": "string"}},
+                    "required": ["pattern"],
+                },
+            },
+        },
+    ]
+
+
+@dataclass
+class ToolResult:
+    text: str
+    hit: bool
+    #: Symbols this call surfaced — the orchestrator folds them into the next
+    #: bundle so a second round does not re-fetch them one at a time.
+    symbols: list[str]
+
+    @property
+    def tokens(self) -> int:
+        return estimate_tokens(self.text)
+
+
+class ContextTools:
+    def __init__(self, db: GraphDB, repo: Path):
+        self.db = db
+        self.repo = Path(repo)
+
+    def call(self, name: str, arguments: dict) -> ToolResult:
+        handler = {
+            "get_definition": self.get_definition,
+            "get_callers": self.get_callers,
+            "get_callees": self.get_callees,
+            "search_symbols": self.search_symbols,
+        }.get(name)
+        if handler is None:
+            return ToolResult(f"No such tool: {name}", hit=False, symbols=[])
+        try:
+            return handler(**arguments)
+        except TypeError as exc:
+            return ToolResult(f"Bad arguments for {name}: {exc}", hit=False, symbols=[])
+
+    # ---------------------------------------------------------------- tools
+
+    def get_definition(self, symbol: str) -> ToolResult:
+        if (outline := self._file_outline(symbol)) is not None:
+            return outline
+        matches = self.db.find_symbols(symbol)
+        if not matches:
+            return ToolResult(_miss(symbol), hit=False, symbols=[])
+        sym = matches[0]
+        body = self._source(sym)
+        header = f"# {sym.file_path}:{sym.start_line}-{sym.end_line}"
+        extra = ""
+        if len(matches) > 1:
+            others = ", ".join(m.qualname for m in matches[1:MAX_RESULTS])
+            extra = f"\n\n(Also matched: {others})"
+        return ToolResult(f"{header}\n{body}{extra}", hit=True, symbols=[sym.qualname])
+
+    def get_callers(self, symbol: str) -> ToolResult:
+        return self._neighbours(symbol, direction="callers")
+
+    def get_callees(self, symbol: str) -> ToolResult:
+        return self._neighbours(symbol, direction="callees")
+
+    def search_symbols(self, pattern: str) -> ToolResult:
+        matches = self.db.find_symbols(pattern)
+        if not matches:
+            return ToolResult(f"No symbols match {pattern!r}.", hit=False, symbols=[])
+        lines = [f"{m.kind} {m.qualname}  ({m.file_path}:{m.start_line})" for m in matches[:MAX_RESULTS]]
+        if len(matches) > MAX_RESULTS:
+            lines.append(f"... and {len(matches) - MAX_RESULTS} more")
+        return ToolResult("\n".join(lines), hit=True, symbols=[m.qualname for m in matches[:MAX_RESULTS]])
+
+    # -------------------------------------------------------------- helpers
+
+    def _neighbours(self, symbol: str, direction: str) -> ToolResult:
+        matches = self.db.find_symbols(symbol)
+        if not matches:
+            return ToolResult(_miss(symbol), hit=False, symbols=[])
+        sym = matches[0]
+
+        if direction == "callers":
+            pairs = [(s, e) for s, e in self.db.callers(sym.id)]
+            label = "Callers of"
+        else:
+            pairs = self.db.callees(sym.id)
+            label = "Calls made by"
+
+        lines, names = [], []
+        for other, edge in pairs:
+            if other is None:
+                lines.append(f"- {edge.dst_name} (line {edge.line}, unresolved — not defined in this repo)")
+                continue
+            lines.append(
+                f"- {other.qualname}  ({other.file_path}:{other.start_line}, {edge.resolution})"
+            )
+            names.append(other.qualname)
+        if not lines:
+            return ToolResult(f"{label} {sym.qualname}: none found.", hit=True, symbols=[])
+        return ToolResult(f"{label} {sym.qualname}:\n" + "\n".join(lines), hit=True, symbols=names)
+
+    def _file_outline(self, query: str) -> ToolResult | None:
+        """Asking for a file returns its outline, not one arbitrary symbol in it.
+
+        Without this, `get_definition("app/services.py")` matched every symbol
+        whose qualname contains that path and silently returned the first —
+        a confident-looking wrong answer.
+        """
+        if "::" in query or "/" not in query and "." not in query:
+            return None
+        candidates = [p for p in self.db.file_paths() if p == query or p.endswith("/" + query.lstrip("./"))]
+        if not candidates:
+            return None
+        path = candidates[0]
+        syms = self.db.symbols_in_file(path)
+        lines = [f"{s.kind} {s.qualname.split('::', 1)[-1]}  (lines {s.start_line}-{s.end_line})" for s in syms]
+        return ToolResult(
+            f"{path} is a file, not a symbol. It defines {len(syms)} symbol(s):\n"
+            + "\n".join(lines)
+            + "\n\nCall get_definition again with one of these names to see its source.",
+            hit=True,
+            symbols=[s.qualname for s in syms],
+        )
+
+    def _source(self, sym: Symbol) -> str:
+        try:
+            data = (self.repo / sym.file_path).read_bytes()
+        except OSError:
+            return sym.signature
+        return data[sym.start_byte : sym.end_byte].decode("utf8", errors="replace")
+
+
+def _miss(symbol: str) -> str:
+    return (
+        f"No symbol named {symbol!r} is indexed. It may be from a third-party library "
+        f"(not in this repo), or the name may differ — try search_symbols with a partial name."
+    )
