@@ -113,8 +113,25 @@ class CommandPolicy:
 
 _POLICY = CommandPolicy()
 
-#: Commands currently executing, so the UI can show and cancel them.
-_RUNNING: dict[str, subprocess.Popen] = {}
+@dataclass
+class RunningCommand:
+    """A command in flight.
+
+    The pgid is recorded separately because the process we hold may already
+    have exited: `node server.js &` makes bash fork and return immediately,
+    leaving node alive in the same group holding our output pipe. Cancelling
+    has to target the group, not the process.
+    """
+
+    command_id: str
+    proc: subprocess.Popen
+    pgid: int
+    command: str
+    background: bool = False
+    log_path: str = ""
+
+
+_RUNNING: dict[str, RunningCommand] = {}
 _RUNNING_LOCK = threading.Lock()
 
 
@@ -123,31 +140,62 @@ def running_commands() -> list[str]:
         return list(_RUNNING)
 
 
-def kill_process_group(proc: subprocess.Popen) -> None:
-    """Kill the command *and anything it spawned*.
+def background_commands() -> list[dict]:
+    with _RUNNING_LOCK:
+        return [{"command_id": r.command_id, "command": r.command, "log": r.log_path}
+                for r in _RUNNING.values() if r.background]
 
-    Killing only the direct child leaves grandchildren alive — and a
-    backgrounded one (`node server.js &`) keeps the stdout pipe open, so
-    reading the remaining output then blocks forever. start_new_session makes
-    the child a group leader so the whole group can go at once.
-    """
+
+def kill_group(pgid: int) -> bool:
+    """Kill a whole process group. Returns whether anything was signalled."""
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        os.killpg(pgid, signal.SIGKILL)
+        return True
     except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+        return False
 
 
 def cancel_command(command_id: str) -> bool:
-    """Kill a command that is still running. Returns whether one was killed."""
+    """Kill a running command and everything it spawned.
+
+    Deliberately does not check `proc.poll()`: with `cmd &` the shell exits at
+    once while the real process lives on in the same group, and that is exactly
+    the case worth cancelling.
+    """
     with _RUNNING_LOCK:
-        proc = _RUNNING.get(command_id)
-    if proc is None or proc.poll() is not None:
+        entry = _RUNNING.get(command_id)
+    if entry is None:
         return False
-    kill_process_group(proc)
-    return True
+    killed = kill_group(entry.pgid)
+    if not killed:
+        try:
+            entry.proc.kill()
+            killed = True
+        except ProcessLookupError:
+            killed = False
+    if entry.background:
+        # Nothing is waiting on a background process, so it has to deregister
+        # itself here — a foreground one is popped when communicate() returns.
+        with _RUNNING_LOCK:
+            _RUNNING.pop(command_id, None)
+    return killed
+
+
+def stop_background(_reason: str = "") -> list[str]:
+    """Kill every background process. Called when a step ends.
+
+    A server left running would hold its port against the next step, and
+    nothing else ever reaps it.
+    """
+    with _RUNNING_LOCK:
+        entries = [r for r in _RUNNING.values() if r.background]
+    stopped = []
+    for entry in entries:
+        kill_group(entry.pgid)
+        stopped.append(entry.command)
+        with _RUNNING_LOCK:
+            _RUNNING.pop(entry.command_id, None)
+    return stopped
 
 
 def command_policy() -> CommandPolicy:
@@ -246,13 +294,25 @@ class AgentTools:
             ]
         if "commands" in self.role.toolsets:
             out.append(_fn(
+                "stop_command",
+                "Stop a process you started with background=true.",
+                {"command_id": {"type": "string"}}, ["command_id"]))
+            out.append(_fn(
                 "run_command",
                 f"Run a command in {self.role.workdir or 'the project root'}. "
                 + (f"Pipes, redirects and && are supported. " if self.shell_enabled
                    else "One plain command per call — no pipes or redirects. ")
                 + f"Allowed programs: {', '.join(sorted(self.allowed_commands))}. "
                 f"You do not need mkdir before write_file — it creates parent directories.",
-                {"command": {"type": "string", "description": "e.g. 'pytest -q'"}}, ["command"]))
+                {"command": {"type": "string", "description": "e.g. 'pytest -q'"},
+                 "background": {
+                     "type": "boolean",
+                     "description": ("Start it and return immediately. Use this for anything "
+                                     "that does not exit on its own — a server, a watcher. "
+                                     "Output goes to a log file you can read, and you stop it "
+                                     "with stop_command. Without this the call blocks until "
+                                     "the command exits or times out.")}},
+                ["command"]))
         if "graph" in self.role.toolsets and self.graph is not None:
             out += self.graph_specs()
         return out
@@ -270,6 +330,7 @@ class AgentTools:
             "write_file": self.write_file,
             "list_files": self.list_files,
             "run_command": self.run_command,
+            "stop_command": self.stop_command,
             "check_file": self.check_file,
             "check_files": self.check_files,
         }
@@ -453,39 +514,80 @@ class AgentTools:
             "blank": not text.strip(),
         }
 
-    def _execute(self, argv: list, command: str, shell: bool) -> ToolOutcome:
-        """Run a command, announcing it first and staying cancellable.
-
-        Uses Popen rather than run() so the process is visible while it works
-        and can be killed — a command that blocks for the full timeout used to
-        leave the UI showing nothing at all.
-        """
+    def _execute(self, argv: list, command: str, shell: bool,
+                 background: bool = False) -> ToolOutcome:
+        """Run a command, announcing it first and staying cancellable."""
         command_id = f"cmd_{uuid.uuid4().hex[:10]}"
         started = time.time()
+
+        log_path = ""
+        if background:
+            logs = self.project / ".trance" / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            log_file = logs / f"{command_id}.log"
+            log_path = str(log_file.relative_to(self.project))
+            sink = open(log_file, "w", encoding="utf8")
+        else:
+            sink = subprocess.PIPE
+
         self.notify("command_started", {
-            "command_id": command_id, "command": command,
-            "cwd": str(self.command_cwd), "timeout_s": COMMAND_TIMEOUT_S,
+            "command_id": command_id, "command": command, "cwd": str(self.command_cwd),
+            "timeout_s": None if background else COMMAND_TIMEOUT_S,
+            "background": background, "log": log_path,
         })
         try:
             proc = subprocess.Popen(
-                argv, cwd=self.command_cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,   # never block waiting for input
-                text=True, start_new_session=True,   # kill() reaches its children
+                argv, cwd=self.command_cwd, stdout=sink,
+                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                text=True, start_new_session=True,
             )
         except FileNotFoundError:
             self.notify("command_finished", {"command_id": command_id, "exit_code": None})
             return ToolOutcome(f"{argv[0]} is not installed on this machine.", ok=False)
+        finally:
+            if background:
+                sink.close()
 
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            pgid = proc.pid
         with _RUNNING_LOCK:
-            _RUNNING[command_id] = proc
+            _RUNNING[command_id] = RunningCommand(
+                command_id=command_id, proc=proc, pgid=pgid, command=command,
+                background=background, log_path=log_path)
+
+        if background:
+            # Give it a moment to fall over, so an instant crash is reported as
+            # one rather than as a healthy start.
+            time.sleep(1.0)
+            if proc.poll() is not None:
+                with _RUNNING_LOCK:
+                    _RUNNING.pop(command_id, None)
+                self.notify("command_finished", {
+                    "command_id": command_id, "exit_code": proc.returncode, "seconds": 1.0})
+                tail = self._tail(log_path)
+                return ToolOutcome(
+                    f"$ {command}\nStarted in the background but exited immediately "
+                    f"(exit={proc.returncode}).\n{tail}", ok=False,
+                    detail={"kind": "command", "command": command,
+                            "exit_code": proc.returncode, "output": tail, "shell": shell})
+            return ToolOutcome(
+                f"$ {command}\nRunning in the background (id {command_id}).\n"
+                f"Output is being written to {log_path} — read_file it to see what the "
+                f"process has printed so far.\n"
+                f"It keeps running while you do other things. Test it now (a request, a "
+                f"port check), then stop it with stop_command('{command_id}').",
+                ok=True,
+                detail={"kind": "background", "command": command, "command_id": command_id,
+                        "log": log_path})
+
         timed_out = cancelled = False
         try:
             output = proc.communicate(timeout=COMMAND_TIMEOUT_S)[0] or ""
         except subprocess.TimeoutExpired:
-            kill_process_group(proc)
+            kill_group(pgid)
             try:
-                # Bounded: a surviving grandchild holding the pipe must not
-                # block us a second time.
                 output = proc.communicate(timeout=5)[0] or ""
             except subprocess.TimeoutExpired:
                 output = "(output unavailable — a background process kept the pipe open)"
@@ -503,7 +605,7 @@ class AgentTools:
             "timed_out": timed_out, "cancelled": cancelled,
         })
 
-        output = output.strip() or "(no output)"
+        output = (output or "").strip() or "(no output)"
         if len(output) > MAX_COMMAND_OUTPUT:
             half = MAX_COMMAND_OUTPUT // 2
             output = output[:half] + "\n… (trimmed) …\n" + output[-half:]
@@ -512,9 +614,9 @@ class AgentTools:
             text = f"$ {command}\nCancelled by the user after {elapsed}s.\n{output}"
         elif timed_out:
             text = (f"$ {command}\nTimed out after {COMMAND_TIMEOUT_S}s and was killed.\n"
-                    f"{output}\n\nA command that does not exit on its own — a server, a "
-                    f"watcher, anything ending in `&` — will always hit this. Start "
-                    f"long-lived processes only if you also stop them in the same command.")
+                    f"{output}\n\nThis command does not exit on its own. To run a server "
+                    f"or watcher, pass background=true — it starts, you keep working, and "
+                    f"you stop it with stop_command when you are done.")
         else:
             text = f"$ {command}\nexit={code}\n{output}"
 
@@ -523,16 +625,31 @@ class AgentTools:
             detail={"kind": "command", "command": command, "exit_code": code,
                     "output": output, "shell": shell, "seconds": elapsed,
                     "timed_out": timed_out, "cancelled": cancelled,
-                    "command_id": command_id},
-        )
+                    "command_id": command_id})
 
-    def _run_via_shell(self, command: str) -> ToolOutcome:
+    def _tail(self, log_path: str, lines: int = 25) -> str:
+        try:
+            text = (self.project / log_path).read_text(encoding="utf8", errors="replace")
+        except OSError:
+            return "(no output captured)"
+        return "\n".join(text.splitlines()[-lines:]) or "(no output)"
+
+    def _run_via_shell(self, command: str, background: bool = False) -> ToolOutcome:
         """Run through a shell, but still check every program it would invoke."""
         programs = programs_in(command)
         missing = _shell_missing(programs, self.allowed_commands)
         if missing:
             return self._refuse_programs(missing, command)
-        return self._execute(["bash", "-c", command], command, shell=True)
+        return self._execute(["bash", "-c", command], command, shell=True,
+                             background=background)
+
+    def stop_command(self, command_id: str) -> ToolOutcome:
+        """Stop a background process this agent started."""
+        if cancel_command(command_id):
+            return ToolOutcome(f"Stopped {command_id}.",
+                               detail={"kind": "command_stopped", "command_id": command_id})
+        return ToolOutcome(f"{command_id} is not running — it may have exited already.",
+                           ok=False)
 
 
     def _refuse_programs(self, missing: list, command: str) -> ToolOutcome:
@@ -549,7 +666,13 @@ class AgentTools:
 
     # ---------------------------------------------------------- commands
 
-    def run_command(self, command: str) -> ToolOutcome:
+    def run_command(self, command: str, background: bool = False) -> ToolOutcome:
+        stripped = command.strip()
+        if stripped.endswith("&") and not stripped.endswith("&&"):
+            # A trailing & used to mean "block for the full timeout, then die":
+            # the shell returned at once but the real process held our pipe.
+            background = True
+            command = stripped[:-1].strip()
         try:
             parts = shlex.split(command)
         except ValueError as exc:
@@ -558,7 +681,7 @@ class AgentTools:
             return ToolOutcome("Empty command.", ok=False)
 
         if self.shell_enabled:
-            return self._run_via_shell(command)
+            return self._run_via_shell(command, background=background)
 
         # Checked on parsed tokens, not the raw string: a `;` inside a quoted
         # argument (python3 -c 'import sys; sys.exit(1)') is not an operator.
@@ -575,7 +698,7 @@ class AgentTools:
             )
         if parts[0] not in self.allowed_commands:
             return self._refuse_programs([parts[0]], command)
-        return self._execute(parts, command, shell=False)
+        return self._execute(parts, command, shell=False, background=background)
 
 
 def _shell_missing(programs: list[str], allowed: set[str]) -> list[str]:

@@ -28,6 +28,7 @@ from .events import EventBus
 from .flow import Attempt, GateResult, Step
 from .indexer.service import default_db_path, index_repo
 from .session import Session
+from .agents.tools import stop_background
 from .worker.tools import ContextTools
 
 
@@ -200,19 +201,53 @@ class FlowEngine:
             if turn.remit_violations:
                 self._supervise(step, role, turn.remit_violations)
             self._record_history(role.name, step, turn)
+            # Anything the agent left running would hold its port against the
+            # next step, and nothing else reaps it.
+            for command in stop_background():
+                self._emit("background_stopped", agent=role.name, step_id=step.id,
+                           payload={"command": command,
+                                    "message": f"Stopped leftover background process: {command}"})
             self._reindex()
 
-            verdict = self._run_check(step, attempt)
-            if verdict != "FAIL":
-                step.status = "blocked" if verdict == "UNKNOWN" else "done"
+            # Two independent questions. The step's own outcome: did the work
+            # succeed? A tester that writes a good test and finds a real bug did
+            # its job and the step still failed. And the fact check: is the
+            # agent's report true?
+            outcome, reason = turn.outcome
+            attempt.outcome = outcome
+            attempt.outcome_reason = reason
+            self._emit("step_outcome", agent=role.name, step_id=step.id, payload={
+                "outcome": outcome, "reason": reason, "loop": loop, "of": limit,
+                "reported": turn.reported_outcome,
+            })
+
+            integrity = self._run_check(step, attempt)
+
+            if integrity == "FAIL" and outcome == "SUCCESS":
+                # It claimed the work was done and the check says otherwise.
+                # Looping would just repeat a report we cannot trust.
+                step.status = "failed"
+                self._emit("step_failed", agent=role.name, step_id=step.id, payload={
+                    "reason": (f"{role.title} reported success but {step.checker} found "
+                               f"otherwise: {attempt.feedback[:200]}"),
+                    "attempts": len(step.attempts), "halts_flow": True, "lied": True,
+                })
+                self._halt(step, lied=True)
+                return
+
+            if outcome == "SUCCESS":
+                step.status = "blocked" if integrity == "UNKNOWN" else "done"
                 self._emit("step_finished", agent=role.name, step_id=step.id, payload={
                     "status": step.status, "attempt": loop, "files": turn.files_written,
                     "summary": step.summary, "usage": turn.usage,
-                    "tool_calls": turn.tool_calls, "verdict": verdict,
+                    "tool_calls": turn.tool_calls, "outcome": outcome,
+                    "integrity": integrity,
                 })
                 return
 
-            feedback = attempt.feedback
+            # The step reported a problem — that is what opens the loop, whether
+            # or not a fact check ran.
+            feedback = reason or attempt.feedback or step.summary
             if loop >= limit:
                 break
 
@@ -221,9 +256,11 @@ class FlowEngine:
             self._run_fixer(step, attempt, feedback, loop, limit)
 
         step.status = "failed"
+        last = step.attempts[-1] if step.attempts else None
         self._emit("step_failed", agent=role.name, step_id=step.id, payload={
-            "reason": (f"the {step.checker} check never passed in {limit} loop(s)"
-                       if step.checker else "the block never succeeded"),
+            "reason": (f"the step never reported success in {limit} loop(s)"
+                       + (f" — last: {last.outcome_reason}" if last and last.outcome_reason
+                          else "")),
             "attempts": len(step.attempts), "max_loops": limit, "halts_flow": True,
         })
         self._halt(step)
@@ -276,18 +313,27 @@ class FlowEngine:
             "summary": attempt.fix_summary, "files": turn.files_written,
         })
 
-    def _halt(self, step: Step) -> None:
-        """Stop the run: later steps would build on work that never passed."""
+    def _halt(self, step: Step, lied: bool = False) -> None:
+        """Stop the run: later steps would build on work that is not there."""
         self.session.stop()
         self.session.status = "error"
-        self.session.error = (
-            f"Halted at the {step.role} step: it never passed its "
-            f"{step.checker or 'check'} within {step.loop_limit} loop(s)."
-        )
+        if lied:
+            self.session.error = (
+                f"Halted at the {step.role} step: it reported success, but "
+                f"{step.checker} found the work was not actually done."
+            )
+            hint = ("Open the step to see what was claimed and what was found. "
+                    "A report that cannot be trusted is not worth retrying — "
+                    "check the model and prompt for that agent.")
+        else:
+            self.session.error = (
+                f"Halted at the {step.role} step: it never reported success within "
+                f"{step.loop_limit} loop(s)."
+            )
+            hint = ("Raise the loop limit, change the fixing agent, or edit the step "
+                    "and re-run it.")
         self._emit("run_halted", agent=step.role, step_id=step.id, payload={
-            "message": self.session.error,
-            "hint": ("Raise the loop limit, change the fixing agent, or edit the step "
-                     "and re-run it."),
+            "message": self.session.error, "hint": hint, "lied": lied,
         })
 
     # ------------------------------------------------------------- verify
@@ -302,7 +348,8 @@ class FlowEngine:
         checks = [step.checker] if step.checker else []
         if not checks:
             self._emit("verification_skipped", agent=step.role, step_id=step.id, payload={
-                "message": "No checks are set on this step, so nothing verified the result.",
+                "message": ("No fact check on this step, so the agent's own report of "
+                            "the outcome is taken at face value."),
             })
             return None
 

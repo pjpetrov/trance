@@ -21,6 +21,12 @@ from .tools import AgentTools, permissions_brief
 VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
 
+#: A working agent ends its reply with this so the step has an outcome of its
+#: own. A tester that writes a good test and finds a real bug did its job
+#: perfectly and the *step* still failed — those are different things.
+OUTCOME_MARKER = "OUTCOME:"
+OUTCOME_SUCCESS = "SUCCESS"
+
 #: Marker left in place of a tool result we dropped to stay inside the window.
 TRIMMED = "[trimmed to fit the context window — call the tool again if you still need this]"
 
@@ -74,6 +80,29 @@ class AgentTurn:
             if stripped.startswith("VERDICT:"):
                 return VERDICT_PASS if VERDICT_PASS in stripped else VERDICT_FAIL
         return None
+
+    @property
+    def outcome(self) -> tuple[str, str]:
+        """(outcome, detail) reported by the agent for its own step.
+
+        Returns ("SUCCESS", "") when the agent says the work is done, or
+        ("FAILED", reason) when it reports anything else. An agent that never
+        says is taken at its word — the fact check exists to catch that.
+        """
+        for line in reversed(self.text.splitlines()):
+            stripped = line.strip()
+            if not stripped.upper().startswith(OUTCOME_MARKER):
+                continue
+            body = stripped[len(OUTCOME_MARKER):].strip()
+            if body.upper().startswith(OUTCOME_SUCCESS):
+                return OUTCOME_SUCCESS, ""
+            return "FAILED", body or "no reason given"
+        return OUTCOME_SUCCESS, ""
+
+    @property
+    def reported_outcome(self) -> bool:
+        return any(l.strip().upper().startswith(OUTCOME_MARKER)
+                   for l in self.text.splitlines())
 
 
 def run_agent(

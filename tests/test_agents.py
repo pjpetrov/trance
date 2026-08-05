@@ -737,8 +737,10 @@ def _engine(tmp_path, team, bus=None):
 class _Turn:
     """Stands in for agents.runner.AgentTurn."""
 
-    def __init__(self, verdict, text=""):
+    def __init__(self, verdict, text="", outcome=("SUCCESS", "")):
         self.verdict = verdict
+        self.outcome = outcome
+        self.reported_outcome = True
         self.text = text or f"VERDICT: {verdict}"
         self.model_event_ids = ["ev"]
         self.files_written = []
@@ -765,8 +767,9 @@ def test_a_passing_check_lets_the_flow_move_on(tmp_path, monkeypatch):
     assert not engine.session.stopping          # the flow continues
 
 
-def test_a_failed_check_sends_the_work_to_the_fixer_then_loops(tmp_path, monkeypatch):
-    """block -> check fails -> fixer -> block again -> check passes."""
+def test_a_failed_outcome_sends_the_work_to_the_fixer_then_loops(tmp_path, monkeypatch):
+    """The step's own outcome opens the loop — a tester that finds a real bug
+    did good work and the step still failed."""
     from trance.flow import Step
 
     engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
@@ -779,22 +782,55 @@ def test_a_failed_check_sends_the_work_to_the_fixer_then_loops(tmp_path, monkeyp
         order.append(name)
         prompts[name] = kw["task"]
         if name == "factchecker":
-            return _Turn("FAIL" if order.count("factchecker") == 1 else "PASS",
-                         "index.html is EMPTY")
-        return _Turn(None, f"{name} done")
+            return _Turn("PASS")                      # the report is honest
+        if name == "backend":
+            failing = order.count("backend") == 1
+            return _Turn(None, "attempted",
+                         outcome=("FAILED", "divide() raises on zero") if failing
+                         else ("SUCCESS", ""))
+        return _Turn(None, "fixed")
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
     assert order == ["backend", "factchecker", "reviewer", "backend", "factchecker"]
     assert step.status == "done"
-    # The fixer's whole context is its prompt.
-    assert "index.html is EMPTY" in prompts["reviewer"]
-    assert "build it" in prompts["reviewer"]
-    assert "factchecker" in prompts["reviewer"]
+    assert "divide() raises on zero" in prompts["reviewer"]
 
 
-def test_without_a_fixer_the_block_simply_runs_again(tmp_path, monkeypatch):
+def test_a_dishonest_report_halts_instead_of_looping(tmp_path, monkeypatch):
+    """Claimed success + the check disagreeing means the report cannot be
+    trusted; looping would just repeat it."""
+    from trance.events import EventBus
+    from trance.flow import Step
+
+    bus = EventBus()
+    seen = []
+    bus.subscribe_sync(seen.append)
+    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"], bus)
+    step = Step(role="backend", task="t", check="factchecker",
+                on_fail="reviewer", max_loops=3)
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        if kw["role"].name == "factchecker":
+            return _Turn("FAIL", "index.html is MISSING")
+        return _Turn(None, "all done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert order == ["backend", "factchecker"]      # no fixer, no second loop
+    assert step.status == "failed"
+    assert engine.session.stopping
+    halted = [e for e in seen if e.type == "run_halted"]
+    assert halted and halted[0].payload["lied"] is True
+    assert "not actually done" in halted[0].payload["message"]
+
+
+def test_an_admitted_failure_loops_even_if_the_check_also_fails(tmp_path, monkeypatch):
+    """It did not claim success, so there is no lie — just work to redo."""
     from trance.flow import Step
 
     engine = _engine(tmp_path, ["backend", "factchecker"])
@@ -804,38 +840,58 @@ def test_without_a_fixer_the_block_simply_runs_again(tmp_path, monkeypatch):
     def fake(**kw):
         order.append(kw["role"].name)
         if kw["role"].name == "factchecker":
-            return _Turn("FAIL" if order.count("factchecker") == 1 else "PASS", "empty")
-        return _Turn(None, "done")
+            return _Turn("FAIL", "nothing on disk")
+        first = order.count("backend") == 1
+        return _Turn(None, "tried",
+                     outcome=("FAILED", "could not write") if first else ("SUCCESS", ""))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
     assert order == ["backend", "factchecker", "backend", "factchecker"]
+    assert step.status == "failed"      # second pass claimed success, check says no
+    assert engine.session.stopping
+
+
+def test_without_a_fixer_the_block_simply_runs_again(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])
+    step = Step(role="backend", task="t", max_loops=2)
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        first = order.count("backend") == 1
+        return _Turn(None, "x",
+                     outcome=("FAILED", "not yet") if first else ("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert order == ["backend", "backend"]
     assert step.status == "done"
 
 
 def test_exhausting_the_loop_limit_halts_the_whole_flow(tmp_path, monkeypatch):
-    """The loop can only be left by succeeding."""
+    """The loop can only be left by the step reporting success."""
     from trance.events import EventBus
     from trance.flow import Step
 
     bus = EventBus()
     seen = []
     bus.subscribe_sync(seen.append)
-    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"], bus)
-    step = Step(role="backend", task="t", check="factchecker",
-                on_fail="reviewer", max_loops=2)
+    engine = _engine(tmp_path, ["backend", "reviewer"], bus)
+    step = Step(role="backend", task="t", on_fail="reviewer", max_loops=2)
 
     monkeypatch.setattr("trance.engine.run_agent",
-                        lambda **kw: _Turn("FAIL", "still empty")
-                        if kw["role"].name == "factchecker" else _Turn(None, "tried"))
+                        lambda **kw: _Turn(None, "tried",
+                                           outcome=("FAILED", "still broken")))
     engine._execute(step)
 
     assert step.status == "failed"
     assert len(step.attempts) == 2
-    assert engine.session.stopping                       # the run is stopped
-    assert engine.session.status == "error"
+    assert engine.session.stopping and engine.session.status == "error"
     halted = [e for e in seen if e.type == "run_halted"]
-    assert halted and "never passed" in halted[0].payload["message"]
+    assert halted and halted[0].payload["lied"] is False
 
 
 def test_no_fixer_runs_on_the_final_loop(tmp_path, monkeypatch):
@@ -1200,8 +1256,7 @@ def test_cancelling_an_unknown_command_is_harmless():
     assert cancel_command("cmd_nope") is False
 
 
-def test_a_timeout_explains_backgrounded_processes(project, monkeypatch):
-    """`node server.js &` blocks until the timeout, which is what happened."""
+def test_a_timeout_points_at_background_mode(project, monkeypatch):
     from trance.agents import tools as tools_module
 
     monkeypatch.setattr(tools_module, "COMMAND_TIMEOUT_S", 1)
@@ -1209,7 +1264,7 @@ def test_a_timeout_explains_backgrounded_processes(project, monkeypatch):
         "python3 -c 'import time; time.sleep(30)'")
     assert result.ok is False
     assert result.detail["timed_out"] is True
-    assert "ending in `&`" in result.text          # names the real cause
+    assert "background=true" in result.text
 
 
 def test_a_refusal_names_the_programs_for_the_ui(project):
@@ -1220,20 +1275,57 @@ def test_a_refusal_names_the_programs_for_the_ui(project):
     assert result.detail["agent_has_own_list"] is False   # so the global list applies
 
 
-def test_a_backgrounded_process_does_not_block_the_kill(project, monkeypatch):
-    """`node server.js &` left a grandchild holding the stdout pipe, so reading
-    the remaining output after the kill blocked forever."""
+def test_a_trailing_ampersand_runs_in_the_background(project):
+    """`node server.js &` used to block for the full timeout: the shell exited
+    at once while the real process held our output pipe."""
     import time
 
-    from trance.agents import tools as tools_module
+    from trance.agents.tools import background_commands, stop_background
 
-    monkeypatch.setattr(tools_module, "COMMAND_TIMEOUT_S", 2)
     started = time.time()
     result = AgentTools(project, BUILTIN_ROLES["tester"]).run_command(
         "python3 -m http.server 0 --bind 127.0.0.1 &")
-    assert result.detail["timed_out"] is True
-    assert time.time() - started < 20        # it returns, rather than hanging
-    assert "ending in `&`" in result.text
+    try:
+        assert time.time() - started < 10          # returns at once
+        assert result.ok is True
+        assert result.detail["kind"] == "background"
+        assert result.detail["command_id"]
+        assert "stop_command" in result.text
+        assert background_commands()
+    finally:
+        stop_background()
+
+
+def test_a_background_command_that_dies_at_once_is_reported_as_failed(project):
+    from trance.agents.tools import background_commands
+
+    result = AgentTools(project, BUILTIN_ROLES["tester"]).run_command(
+        "python3 -c 'import sys; sys.exit(3)'", background=True)
+    assert result.ok is False
+    assert "exited immediately" in result.text
+    assert not background_commands()
+
+
+def test_a_background_process_can_be_cancelled_after_its_shell_exits(project):
+    """The tracked process is bash, which returns immediately — cancelling has
+    to target the group, or nothing happens and the UI hangs on 'cancelling'."""
+    from trance.agents.tools import background_commands, cancel_command
+
+    tools = AgentTools(project, BUILTIN_ROLES["tester"])
+    result = tools.run_command("python3 -c 'import time; time.sleep(120)' &")
+    command_id = result.detail["command_id"]
+    assert cancel_command(command_id) is True
+    assert not background_commands()
+
+
+def test_background_processes_are_stopped_when_a_step_ends(project):
+    from trance.agents.tools import background_commands, stop_background
+
+    tools = AgentTools(project, BUILTIN_ROLES["tester"])
+    tools.run_command("python3 -c 'import time; time.sleep(120)' &")
+    assert background_commands()
+    assert len(stop_background()) == 1        # would otherwise hold its port
+    assert not background_commands()
 
 
 def test_cancel_kills_grandchildren_too(project):
@@ -1261,3 +1353,48 @@ def test_cancel_kills_grandchildren_too(project):
     assert cancel_command(ids[0]) is True
     worker.join(timeout=20)
     assert "r" in out and out["r"].detail["cancelled"] is True
+
+
+# ------------------------------------------------- outcome vs integrity
+
+def test_outcome_is_read_from_the_agents_own_last_line():
+    from trance.agents.runner import AgentTurn
+
+    assert AgentTurn(text="done\nOUTCOME: SUCCESS").outcome == ("SUCCESS", "")
+    outcome, reason = AgentTurn(text="ran it\nOUTCOME: FAILED — 2 tests failed").outcome
+    assert outcome == "FAILED" and "2 tests failed" in reason
+
+
+def test_an_agent_that_says_nothing_is_taken_at_its_word():
+    """The fact check is what catches this, not a pessimistic default."""
+    from trance.agents.runner import AgentTurn
+
+    turn = AgentTurn(text="I wrote the file.")
+    assert turn.outcome == ("SUCCESS", "")
+    assert turn.reported_outcome is False        # visible in the event
+
+
+def test_the_last_outcome_line_wins():
+    from trance.agents.runner import AgentTurn
+
+    text = "first attempt\nOUTCOME: FAILED — nope\nthen I fixed it\nOUTCOME: SUCCESS"
+    assert AgentTurn(text=text).outcome == ("SUCCESS", "")
+
+
+def test_working_agents_are_told_to_report_an_outcome():
+    for name in ("backend", "frontend", "tester"):
+        assert "OUTCOME: SUCCESS" in BUILTIN_ROLES[name].system_prompt
+        assert "OUTCOME: FAILED" in BUILTIN_ROLES[name].system_prompt
+
+
+def test_the_tester_is_told_a_caught_bug_is_a_failed_step():
+    prompt = BUILTIN_ROLES["tester"].system_prompt
+    assert "good work AND a failed step" in prompt
+    assert "VERDICT: PASS" in prompt          # still usable as a check
+
+
+def test_the_factchecker_checks_truthfulness_not_quality():
+    prompt = BUILTIN_ROLES["factchecker"].system_prompt
+    assert "report of its own work is TRUE" in prompt
+    assert "not a reviewer" in prompt
+    assert "the whole run stops" in prompt     # it knows the weight of a FAIL

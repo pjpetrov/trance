@@ -45,6 +45,9 @@ class Attempt:
     #: What the fixing agent did, when one ran.
     fix_event_id: str | None = None
     fix_summary: str = ""
+    #: The step's own outcome, as reported by the agent that did the work.
+    outcome: str = ""
+    outcome_reason: str = ""
 
     @property
     def failed_gate(self) -> str | None:

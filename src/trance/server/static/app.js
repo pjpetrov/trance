@@ -353,7 +353,7 @@ function stepCard(step, index) {
       check.append(opt);
     });
     check.disabled = !editable;
-    check.title = "Reality check run after the block. PASS moves the flow on.";
+    check.title = "Checks that the agent's report is true. A false report halts the run.";
     check.onchange = () => { step.check = check.value || null; drawGates(); };
 
     const fixer = el("select", "compact");
@@ -384,12 +384,13 @@ function stepCard(step, index) {
     if (step.check) {
       const who = step.on_fail || step.role;
       gatesBox.append(el("div", "loop-note",
-        `${step.role} → ${step.check} · pass → next step · ` +
-        `fail → ${who} fixes → ${step.role} again · ` +
-        `${step.max_loops ?? 2} loop(s), then the run halts`));
+        `${step.role} reports SUCCESS → ${step.check} confirms → next step · ` +
+        `reports a problem → ${who} fixes → ${step.role} again ` +
+        `(${step.max_loops ?? 2} loops) · claims SUCCESS but ${step.check} disagrees → run halts`));
     } else {
       gatesBox.append(el("div", "loop-note muted",
-        "No check — the flow moves on as soon as this block finishes."));
+        `No fact check — ${step.role}'s own report is taken at face value. ` +
+        `A reported problem still loops through ${step.on_fail || step.role}.`));
     }
   };
   drawGates();
@@ -1243,17 +1244,19 @@ function renderFlowView() {
     const meta = el("div", "flow-meta");
     if (step.checker) {
       meta.append(el("div", "flow-chain",
-        `↳ ${step.checker} · fail → ${step.fixer} fixes → ${step.role} again ` +
-        `(${step.loop_limit} loop${step.loop_limit > 1 ? "s" : ""})`));
+        `↳ fact-checked by ${step.checker} · a false report halts the run`));
     }
+    meta.append(el("div", "flow-chain",
+      `↻ not success → ${step.fixer} fixes → ${step.role} again ` +
+      `(${step.loop_limit} loop${step.loop_limit > 1 ? "s" : ""})`));
     const attempts = step.attempts || [];
     if (attempts.length) {
       const last = attempts[attempts.length - 1];
-      const gates = (last.gate_results || [])
-        .map((g) => `${g.gate}:${g.verdict}`).join(" ");
-      meta.append(el("div", "muted small",
-        `attempt ${last.n}${gates ? ` · ${gates}` : ""}` +
-        (last.files_written?.length ? ` · ${last.files_written.join(", ")}` : "")));
+      const parts = [`attempt ${last.n}`];
+      if (last.outcome) parts.push(`outcome ${last.outcome}`);
+      (last.gate_results || []).forEach((g) => parts.push(`${g.gate}:${g.verdict}`));
+      if (last.files_written?.length) parts.push(last.files_written.join(", "));
+      meta.append(el("div", "muted small", parts.join(" · ")));
     }
     node.append(meta);
 
@@ -1306,6 +1309,11 @@ function openStep(step, index) {
     const card = el("div", `attempt ${cls}`);
     card.append(el("div", "row small", ""));
     card.firstChild.append(el("span", "badge", `attempt ${a.n}`));
+    if (a.outcome) {
+      const b = el("span", "badge", `outcome: ${a.outcome}`);
+      b.style.borderColor = a.outcome === "SUCCESS" ? "var(--ok)" : "var(--err)";
+      card.firstChild.append(b);
+    }
     (a.gate_results || []).forEach((g) => {
       const b = el("span", "badge", `${g.gate}: ${g.verdict}`);
       b.style.borderColor = g.verdict === "PASS" ? "var(--ok)"
@@ -1317,8 +1325,12 @@ function openStep(step, index) {
     }
     card.firstChild.append(
       el("span", "muted small", (a.files_written || []).join(", ") || "no files written"));
+    if (a.outcome_reason) {
+      card.append(rowWithCopy("why the step failed", a.outcome_reason));
+      card.append(el("pre", "code", a.outcome_reason));
+    }
     if (a.feedback) {
-      card.append(rowWithCopy("verifier feedback", a.feedback));
+      card.append(rowWithCopy("fact check", a.feedback));
       card.append(el("pre", "code", a.feedback));
     }
     body.append(card);
@@ -1723,6 +1735,21 @@ function consoleAppend(event) {
         }));
         return;
       }
+      if (d.kind === "background") {
+        consolePush(consoleEntry({
+          kind: "cmd", icon: "⇥", time, tag: event.agent,
+          label: labelWith([[d.command, ""], ["  running in background", "c-exit-0"]]),
+          body: () => el("pre", null, p.result || ""),
+        }));
+        return;
+      }
+      if (d.kind === "command_stopped") {
+        consolePush(consoleEntry({
+          kind: "read", icon: "⏹", time, tag: event.agent,
+          label: `stopped ${d.command_id}`,
+        }));
+        return;
+      }
       if (d.kind === "command") {
         const failedCmd = d.exit_code !== 0 || d.timed_out || d.cancelled;
         consolePush(consoleEntry({
@@ -1795,6 +1822,33 @@ function consoleAppend(event) {
 
     case "command_finished":
       finishRunningCommand(event);
+      return;
+
+    case "background_stopped":
+      consolePush(consoleEntry({
+        kind: "read", icon: "⏹", time, tag: event.agent, label: p.message,
+      }));
+      return;
+
+    case "step_outcome": {
+      const bad = p.outcome !== "SUCCESS";
+      consolePush(consoleEntry({
+        kind: bad ? "cmd" : "write", icon: bad ? "!" : ICON.verdict, time,
+        tag: event.agent, failed: bad,
+        label: bad ? `outcome: FAILED — ${clip(p.reason, 80)}`
+                   : `outcome: SUCCESS${p.reported ? "" : " (not stated — assumed)"}`,
+        open: bad,
+        body: bad ? () => el("pre", null, p.reason || "") : null,
+      }));
+      return;
+    }
+
+    case "run_halted":
+      consolePush(consoleEntry({
+        kind: "cmd", icon: "⛔", time, tag: event.agent, failed: true,
+        label: p.message, open: true,
+        body: () => el("pre", null, p.hint || ""),
+      }));
       return;
 
     case "gate_failed":
@@ -1889,16 +1943,32 @@ function pushRunningCommand(event) {
   head.append(el("span", "c-label", p.command));
 
   const elapsedEl = el("span", "c-elapsed", "0s");
-  head.append(elapsedEl, el("span", "c-tag", `limit ${p.timeout_s}s`));
+  head.append(elapsedEl,
+              el("span", "c-tag", p.background ? "background" : `limit ${p.timeout_s}s`));
 
   const cancel = el("button", "copy-btn", "cancel");
-  cancel.title = "Kill this command";
+  cancel.title = "Kill this command and anything it started";
   cancel.onclick = async (e) => {
     e.stopPropagation();
     cancel.textContent = "cancelling…";
-    const r = await api(`/api/commands/cancel/${encodeURIComponent(p.command_id)}`,
-                        { method: "POST" });
-    if (!r.cancelled) toast("It had already finished.");
+    cancel.disabled = true;
+    let r;
+    try {
+      r = await api(`/api/commands/cancel/${encodeURIComponent(p.command_id)}`,
+                    { method: "POST" });
+    } catch (_) {
+      // Never leave the button stuck on "cancelling…".
+      cancel.textContent = "cancel";
+      cancel.disabled = false;
+      return;
+    }
+    if (r.cancelled) {
+      cancel.textContent = "cancelled";
+    } else {
+      cancel.textContent = "cancel";
+      cancel.disabled = false;
+      toast("Nothing to cancel — it had already finished.");
+    }
   };
   head.append(cancel);
   entry.append(head);
