@@ -432,3 +432,22 @@ input.tiny { width: 62px; min-width: 0; }
 .allow-btn { border-color: var(--accent); color: var(--accent); }
 .allow-btn:disabled { opacity: .6; }
 .copy-btn:disabled { opacity: .7; cursor: default; }
+
+/* ── folded steps in the plan editor ───────────────────────────────── */
+.flow-editor { max-height: 58vh; overflow-y: auto; padding-right: 4px; }
+.flow-editor > * { flex: 0 0 auto; }
+.step-card.collapsed { padding: 6px 10px; opacity: .82; }
+.step-card.collapsed textarea,
+.step-card.collapsed .gates { display: none; }
+.step-card.collapsed:hover { opacity: 1; border-color: var(--accent); }
+.step-peek {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 12px; color: var(--muted);
+}
+.step-toggle {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  padding: 0 4px; font-size: 12px; flex: 0 0 auto;
+}
+.step-toggle:hover { color: var(--accent); }
+.step-head { align-items: center; gap: 8px; flex-wrap: nowrap; }
+.step-card.collapsed { cursor: pointer; }

@@ -5,6 +5,8 @@ const state = {
   roles: {},
   providers: [],
   presets: [],
+  //: Step ids the user has explicitly opened while collapsing is on.
+  openSteps: new Set(),
   commands: null,
   workspace: "",
   agents: [],
@@ -299,8 +301,40 @@ function stepCard(step, index) {
   const role = state.roles[step.role];
   if (role) card.style.borderLeftColor = role.color;
 
-  const head = el("div", "row");
-  head.append(el("span", "badge", `${index + 1}`));
+  const head = el("div", "row step-head");
+  head.append(el("span", "flow-index", `${index + 1}.`));
+
+  // Folded: a plain badge and the task. Open: the editable controls.
+  if (collapsed) {
+    const badge = el("span", "badge role", step.role);
+    if (role) badge.style.background = role.color;
+    head.append(badge, el("span", "badge", step.status));
+    head.append(el("span", "step-peek", clip(step.task, 70)));
+    const open = el("button", "step-toggle", "▸");
+    open.title = "Show this step";
+    open.onclick = (e) => {
+      e.stopPropagation();
+      state.openSteps.add(step.id);
+      redrawEditor();
+    };
+    head.append(open);
+    card.append(head);
+    card.addEventListener("dragstart", (e) => {
+      card.classList.add("dragging");
+      e.dataTransfer.setData("text/plain", String(index));
+    });
+    card.addEventListener("dragend", () => card.classList.remove("dragging"));
+    card.addEventListener("dragover", (e) => e.preventDefault());
+    card.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const from = Number(e.dataTransfer.getData("text/plain"));
+      if (Number.isNaN(from) || from === index) return;
+      const [moved] = state.draftSteps.splice(from, 1);
+      state.draftSteps.splice(index, 0, moved);
+      redrawEditor();
+    });
+    return card;
+  }
 
   const roleSelect = el("select");
   Object.keys(state.roles).forEach((name) => {
@@ -323,6 +357,18 @@ function stepCard(step, index) {
   remove.disabled = !editable;
   remove.onclick = () => { state.draftSteps.splice(index, 1); redrawEditor(); };
   head.append(remove);
+
+  if (finished) {
+    const fold = el("button", "step-toggle", "▾");
+    fold.title = "Fold this step away";
+    fold.onclick = (e) => {
+      e.stopPropagation();
+      state.openSteps.delete(step.id);
+      if (!$("collapse-editor").checked) $("collapse-editor").checked = true;
+      redrawEditor();
+    };
+    head.append(fold);
+  }
 
   const task = el("textarea");
   task.value = step.task || "";
@@ -421,9 +467,21 @@ function redrawEditor() {
   state.draftSteps.forEach((step, index) => box.append(stepCard(step, index)));
 }
 
-$("add-step").onclick = () => {
-  state.draftSteps.push({ role: "backend", task: "", verify_with: null, max_attempts: 2, status: "pending" });
+$("collapse-editor").onchange = () => {
+  state.openSteps.clear();      // the toggle is the master switch
   redrawEditor();
+};
+
+$("add-step").onclick = () => {
+  state.draftSteps.push({ role: "backend", task: "", check: null, on_fail: null,
+                          max_loops: 2, status: "pending" });
+  redrawEditor();
+  // A new step goes on the end, so put it in view rather than making the user
+  // scroll past everything that is already done.
+  const box = $("flow-editor");
+  box.scrollTop = box.scrollHeight;
+  const last = box.lastElementChild?.querySelector("textarea");
+  if (last) last.focus();
 };
 
 $("save-flow").onclick = async () => {
