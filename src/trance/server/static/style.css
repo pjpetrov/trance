@@ -395,3 +395,21 @@ body { overflow-x: hidden; }
   background: rgba(224,175,104,.10); margin-bottom: 8px;
 }
 .paused-hint.on { display: flex; }
+
+/* ── check chain on a step ─────────────────────────────────────────── */
+.gates { margin-top: 8px; }
+.gate-chain { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.gate-node {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; padding: 2px 9px; border-radius: 20px;
+  border: 1px solid var(--line); background: var(--panel-2);
+}
+.gate-worker { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.gate-arrow { color: var(--muted); font-size: 12px; }
+.gate-loop { color: var(--warn); font-size: 11px; }
+.gate-x {
+  border: none; background: none; padding: 0 0 0 2px; font-size: 10px;
+  color: var(--muted); cursor: pointer;
+}
+.gate-x:hover { color: var(--err); }
+.flow-node .flow-chain { font-size: 11.5px; color: var(--muted); margin-top: 2px; }

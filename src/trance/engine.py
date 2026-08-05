@@ -25,7 +25,7 @@ from .config import Config
 from .curator.walker import CuratorConfig, curate
 from .db import GraphDB
 from .events import EventBus
-from .flow import Attempt, Step
+from .flow import Attempt, GateResult, Step
 from .indexer.service import default_db_path, index_repo
 from .session import Session
 from .worker.tools import ContextTools
@@ -169,9 +169,11 @@ class FlowEngine:
             steering = list(step.steering)
             step.steering.clear()
             if attempt_n > 1 and step.attempts[-2].feedback:
+                previous = step.attempts[-2]
+                who = previous.failed_gate or "the verifier"
                 steering.append(
-                    "Your previous attempt was rejected by the verifier. Fix exactly this:\n"
-                    + step.attempts[-2].feedback
+                    f"Your previous attempt was rejected by {who}. Fix exactly this, then it "
+                    f"will be checked again:\n{previous.feedback}"
                 )
 
             turn = run_agent(
@@ -190,7 +192,7 @@ class FlowEngine:
             self._record_history(role.name, step, turn)
             self._reindex()
 
-            verdict = self._verify(step, attempt)
+            verdict = self._run_gates(step, attempt)
             if verdict != "FAIL":
                 # "UNKNOWN" means verification did not happen — visible as
                 # blocked, not quietly green.
@@ -202,76 +204,123 @@ class FlowEngine:
                                     "verdict": verdict})
                 return
 
-            self._emit("step_retry", agent=role.name, step_id=step.id,
-                       payload={"attempt": attempt_n, "feedback": attempt.feedback})
+            self._emit("step_retry", agent=role.name, step_id=step.id, payload={
+                "attempt": attempt_n, "feedback": attempt.feedback,
+                "failed_gate": attempt.failed_gate,
+                "message": (
+                    f"{role.title} will redo the work, then the checks "
+                    f"({' → '.join(step.checks)}) run again."),
+            })
 
         step.status = "failed"
-        self._emit("step_failed", agent=role.name, step_id=step.id,
-                   payload={"reason": "verifier kept failing", "attempts": len(step.attempts)})
+        last = step.attempts[-1] if step.attempts else None
+        self._emit("step_failed", agent=role.name, step_id=step.id, payload={
+            "reason": (f"{last.failed_gate} kept rejecting the work"
+                       if last and last.failed_gate else "checks kept failing"),
+            "attempts": len(step.attempts), "max_attempts": step.max_attempts,
+        })
 
     # ------------------------------------------------------------- verify
 
-    def _verify(self, step: Step, attempt: Attempt) -> str | None:
-        if not step.verify_with:
-            # Silence here reads as "it was verified and passed". Say plainly
-            # that nobody checked, so a missing verifier is visible in the log.
+    def _run_gates(self, step: Step, attempt: Attempt) -> str | None:
+        """Run each gate in order; the first FAIL stops the chain.
+
+        Gates are sequential on purpose. If the tester fails there is no point
+        asking the reviewer to read code that does not work yet, and the
+        feedback the worker gets should be about one thing.
+        """
+        checks = step.checks
+        if not checks:
             self._emit("verification_skipped", agent=step.role, step_id=step.id, payload={
-                "message": "No verifier is set on this step, so nothing checked the result.",
+                "message": "No checks are set on this step, so nothing verified the result.",
             })
             return None
-        verifier = self.session.role(step.verify_with)
-        if verifier is None:
-            return None
-        if not getattr(verifier, "verifier", False):
-            # An agent that cannot inspect anything cannot verify anything; it
-            # would return a verdict it has no means of having checked.
-            self._emit("warning", agent=verifier.name, step_id=step.id, payload={
-                "message": (
-                    f"{verifier.title} is not marked as a verifier, so it was not asked to "
-                    f"check this step. Tick 'can verify' on that agent, or pick one of the "
-                    f"agents that can inspect results."
-                ),
+
+        for index, name in enumerate(checks):
+            if self.session.stopping:
+                return None
+            self.session.wait_if_paused()
+
+            gate = self.session.role(name)
+            if gate is None:
+                self._emit("warning", step_id=step.id, payload={
+                    "message": f"Check {name!r} is not a known agent; skipping it."})
+                continue
+            if not getattr(gate, "verifier", False):
+                self._emit("warning", agent=gate.name, step_id=step.id, payload={
+                    "message": (
+                        f"{gate.title} is not marked as a verifier, so it was not asked to "
+                        f"check this step. Tick 'can verify' on that agent, or choose one "
+                        f"that can inspect results."),
+                })
+                attempt.gate_results.append(GateResult(gate=name, verdict="UNKNOWN"))
+                continue
+
+            step.status = "verifying"
+            self._emit("step_verifying", agent=gate.name, step_id=step.id, payload={
+                "verifier": gate.name, "gate": index + 1, "of": len(checks),
+                "chain": checks,
             })
-            return "UNKNOWN"
+            self.on_change()
 
-        self.session.wait_if_paused()
-        if self.session.stopping:
-            return None
+            turn = run_agent(
+                role=gate,
+                task=self._gate_task(step, attempt, gate, index, checks),
+                project=self.project, config=self.config.for_role(gate), bus=self.bus,
+                session_id=self.session.id, step_id=step.id, history=self.session.history,
+                graph_tools=self._graph_tools(gate),
+                should_stop=lambda: self.session.stopping,
+            )
+            verdict = turn.verdict or "UNKNOWN"
+            result = GateResult(
+                gate=name, verdict=verdict,
+                feedback=turn.text if verdict != "PASS" else "",
+                event_id=turn.model_event_ids[-1] if turn.model_event_ids else None,
+            )
+            attempt.gate_results.append(result)
+            attempt.verifier_event_id = result.event_id
 
-        step.status = "verifying"
-        self._emit("step_verifying", agent=verifier.name, step_id=step.id,
-                   payload={"verifier": verifier.name})
-        self.on_change()
-
-        turn = run_agent(
-            role=verifier,
-            task=(
-                f"Verify this work by another agent:\n\n{step.task}\n\n"
-                f"What they reported:\n{step.summary}\n\n"
-                f"Files they changed: {', '.join(attempt.files_written) or 'none'}"
-            ),
-            project=self.project, config=self.config.for_role(verifier), bus=self.bus,
-            session_id=self.session.id, step_id=step.id, history=self.session.history,
-            graph_tools=self._graph_tools(verifier), should_stop=lambda: self.session.stopping,
-        )
-        attempt.verifier_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
-        # A verifier that produced no parseable verdict has NOT passed anything.
-        # Defaulting to PASS here would let a confused verifier wave work
-        # through silently, which is the worst failure this system can have.
-        attempt.verdict = turn.verdict or "UNKNOWN"
-        attempt.feedback = turn.text if attempt.verdict == "FAIL" else ""
-        self._emit("verdict", agent=verifier.name, step_id=step.id,
-                   payload={"verdict": attempt.verdict, "detail": _summarize(turn.text),
-                            "wrote_files": attempt.files_written})
-        if attempt.verdict == "UNKNOWN":
-            self._emit("warning", agent=verifier.name, step_id=step.id, payload={
-                "message": (
-                    f"{verifier.title} returned no VERDICT line, so this step is unverified. "
-                    "Treating it as blocked rather than passed — rerun the step or check the "
-                    "verifier's model supports tool calling."
-                ),
+            self._emit("verdict", agent=gate.name, step_id=step.id, payload={
+                "verdict": verdict, "gate": name, "position": index + 1, "of": len(checks),
+                "detail": _summarize(turn.text), "wrote_files": attempt.files_written,
             })
+
+            if verdict == "FAIL":
+                attempt.verdict, attempt.feedback = "FAIL", turn.text
+                self._emit("gate_failed", agent=gate.name, step_id=step.id, payload={
+                    "gate": name,
+                    "message": (
+                        f"{gate.title} rejected the work, so it goes back to "
+                        f"{step.role} to fix. The whole chain "
+                        f"({' → '.join(checks)}) runs again afterwards."),
+                })
+                return "FAIL"
+            if verdict == "UNKNOWN":
+                self._emit("warning", agent=gate.name, step_id=step.id, payload={
+                    "message": (
+                        f"{gate.title} returned no VERDICT line, so this step is unverified. "
+                        f"Treating it as blocked rather than passed."),
+                })
+
+        verdicts = [g.verdict for g in attempt.gate_results]
+        attempt.verdict = "UNKNOWN" if "UNKNOWN" in verdicts else "PASS"
+        attempt.feedback = ""
         return attempt.verdict
+
+    def _gate_task(self, step: Step, attempt: Attempt, gate, index: int, checks: list) -> str:
+        earlier = [g for g in attempt.gate_results if g.verdict == "PASS"]
+        passed = (f"\n\nAlready passed: {', '.join(g.gate for g in earlier)}."
+                  if earlier else "")
+        return (
+            f"Verify this work by another agent (check {index + 1} of {len(checks)}):\n\n"
+            f"{step.task}\n\n"
+            f"What they reported:\n{step.summary}\n\n"
+            f"Files they changed: {', '.join(attempt.files_written) or 'none'}{passed}"
+        )
+
+    def _verify(self, step: Step, attempt: Attempt) -> str | None:
+        """Backwards-compatible entry point."""
+        return self._run_gates(step, attempt)
 
     # --------------------------------------------------------- supervision
 

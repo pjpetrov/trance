@@ -719,3 +719,138 @@ def test_the_refusal_message_points_at_write_file(project):
                      toolsets=["commands"], commands=["pytest"])
     refused = AgentTools(project, role).run_command("mkdir newdir")
     assert "write_file creates parent directories" in refused.text
+
+
+# ------------------------------------------------------- gate chains
+
+def _engine(tmp_path, team, bus=None):
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.session import Session
+
+    session = Session(name="s", project_dir=str(tmp_path))
+    session.team = [BUILTIN_ROLES[n] for n in team]
+    return FlowEngine(session, Config.load(tmp_path / "none.toml"), bus or EventBus())
+
+
+class _Turn:
+    """Stands in for agents.runner.AgentTurn."""
+
+    def __init__(self, verdict, text=""):
+        self.verdict = verdict
+        self.text = text or f"VERDICT: {verdict}"
+        self.model_event_ids = ["ev"]
+        self.files_written = []
+        self.remit_violations = []
+        self.usage = {"input_tokens": 0, "output_tokens": 0}
+        self.tool_calls = 0
+        self.rounds = 1
+        self.stop_reason = "stop"
+        self.salvaged_calls = 0
+
+
+def test_gates_run_in_order_and_stop_at_the_first_failure(tmp_path, monkeypatch):
+    from trance.flow import Attempt, Step
+
+    engine = _engine(tmp_path, ["backend", "tester", "reviewer"])
+    step = Step(role="backend", task="t", gates=["tester", "reviewer"])
+
+    ran = []
+
+    def fake(**kw):
+        ran.append(kw["role"].name)
+        return _Turn("FAIL", "the API returns 500") if kw["role"].name == "tester" else _Turn("PASS")
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    attempt = Attempt(n=1)
+    assert engine._run_gates(step, attempt) == "FAIL"
+    assert ran == ["tester"]                     # reviewer never ran
+    assert attempt.failed_gate == "tester"
+    assert "returns 500" in attempt.feedback
+
+
+def test_all_gates_must_pass(tmp_path, monkeypatch):
+    from trance.flow import Attempt, Step
+
+    engine = _engine(tmp_path, ["backend", "tester", "reviewer"])
+    step = Step(role="backend", task="t", gates=["tester", "reviewer"])
+    ran = []
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: (ran.append(kw["role"].name), _Turn("PASS"))[1])
+
+    attempt = Attempt(n=1)
+    assert engine._run_gates(step, attempt) == "PASS"
+    assert ran == ["tester", "reviewer"]
+    assert [g.verdict for g in attempt.gate_results] == ["PASS", "PASS"]
+
+
+def test_a_failing_gate_sends_its_feedback_back_to_the_worker(tmp_path, monkeypatch):
+    """develop -> test -> fix -> test: the fix must know what the tester said."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "tester"])
+    step = Step(role="backend", task="build it", gates=["tester"], max_attempts=2)
+    seen = []
+
+    def fake(**kw):
+        seen.append((kw["role"].name, kw.get("steering") or []))
+        if kw["role"].name == "tester":
+            return _Turn("FAIL" if len(seen) < 3 else "PASS", "assert 1 == 2 failed")
+        return _Turn(None, "wrote the file")
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    # backend, tester(FAIL), backend(with feedback), tester(PASS)
+    assert [name for name, _ in seen] == ["backend", "tester", "backend", "tester"]
+    retry_steering = "\n".join(seen[2][1])
+    assert "rejected by tester" in retry_steering
+    assert "assert 1 == 2 failed" in retry_steering
+    assert step.status == "done"
+
+
+def test_a_reviewer_failure_also_loops_back_through_the_whole_chain(tmp_path, monkeypatch):
+    """review comments -> developer fixes -> test runs again -> review again."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "tester", "reviewer"])
+    step = Step(role="backend", task="t", gates=["tester", "reviewer"], max_attempts=2)
+    order = []
+
+    def fake(**kw):
+        name = kw["role"].name
+        order.append(name)
+        if name == "reviewer" and order.count("reviewer") == 1:
+            return _Turn("FAIL", "no error handling")
+        return _Turn("PASS") if name in ("tester", "reviewer") else _Turn(None, "done")
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert order == ["backend", "tester", "reviewer",       # reviewer rejects
+                     "backend", "tester", "reviewer"]       # full chain re-runs
+    assert step.status == "done"
+
+
+def test_the_chain_gives_up_after_max_attempts(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "tester"])
+    step = Step(role="backend", task="t", gates=["tester"], max_attempts=2)
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn("FAIL", "still broken")
+                        if kw["role"].name == "tester" else _Turn(None, "tried"))
+    engine._execute(step)
+    assert step.status == "failed"
+    assert len(step.attempts) == 2
+
+
+def test_legacy_single_verifier_still_works(tmp_path, monkeypatch):
+    from trance.flow import Attempt, Step
+
+    engine = _engine(tmp_path, ["backend", "tester"])
+    step = Step(role="backend", task="t", verify_with="tester")
+    assert step.checks == ["tester"]
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: _Turn("PASS"))
+    assert engine._run_gates(step, Attempt(n=1)) == "PASS"

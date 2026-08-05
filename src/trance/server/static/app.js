@@ -311,22 +311,7 @@ function stepCard(step, index) {
   roleSelect.disabled = !editable;
   roleSelect.onchange = () => { step.role = roleSelect.value; };
 
-  const verify = el("select");
-  const verifiers = Object.values(state.roles).filter((r) => r.verifier).map((r) => r.name);
-  // A step may still name a verifier that has since lost the flag; keep it in
-  // the list so the value is visible rather than silently reset.
-  if (step.verify_with && !verifiers.includes(step.verify_with)) verifiers.push(step.verify_with);
-  ["", ...verifiers].forEach((name) => {
-    const opt = el("option", null, name ? `verify: ${name}` : "no verifier");
-    opt.value = name;
-    if (name === (step.verify_with || "")) opt.selected = true;
-    if (name && !state.roles[name]?.verifier) opt.textContent += " (cannot verify)";
-    verify.append(opt);
-  });
-  verify.disabled = !editable;
-  verify.onchange = () => { step.verify_with = verify.value || null; };
-
-  head.append(roleSelect, verify);
+  head.append(roleSelect);
   if (step.status && step.status !== "pending") {
     const tag = el("span", "badge", step.status);
     if (!editable) tag.title = "This step is running — edit it once it settles";
@@ -343,7 +328,62 @@ function stepCard(step, index) {
   task.disabled = !editable;
   task.oninput = () => { step.task = task.value; };
 
-  card.append(head, task);
+  // The check chain: each one must pass before the next runs, and the first
+  // failure sends the work back to this step's own role.
+  step.gates = step.checks || step.gates || (step.verify_with ? [step.verify_with] : []);
+  const gatesBox = el("div", "gates");
+  const drawGates = () => {
+    gatesBox.innerHTML = "";
+    const chain = el("div", "gate-chain");
+    chain.append(el("span", "gate-node gate-worker", step.role || "?"));
+    step.gates.forEach((name, i) => {
+      chain.append(el("span", "gate-arrow", "→"));
+      const node = el("span", "gate-node", name);
+      if (editable) {
+        const x = el("button", "gate-x", "✕");
+        x.title = "Remove this check";
+        x.onclick = () => { step.gates.splice(i, 1); drawGates(); };
+        node.append(x);
+      }
+      chain.append(node);
+    });
+    if (step.gates.length) {
+      chain.append(el("span", "gate-loop",
+        `↺ any failure → ${step.role}, max ${step.max_attempts} attempt(s)`));
+    }
+    gatesBox.append(chain);
+
+    if (!editable) return;
+    const row = el("div", "row small");
+    const add = el("select", "compact");
+    const blank = el("option", null, "+ add check…");
+    blank.value = "";
+    add.append(blank);
+    Object.values(state.roles)
+      .filter((r) => r.verifier && !step.gates.includes(r.name))
+      .forEach((r) => {
+        const opt = el("option", null, r.name);
+        opt.value = r.name;
+        add.append(opt);
+      });
+    add.onchange = () => {
+      if (!add.value) return;
+      step.gates.push(add.value);
+      step.verify_with = null;      // the chain supersedes the legacy field
+      drawGates();
+    };
+    const attempts = el("input", "compact");
+    attempts.type = "number";
+    attempts.min = 1;
+    attempts.value = step.max_attempts ?? 2;
+    attempts.title = "How many times the work may be redone before the step fails";
+    attempts.onchange = () => { step.max_attempts = Number(attempts.value) || 1; drawGates(); };
+    row.append(add, el("span", "muted small", "attempts"), attempts);
+    gatesBox.append(row);
+  };
+  drawGates();
+
+  card.append(head, task, gatesBox);
 
   card.addEventListener("dragstart", (e) => {
     card.classList.add("dragging");
@@ -1204,15 +1244,19 @@ function renderFlowView() {
     node.append(task);
 
     const meta = el("div", "flow-meta");
-    if (step.verify_with) {
-      meta.append(el("div", "muted small",
-        `↳ verified by ${step.verify_with} (max ${step.max_attempts} attempts)`));
+    const chain = step.checks || (step.verify_with ? [step.verify_with] : []);
+    if (chain.length) {
+      meta.append(el("div", "flow-chain",
+        `↳ ${chain.join(" → ")} · any failure loops back to ${step.role} ` +
+        `(max ${step.max_attempts})`));
     }
     const attempts = step.attempts || [];
     if (attempts.length) {
       const last = attempts[attempts.length - 1];
+      const gates = (last.gate_results || [])
+        .map((g) => `${g.gate}:${g.verdict}`).join(" ");
       meta.append(el("div", "muted small",
-        `attempt ${last.n}${last.verdict ? ` · ${last.verdict}` : ""}` +
+        `attempt ${last.n}${gates ? ` · ${gates}` : ""}` +
         (last.files_written?.length ? ` · ${last.files_written.join(", ")}` : "")));
     }
     node.append(meta);
@@ -1246,7 +1290,8 @@ function openStep(step, index) {
   const skip = el("button", null, "skip");
   skip.onclick = () => api(`/api/sessions/${state.session.id}/steps/${step.id}/skip`, { method: "POST" });
   head.append(rerun, skip);
-  if (step.verify_with) head.append(el("span", "badge", `verified by ${step.verify_with}`));
+  const chain = step.checks || (step.verify_with ? [step.verify_with] : []);
+  if (chain.length) head.append(el("span", "badge", `checks: ${chain.join(" → ")}`));
   body.append(head);
 
   body.append(rowWithCopy("task", step.task || ""));
@@ -1263,9 +1308,17 @@ function openStep(step, index) {
       : a.verdict ? "unknown" : "";
     const card = el("div", `attempt ${cls}`);
     card.append(el("div", "row small", ""));
+    card.firstChild.append(el("span", "badge", `attempt ${a.n}`));
+    (a.gate_results || []).forEach((g) => {
+      const b = el("span", "badge", `${g.gate}: ${g.verdict}`);
+      b.style.borderColor = g.verdict === "PASS" ? "var(--ok)"
+        : g.verdict === "FAIL" ? "var(--err)" : "var(--warn)";
+      card.firstChild.append(b);
+    });
+    if (!(a.gate_results || []).length) {
+      card.firstChild.append(el("span", "badge", a.verdict || "no verdict"));
+    }
     card.firstChild.append(
-      el("span", "badge", `attempt ${a.n}`),
-      el("span", "badge", a.verdict || "no verdict"),
       el("span", "muted small", (a.files_written || []).join(", ") || "no files written"));
     if (a.feedback) {
       card.append(rowWithCopy("verifier feedback", a.feedback));
@@ -1692,19 +1745,36 @@ function consoleAppend(event) {
       return;
     }
 
+    case "gate_failed":
+      consolePush(consoleEntry({
+        kind: "cmd", icon: "↺", time, tag: event.agent, failed: true,
+        label: p.message, open: false,
+      }));
+      return;
+
     case "verdict":
       consolePush(consoleEntry({
         kind: p.verdict === "PASS" ? "write" : "cmd", icon: ICON.verdict, time,
         tag: event.agent, failed: p.verdict === "FAIL",
-        label: `verdict: ${p.verdict}`,
+        label: `${p.gate || event.agent} (${p.position}/${p.of}): ${p.verdict}`,
         body: () => el("pre", null, p.detail || ""), open: p.verdict !== "PASS",
       }));
       return;
 
     case "step_verifying":
-      $("console-scope").textContent = `${p.verifier} · verifying`;
+      $("console-scope").textContent =
+        `${p.verifier} · check ${p.gate || 1}/${p.of || 1}`;
       consolePush(consoleEntry({
-        kind: "step", icon: ICON.step, time, tag: p.verifier, label: "verifying the step",
+        kind: "step", icon: ICON.step, time, tag: p.verifier,
+        label: `check ${p.gate || 1} of ${p.of || 1}` +
+               (p.chain ? ` — ${p.chain.join(" → ")}` : ""),
+      }));
+      return;
+
+    case "step_retry":
+      consolePush(consoleEntry({
+        kind: "step", icon: "↺", time, tag: event.agent, label: p.message || "retrying",
+        body: () => el("pre", null, p.feedback || ""), open: false,
       }));
       return;
 

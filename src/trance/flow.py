@@ -21,15 +21,31 @@ def new_step_id() -> str:
 
 
 @dataclass
+class GateResult:
+    """One check run against one attempt."""
+
+    gate: str
+    verdict: str            # PASS | FAIL | UNKNOWN
+    feedback: str = ""
+    event_id: str | None = None
+
+
+@dataclass
 class Attempt:
-    """One pass of a step: the work, and the verdict on it."""
+    """One pass of a step: the work, and every check run against it."""
 
     n: int
     worker_event_id: str | None = None
     verifier_event_id: str | None = None
-    verdict: str | None = None  # PASS | FAIL | None
+    verdict: str | None = None  # the deciding verdict for this attempt
     feedback: str = ""
     files_written: list[str] = field(default_factory=list)
+    #: Each gate that ran, in order, until one failed.
+    gate_results: list[GateResult] = field(default_factory=list)
+
+    @property
+    def failed_gate(self) -> str | None:
+        return next((g.gate for g in self.gate_results if g.verdict == "FAIL"), None)
 
 
 @dataclass
@@ -37,9 +53,14 @@ class Step:
     role: str
     task: str
     id: str = field(default_factory=new_step_id)
-    #: Role that checks this step's work. Its FAIL sends us back around.
+    #: Ordered checks run after the work. Each must PASS before the next runs;
+    #: the first FAIL sends its feedback back to this step's own role, which
+    #: then redoes the work and the whole chain runs again. That is the loop:
+    #: develop -> test -> fix -> test -> review -> fix -> test -> review -> done.
+    gates: list[str] = field(default_factory=list)
+    #: Legacy single-gate field, still honoured when `gates` is empty.
     verify_with: str | None = None
-    #: How many times to retry when the verifier fails.
+    #: How many times the work may be redone before the step is failed.
     max_attempts: int = 2
     #: Entry point for the context curator. Blank = no curated bundle (new code).
     entry: str = ""
@@ -49,13 +70,26 @@ class Step:
     steering: list[str] = field(default_factory=list)
     summary: str = ""
 
+    @property
+    def checks(self) -> list[str]:
+        """The gate chain, however it was configured."""
+        if self.gates:
+            return list(self.gates)
+        return [self.verify_with] if self.verify_with else []
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data["checks"] = self.checks
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "Step":
         data = dict(data)
         data.pop("attempts", None)
+        data.pop("checks", None)
+        # A single verify_with is just a one-gate chain.
+        if not data.get("gates") and data.get("verify_with"):
+            data["gates"] = [data["verify_with"]]
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
 
@@ -109,10 +143,11 @@ class Flow:
             changed = (
                 existing.role != incoming.role
                 or existing.task != incoming.task
-                or existing.verify_with != incoming.verify_with
+                or existing.checks != incoming.checks
                 or existing.entry != incoming.entry
             )
             existing.role, existing.task = incoming.role, incoming.task
+            existing.gates = list(incoming.gates)
             existing.verify_with = incoming.verify_with
             existing.max_attempts = incoming.max_attempts
             existing.entry = incoming.entry

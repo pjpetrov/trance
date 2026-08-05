@@ -413,16 +413,17 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         session = _need(store, session_id)
         steps = [Step.from_dict(s) for s in body.get("steps", [])]
         for step in steps:
-            if not step.verify_with:
-                continue
-            role = roles.get(step.verify_with)
-            if role is None:
-                raise HTTPException(400, f"unknown verifier {step.verify_with!r}")
-            if not role.verifier:
-                allowed = [r.name for r in roles.all() if r.verifier]
-                raise HTTPException(400, (
-                    f"{step.verify_with!r} cannot verify — it has no way to inspect a result. "
-                    f"Choose one of: {', '.join(allowed) or '(none configured)'}."))
+            for gate in step.checks:
+                role = roles.get(gate)
+                if role is None:
+                    raise HTTPException(400, f"unknown check {gate!r}")
+                if not role.verifier:
+                    allowed = [r.name for r in roles.all() if r.verifier]
+                    raise HTTPException(400, (
+                        f"{gate!r} cannot verify — it has no way to inspect a result. "
+                        f"Choose one of: {', '.join(allowed) or '(none configured)'}."))
+            if len(step.checks) != len(set(step.checks)):
+                raise HTTPException(400, "a check may only appear once in a step's chain")
         # Same rule whether or not a run is live: only in-flight steps are
         # immutable. Editing a finished or failed step re-queues it.
         outcome = session.flow.apply_edits(steps)
