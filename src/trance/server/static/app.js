@@ -1664,9 +1664,12 @@ function consoleAppend(event) {
   switch (event.type) {
     case "tool_call": {
       const d = p.detail || {};
-      const failed = p.ok === false;
+      // `ok === false` covers both "never ran" and "ran and exited non-zero".
+      // Only the first is a refusal; a failing command has a detail and is
+      // rendered below with its exit code.
+      const refused = p.ok === false && !d.kind;
 
-      if (failed) {
+      if (refused) {
         consolePush(consoleEntry({
           kind: "read", icon: ICON.fail, time, failed: true, tag: event.agent,
           label: labelWith([[`${p.name} refused`, ""]]),

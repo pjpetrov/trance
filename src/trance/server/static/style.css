@@ -315,7 +315,10 @@ body { overflow-x: hidden; }
   padding: 10px; font-family: var(--mono); font-size: 12.5px;
   display: flex; flex-direction: column; gap: 6px; scroll-behavior: smooth;
 }
-.c-entry { border-radius: 7px; overflow: hidden; border: 1px solid transparent; }
+/* Flex children shrink by default. In a scrolling flex column that means rows
+   get compressed to fit instead of overflowing — which sliced every console
+   line in half. Children keep their natural height; the container scrolls. */
+.c-entry { flex: 0 0 auto; border-radius: 7px; border: 1px solid transparent; }
 .c-entry.c-open { border-color: var(--line); background: var(--panel-2); }
 .c-head {
   display: flex; gap: 8px; align-items: center; padding: 4px 6px;
@@ -330,10 +333,12 @@ body { overflow-x: hidden; }
   border: 1px solid var(--line); color: var(--muted);
 }
 .c-body { padding: 2px 8px 8px; }
+.c-body { min-height: 0; }
 .c-body pre {
   margin: 4px 0 0; white-space: pre-wrap; word-break: break-word;
   max-height: 300px; overflow: auto; font-size: 12px; line-height: 1.45;
 }
+.c-head { min-height: 24px; }
 
 /* per-kind accents */
 .c-write .c-icon { color: var(--ok); }
@@ -424,3 +429,17 @@ input.tiny { width: 62px; min-width: 0; }
   border-left: 2px solid var(--line); padding-left: 8px;
 }
 .loop-note.muted { color: var(--muted); }
+
+
+/* ── every scrolling flex column keeps its children at natural height ── */
+.console > *,
+.event-log > *,
+.flow-view > *,
+.chat-log > *,
+.score-list > *,
+.provider-list > *,
+.team-list > * { flex: 0 0 auto; }
+
+/* and each of those containers must be allowed to shrink below its content
+   so `overflow-y: auto` actually engages instead of stretching the page */
+.console, .event-log, .flow-view, .chat-log, .score-list { min-height: 0; }

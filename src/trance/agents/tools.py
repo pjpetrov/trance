@@ -16,6 +16,7 @@ processes:
 from __future__ import annotations
 
 import difflib
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
@@ -33,6 +34,10 @@ MAX_LISTED_FILES = 300
 COMMAND_TIMEOUT_S = 180
 
 #: Default allowlist. An agent may narrow or extend it via `role.commands`.
+#: A parsed token that only means something to a shell. Commands run directly,
+#: so any of these would be passed through as a literal argument instead.
+_SHELL_TOKEN = re.compile(r"^(\|\|?|&&?|;|<|\d?>>?.*|.*[`]|.*\$\(.*)$")
+
 ALLOWED_COMMANDS = {
     "pytest", "python", "python3", "npm", "npx", "node", "yarn", "pnpm",
     "tsc", "vitest", "jest", "ruff", "mypy", "ls", "cat", "make",
@@ -330,6 +335,20 @@ class AgentTools:
             return ToolOutcome(f"Could not parse command: {exc}", ok=False)
         if not parts:
             return ToolOutcome("Empty command.", ok=False)
+
+        # Checked on parsed tokens, not the raw string: a `;` inside a quoted
+        # argument (python3 -c 'import sys; sys.exit(1)') is not an operator.
+        shell_bits = [p for p in parts if _SHELL_TOKEN.match(p)]
+        if shell_bits:
+            return ToolOutcome(
+                f"Refused: commands run directly, not through a shell, so "
+                f"{', '.join(sorted(set(shell_bits)))} would be passed as a literal "
+                f"argument rather than interpreted. Nothing was executed.\n\n"
+                f"Run one plain command per call. To check whether a path exists use "
+                f"list_files or read_file rather than `ls … || echo …` — a non-zero "
+                f"exit code already tells you it is missing.",
+                ok=False,
+            )
         if parts[0] not in self.allowed_commands:
             return ToolOutcome(
                 f"Refused: {parts[0]!r} is not an allowed program for this agent. "

@@ -1045,3 +1045,32 @@ def test_an_empty_reply_is_reported_rather_than_shown_blank(monkeypatch, tmp_pat
                                project_dir=tmp_path, config=ModelConfig(),
                                bus=EventBus(), session_id="s")
     assert "did not produce a reply" in result["text"]
+
+
+# ---------------------------------------------------- command hygiene
+
+def test_shell_syntax_is_refused_with_an_explanation(project):
+    """Commands run without a shell, so `||` arrived as a literal argument and
+    the tester burned turns on commands that did something else entirely."""
+    tools = _tools(project, "tester")
+    result = tools.run_command('ls -la public/ 2>/dev/null || echo "missing"')
+    assert not result.ok
+    assert "not through a shell" in result.text
+    assert "list_files" in result.text          # points at what to use instead
+    assert result.detail == {}                  # nothing ran
+
+
+def test_plain_commands_still_run(project):
+    result = _tools(project, "tester").run_command("python3 -c 'print(1)'")
+    assert result.ok and result.detail["kind"] == "command"
+
+
+def test_a_failing_command_is_not_a_refusal(project):
+    """`ok=False` covers both; only one of them means nothing executed."""
+    result = _tools(project, "tester").run_command("python3 -c 'import sys; sys.exit(2)'")
+    assert result.ok is False
+    assert result.detail["kind"] == "command"   # it ran
+    assert result.detail["exit_code"] == 2
+
+    refused = _tools(project, "tester").run_command("rm -rf /")
+    assert refused.ok is False and refused.detail == {}   # it did not
