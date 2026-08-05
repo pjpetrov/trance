@@ -12,6 +12,7 @@
   <div id="session-bar"></div>
   <div id="now-working" class="now-working"></div>
   <div class="spacer"></div>
+  <button id="open-commands" class="icon-btn" title="Allowed commands">⌨</button>
   <button id="open-agents" class="icon-btn" title="Agents &amp; permissions">👥</button>
   <button id="open-settings" class="icon-btn" title="Providers &amp; models">⚙</button>
 </header>
@@ -155,6 +156,39 @@
       <button id="close-step" class="icon-btn">✕</button>
     </div>
     <div id="step-body"></div>
+  </div>
+</div>
+
+<!-- Commands: the global allowlist every agent with the commands toolset uses -->
+<div id="commands" class="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Allowed commands</h2>
+      <button id="close-commands" class="icon-btn">✕</button>
+    </div>
+    <p class="muted small">Agents with the <b>commands</b> toolset may run these programs, and
+      nothing else. Commands run inside the project directory.</p>
+
+    <label class="row small" style="margin-top:12px">
+      <input type="checkbox" id="cmd-shell">
+      <span>Allow pipes, redirects and <code>&amp;&amp;</code></span>
+    </label>
+    <p class="hint">With this on, every program in the line is checked — <code>pytest | head</code>
+      needs both. With it off, one plain command per call.</p>
+
+    <label>Programs<textarea id="cmd-list" rows="7"
+      placeholder="pytest&#10;npm&#10;node"></textarea>
+      <span class="hint">One per line or space-separated. Names only — no paths or arguments.</span></label>
+
+    <div class="row">
+      <button id="cmd-save" class="primary">Save</button>
+      <button id="cmd-reset">Reset to defaults</button>
+      <span id="cmd-result" class="check-result"></span>
+    </div>
+
+    <h3>Per-agent overrides</h3>
+    <p class="muted small">Set on an agent in <b>👥 Agents</b>; those replace this list entirely.</p>
+    <div id="cmd-overrides" class="provider-list"></div>
   </div>
 </div>
 

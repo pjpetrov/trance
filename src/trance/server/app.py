@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from ..agents import orchestrator as orchestrator_agent
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
-from ..agents.store import PROTECTED, RoleStore, validate as validate_agent
+from ..agents.store import CommandStore, PROTECTED, RoleStore, validate as validate_agent
+from ..agents.tools import ALLOWED_COMMANDS, set_command_policy
 from ..config import Config
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
@@ -33,6 +34,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     providers = ProviderStore(Path(config.runs_dir) / "providers.json", seed=config.providers)
     providers.seed_presets_from_providers()  # never show an empty model picker
     roles = RoleStore(Path(config.runs_dir) / "agents.json")
+    commands = CommandStore(Path(config.runs_dir) / "commands.json")
+    set_command_policy(commands.policy)
     config.providers = {p.name: p for p in providers.all()}
     config.presets = {m.name: m for m in providers.all_presets()}
     bus = EventBus()
@@ -100,6 +103,44 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         }
 
     # ---------------------------------------------------------- providers
+
+    # ----------------------------------------------------------- commands
+
+    @app.get("/api/commands")
+    def get_commands():
+        """The global allowlist, plus which agents override it."""
+        overrides = {
+            r.name: {"commands": r.commands, "shell": r.shell, "workdir": r.workdir}
+            for r in roles.all()
+            if r.commands or r.shell is not None or r.workdir
+        }
+        return {
+            **commands.policy.to_dict(),
+            "defaults": sorted(ALLOWED_COMMANDS),
+            "overrides": overrides,
+            "agents_with_commands": [r.name for r in roles.all() if "commands" in r.toolsets],
+        }
+
+    @app.put("/api/commands")
+    def set_commands(body: dict):
+        allowed = body.get("allowed")
+        if allowed is not None and not isinstance(allowed, list):
+            raise HTTPException(400, "allowed must be a list of program names")
+        if allowed is not None:
+            bad = [c for c in allowed if "/" in str(c) or " " in str(c)]
+            if bad:
+                raise HTTPException(400, (
+                    f"program names only, no paths or arguments: {', '.join(map(str, bad[:4]))}"))
+        policy = commands.update(allowed=allowed, shell=body.get("shell"))
+        set_command_policy(policy)
+        bus.emit("commands_updated", "system", payload=policy.to_dict())
+        return policy.to_dict()
+
+    @app.post("/api/commands/reset")
+    def reset_commands():
+        policy = commands.reset()
+        set_command_policy(policy)
+        return policy.to_dict()
 
     # ------------------------------------------------------------- agents
 

@@ -38,6 +38,8 @@ class AgentRole:
     #: Directory (relative to the project) that commands run in. Empty = the
     #: project root. Confined to the project either way.
     workdir: str = ""
+    #: Pipes / redirects / &&. None = follow the global policy.
+    shell: bool | None = None
     #: May this agent be chosen to verify another step? Only agents that can
     #: actually inspect the result should be — an agent with no tools would
     #: return a verdict it has no way to have checked.

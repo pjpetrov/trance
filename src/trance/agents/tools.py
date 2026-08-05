@@ -34,15 +34,90 @@ MAX_LISTED_FILES = 300
 COMMAND_TIMEOUT_S = 180
 
 #: Default allowlist. An agent may narrow or extend it via `role.commands`.
-#: A parsed token that only means something to a shell. Commands run directly,
-#: so any of these would be passed through as a literal argument instead.
+#: A parsed token that only means something to a shell. Without a shell these
+#: are passed through as literal arguments instead of being interpreted.
 _SHELL_TOKEN = re.compile(r"^(\|\|?|&&?|;|<|\d?>>?.*|.*[`]|.*\$\(.*)$")
 
+#: VAR=value prefixes are not the program being run.
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+#: Operators that start a new command; a redirect target is not a program.
+_STARTS_COMMAND = {"|", "||", "&&", ";", "&", "\n"}
+_REDIRECTS = {">", ">>", "<", "<<", "2>", "2>>"}
+
+
+def programs_in(command: str) -> list[str]:
+    """Every program a shell string would actually invoke.
+
+    `pytest -q | head -5 && echo done` runs three programs; checking only the
+    first word would let anything through after a pipe. Tokenised with shlex in
+    punctuation mode so operators are found without splitting inside quotes —
+    the `;` in `python3 -c 'import sys; sys.exit(1)'` is not an operator.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return ["<unparsable>"]
+
+    found: list[str] = []
+    expect_program = True
+    skip_next = False
+    for token in tokens:
+        if skip_next:                       # the target of a redirect
+            skip_next = False
+            continue
+        if token in _REDIRECTS:
+            skip_next = True
+            continue
+        if token in _STARTS_COMMAND:
+            expect_program = True
+            continue
+        if not expect_program or _ENV_ASSIGN.match(token):
+            continue
+        found.append(token)
+        expect_program = False
+    return found
+
+
 ALLOWED_COMMANDS = {
-    "pytest", "python", "python3", "npm", "npx", "node", "yarn", "pnpm",
-    "tsc", "vitest", "jest", "ruff", "mypy", "ls", "cat", "make",
-    "mkdir", "touch", "pwd", "find", "head", "tail", "wc", "grep", "sed", "diff",
+    # test + build runners
+    "pytest", "python", "python3", "pip", "npm", "npx", "node", "yarn", "pnpm",
+    "tsc", "vitest", "jest", "eslint", "ruff", "mypy", "make", "go", "cargo",
+    # reading and navigating the project
+    "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "diff", "pwd",
+    "stat", "file", "tree", "sort", "uniq", "cut", "awk", "sed", "which", "env",
+    # small edits to scaffolding
+    "mkdir", "touch", "cp", "mv", "echo", "printf", "true", "false", "test",
+    # version control, read-mostly
+    "git",
 }
+
+
+@dataclass
+class CommandPolicy:
+    """Global command settings, editable in the UI and persisted."""
+
+    allowed: list = field(default_factory=lambda: sorted(ALLOWED_COMMANDS))
+    #: Whether agents may use pipes, redirects and `&&` by default.
+    shell: bool = True
+
+    def to_dict(self) -> dict:
+        return {"allowed": sorted(self.allowed), "shell": self.shell}
+
+
+_POLICY = CommandPolicy()
+
+
+def command_policy() -> CommandPolicy:
+    return _POLICY
+
+
+def set_command_policy(policy: CommandPolicy) -> CommandPolicy:
+    """Install the global policy (the server does this at startup)."""
+    global _POLICY
+    _POLICY = policy
+    return _POLICY
 
 
 #: A diff longer than this is truncated for display. It is never sent to the
@@ -75,8 +150,14 @@ class AgentTools:
 
     @property
     def allowed_commands(self) -> set[str]:
-        """This agent's allowlist — its own if set, otherwise the default."""
-        return set(getattr(self.role, "commands", None) or ALLOWED_COMMANDS)
+        """This agent's allowlist — its own if set, otherwise the global one."""
+        return set(getattr(self.role, "commands", None) or command_policy().allowed)
+
+    @property
+    def shell_enabled(self) -> bool:
+        """Whether this agent may use pipes, redirects and `&&`."""
+        role_setting = getattr(self.role, "shell", None)
+        return command_policy().shell if role_setting is None else bool(role_setting)
 
     @property
     def command_cwd(self) -> Path:
@@ -123,7 +204,9 @@ class AgentTools:
             out.append(_fn(
                 "run_command",
                 f"Run a command in {self.role.workdir or 'the project root'}. "
-                f"Allowed programs: {', '.join(sorted(self.allowed_commands))}. "
+                + (f"Pipes, redirects and && are supported. " if self.shell_enabled
+                   else "One plain command per call — no pipes or redirects. ")
+                + f"Allowed programs: {', '.join(sorted(self.allowed_commands))}. "
                 f"You do not need mkdir before write_file — it creates parent directories.",
                 {"command": {"type": "string", "description": "e.g. 'pytest -q'"}}, ["command"]))
         if "graph" in self.role.toolsets and self.graph is not None:
@@ -326,6 +409,38 @@ class AgentTools:
             "blank": not text.strip(),
         }
 
+    def _run_via_shell(self, command: str) -> ToolOutcome:
+        """Run through a shell, but still check every program it would invoke."""
+        programs = programs_in(command)
+        missing = _shell_missing(programs, self.allowed_commands)
+        if missing:
+            return ToolOutcome(
+                f"Refused: {', '.join(repr(m) for m in missing)} "
+                f"{'is' if len(missing) == 1 else 'are'} not in this agent's allowlist. "
+                f"Nothing was executed. Allowed: {', '.join(sorted(self.allowed_commands))}.",
+                ok=False,
+            )
+        try:
+            proc = subprocess.run(
+                ["bash", "-c", command], cwd=self.command_cwd, capture_output=True,
+                text=True, timeout=COMMAND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return ToolOutcome(f"Timed out after {COMMAND_TIMEOUT_S}s: {command}", ok=False)
+        except FileNotFoundError:
+            return ToolOutcome("bash is not available on this machine.", ok=False)
+
+        output = (proc.stdout + proc.stderr).strip() or "(no output)"
+        if len(output) > MAX_COMMAND_OUTPUT:
+            half = MAX_COMMAND_OUTPUT // 2
+            output = output[:half] + "\n… (trimmed) …\n" + output[-half:]
+        return ToolOutcome(
+            f"$ {command}\nexit={proc.returncode}\n{output}",
+            ok=proc.returncode == 0,
+            detail={"kind": "command", "command": command,
+                    "exit_code": proc.returncode, "output": output, "shell": True},
+        )
+
     # ---------------------------------------------------------- commands
 
     def run_command(self, command: str) -> ToolOutcome:
@@ -335,6 +450,9 @@ class AgentTools:
             return ToolOutcome(f"Could not parse command: {exc}", ok=False)
         if not parts:
             return ToolOutcome("Empty command.", ok=False)
+
+        if self.shell_enabled:
+            return self._run_via_shell(command)
 
         # Checked on parsed tokens, not the raw string: a `;` inside a quoted
         # argument (python3 -c 'import sys; sys.exit(1)') is not an operator.
@@ -377,6 +495,10 @@ class AgentTools:
             detail={"kind": "command", "command": command,
                     "exit_code": proc.returncode, "output": output},
         )
+
+
+def _shell_missing(programs: list[str], allowed: set[str]) -> list[str]:
+    return sorted({p for p in programs if p not in allowed})
 
 
 def _render_stat(s: dict) -> str:
@@ -439,11 +561,16 @@ def permissions_brief(role: AgentRole) -> str:
         )
 
     if "commands" in role.toolsets:
-        allowed = sorted(getattr(role, "commands", None) or ALLOWED_COMMANDS)
+        allowed = sorted(getattr(role, "commands", None) or command_policy().allowed)
         where = f"in {role.workdir}" if getattr(role, "workdir", "") else "in the project root"
+        role_shell = getattr(role, "shell", None)
+        shell_on = command_policy().shell if role_shell is None else bool(role_shell)
         lines.append(
-            f"You may run commands {where}, limited to: " + ", ".join(allowed)
-            + f". Anything else is refused. Commands time out after {COMMAND_TIMEOUT_S}s."
+            f"You may run commands {where}, limited to these programs: " + ", ".join(allowed)
+            + (". Pipes, redirects and && work, and every program in the line is checked "
+               "against that list." if shell_on
+               else ". One plain command per call — pipes and redirects are not available.")
+            + f" Commands time out after {COMMAND_TIMEOUT_S}s."
         )
     else:
         lines.append("You may NOT run commands. You cannot execute tests, builds, or scripts.")

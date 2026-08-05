@@ -5,6 +5,7 @@ const state = {
   roles: {},
   providers: [],
   presets: [],
+  commands: null,
   workspace: "",
   agents: [],
   toolsets: [],
@@ -1085,7 +1086,18 @@ function agentCard(agent, isNew) {
     if (hint) l.append(el("span", "hint", hint));
     return l;
   };
-  cmdRow.append(wrapField("Allowed commands", commands, "blank = default allowlist"),
+  const shellSel = el("select", "compact");
+  [["", "follow global"], ["yes", "shell on"], ["no", "shell off"]].forEach(([v, label]) => {
+    const opt = el("option", null, label);
+    opt.value = v;
+    if (v === (agent.shell === null || agent.shell === undefined ? "" : agent.shell ? "yes" : "no")) {
+      opt.selected = true;
+    }
+    shellSel.append(opt);
+  });
+  shellSel.title = "Pipes, redirects and && for this agent";
+  cmdRow.append(wrapField("Allowed commands", commands, "blank = global list"),
+                wrapField("Pipes / redirects", shellSel),
                 wrapField("Run commands in", workdir, "blank = project root"));
   perms.append(cmdRow);
 
@@ -1125,6 +1137,7 @@ function agentCard(agent, isNew) {
       toolsets: Object.keys(boxes).filter((t) => boxes[t].checked),
       verifier: verifierBox.checked,
       commands: commands.value.split(/[\s,]+/).filter(Boolean),
+      shell: shellSel.value === "" ? null : shellSel.value === "yes",
       workdir: workdir.value.trim(),
       preset: preset.value || null,
       color: color.value,
@@ -1413,3 +1426,70 @@ function attachIntercept(entry, event) {
     note.focus();
   }, true);   // capture, so it runs before the expand/collapse handler
 }
+
+/* ────────────────────────── allowed commands ──────────────────────── */
+
+$("open-commands").onclick = openCommands;
+$("close-commands").onclick = () => $("commands").classList.remove("open");
+$("commands").onclick = (e) => { if (e.target.id === "commands") e.currentTarget.classList.remove("open"); };
+
+async function openCommands() {
+  $("commands").classList.add("open");
+  await renderCommands();
+}
+
+async function renderCommands() {
+  const data = await api("/api/commands");
+  state.commands = data;
+  $("cmd-shell").checked = !!data.shell;
+  $("cmd-list").value = (data.allowed || []).join("\n");
+
+  const box = $("cmd-overrides");
+  box.innerHTML = "";
+  const names = Object.keys(data.overrides || {});
+  if (!names.length) {
+    box.append(el("p", "muted small",
+      `No overrides — ${(data.agents_with_commands || []).join(", ") || "no agents"} use the list above.`));
+    return;
+  }
+  names.forEach((name) => {
+    const o = data.overrides[name];
+    const card = el("div", "provider-card");
+    const head = el("div", "row");
+    const badge = el("span", "badge role", name);
+    const role = state.roles[name];
+    if (role) badge.style.background = role.color;
+    head.append(badge);
+    if (o.workdir) head.append(el("span", "badge", `runs in ${o.workdir}`));
+    if (o.shell !== null && o.shell !== undefined) {
+      head.append(el("span", "badge", o.shell ? "shell on" : "shell off"));
+    }
+    card.append(head);
+    card.append(el("code", null,
+      (o.commands || []).join("  ") || "(uses the global list)"));
+    box.append(card);
+  });
+}
+
+$("cmd-save").onclick = async () => {
+  const allowed = $("cmd-list").value.split(/[\s,]+/).filter(Boolean);
+  if (!allowed.length) return toast("The allowlist cannot be empty.");
+  try {
+    await api("/api/commands", {
+      method: "PUT", body: { allowed, shell: $("cmd-shell").checked },
+    });
+  } catch (_) { return; }
+  $("cmd-result").textContent = `saved — ${allowed.length} programs`;
+  $("cmd-result").className = "check-result ok";
+  toast("Allowed commands updated.");
+  await renderCommands();
+};
+
+$("cmd-reset").onclick = async () => {
+  const ok = await confirmDialog("Reset the allowlist to defaults?",
+    "Per-agent overrides are not affected.");
+  if (!ok) return;
+  await api("/api/commands/reset", { method: "POST" });
+  await renderCommands();
+  toast("Reset to defaults.");
+};

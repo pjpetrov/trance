@@ -19,6 +19,7 @@ import threading
 from pathlib import Path
 
 from .roles import BUILTIN_ROLES, TOOLSETS, AgentRole
+from .tools import ALLOWED_COMMANDS, CommandPolicy
 
 #: Types that ship with trance. They can be edited, but not deleted — deleting
 #: one would break flows that name it, and re-adding it by hand is fiddly.
@@ -134,3 +135,43 @@ def validate(data: dict) -> str | None:
         return ("an agent with the files toolset needs at least one path in its remit, "
                 "or every write it attempts will be refused")
     return None
+
+
+class CommandStore:
+    """The global command allowlist, persisted so UI edits survive a restart."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self.policy = CommandPolicy()
+        if self.path.exists():
+            try:
+                data = json.loads(self.path.read_text(encoding="utf8"))
+                self.policy = CommandPolicy(
+                    allowed=sorted({str(c).strip() for c in data.get("allowed", []) if str(c).strip()})
+                            or sorted(ALLOWED_COMMANDS),
+                    shell=bool(data.get("shell", True)),
+                )
+            except (OSError, json.JSONDecodeError, TypeError):
+                pass
+        else:
+            self._save()
+
+    def _save(self) -> None:
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.policy.to_dict(), indent=2), encoding="utf8")
+        tmp.replace(self.path)
+
+    def update(self, allowed=None, shell=None) -> CommandPolicy:
+        with self._lock:
+            if allowed is not None:
+                cleaned = sorted({str(c).strip() for c in allowed if str(c).strip()})
+                self.policy.allowed = cleaned
+            if shell is not None:
+                self.policy.shell = bool(shell)
+            self._save()
+        return self.policy
+
+    def reset(self) -> CommandPolicy:
+        return self.update(allowed=sorted(ALLOWED_COMMANDS), shell=True)

