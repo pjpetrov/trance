@@ -593,3 +593,129 @@ def test_a_real_verifier_is_still_invoked(tmp_path, monkeypatch):
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: Turn())
     assert engine._verify(step, Attempt(n=1)) == "PASS"
+
+
+# ------------------------------------------- malformed tool arguments
+
+def test_unparsable_arguments_are_not_reported_as_empty():
+    """Regression: a tool call truncated at max_tokens arrived as `{}`, so the
+    agent was told it forgot 'path' and 'content' rather than that its output
+    was cut off."""
+    from trance.worker.client import _parse
+
+    response = _parse({"choices": [{"finish_reason": "length", "message": {"tool_calls": [
+        {"id": "1", "function": {"name": "write_file",
+                                 "arguments": '{"path": "a.html", "content": "<html'}}]}}]})
+    call = response.tool_calls[0]
+    assert call.malformed is True
+    assert call.arguments == {}
+    assert call.raw_arguments.startswith('{"path"')   # kept for diagnosis
+    assert response.finish_reason == "length"
+
+
+def test_wellformed_arguments_are_not_flagged():
+    from trance.worker.client import _parse
+
+    response = _parse({"choices": [{"message": {"tool_calls": [
+        {"id": "1", "function": {"name": "write_file",
+                                 "arguments": '{"path": "a.py", "content": "x"}'}}]}}]})
+    assert response.tool_calls[0].malformed is False
+    assert response.tool_calls[0].arguments == {"path": "a.py", "content": "x"}
+
+
+def test_truncated_call_tells_the_agent_what_actually_happened():
+    from trance.agents.runner import _malformed_call_outcome
+    from trance.providers.base import ToolCall
+
+    call = ToolCall(id="1", name="write_file", arguments={}, malformed=True)
+    truncated = _malformed_call_outcome(call, truncated=True, max_tokens=4096).text
+    assert "cut off" in truncated and "4096" in truncated
+    assert "Do not retry the same call" in truncated
+    assert "smaller pieces" in truncated
+
+    invalid = _malformed_call_outcome(call, truncated=False, max_tokens=4096).text
+    assert "not valid JSON" in invalid
+
+
+def test_bad_arguments_get_a_schema_error_not_a_python_traceback(project):
+    result = _tools(project, "frontend").call("write_file", {})
+    assert "missing required argument(s): path, content" in result.text
+    assert "Expected arguments:" in result.text
+    assert "positional" not in result.text     # no leaked Python signature
+
+    wrong = _tools(project, "frontend").call("write_file", {"file": "a.js", "body": "x"})
+    assert "unexpected argument(s): file, body" in wrong.text
+
+
+def test_a_step_without_a_verifier_says_so(tmp_path):
+    """Silence read as 'verified and passed'."""
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Step
+    from trance.session import Session
+
+    bus = EventBus()
+    seen = []
+    bus.subscribe_sync(seen.append)
+    engine = FlowEngine(Session(name="s", project_dir=str(tmp_path)),
+                        Config.load(tmp_path / "none.toml"), bus)
+
+    assert engine._verify(Step(role="backend", task="t"), Attempt(n=1)) is None
+    assert any(e.type == "verification_skipped" for e in seen)
+
+
+# ------------------------------------------------ per-agent commands
+
+def test_write_file_creates_parent_directories(project):
+    """The tester reached for mkdir because nothing told it this happens."""
+    result = _tools(project).write_file("backend/deep/nested/new.py", "X = 1\n")
+    assert result.ok
+    assert (project / "backend" / "deep" / "nested" / "new.py").read_text() == "X = 1\n"
+
+
+def test_agents_are_told_they_do_not_need_mkdir(project):
+    from trance.agents.tools import permissions_brief
+
+    brief = permissions_brief(BUILTIN_ROLES["tester"])
+    assert "never need to create a folder before writing" in brief
+    spec = next(s for s in _tools(project, "tester").specs()
+                if s["function"]["name"] == "write_file")
+    assert "created automatically" in spec["function"]["description"]
+
+
+def test_a_role_can_narrow_its_own_allowlist(project):
+    role = AgentRole(name="narrow", title="N", description="", system_prompt="",
+                     toolsets=["files", "commands"], paths=["tests/**"], commands=["pytest"])
+    tools = AgentTools(project, role)
+    assert tools.allowed_commands == {"pytest"}
+    refused = tools.run_command("python3 -c 'print(1)'")
+    assert not refused.ok and "not an allowed program for this agent" in refused.text
+
+
+def test_a_role_can_extend_its_allowlist(project):
+    role = AgentRole(name="wide", title="W", description="", system_prompt="",
+                     toolsets=["commands"], commands=["python3", "git"])
+    assert AgentTools(project, role).run_command("python3 -c 'print(7)'").ok
+
+
+def test_commands_can_be_pinned_to_a_subdirectory(project):
+    (project / "tests").mkdir()
+    role = AgentRole(name="pinned", title="P", description="", system_prompt="",
+                     toolsets=["commands"], commands=["pwd"], workdir="tests")
+    result = AgentTools(project, role).run_command("pwd")
+    assert result.ok and result.detail["output"].endswith("/tests")
+
+
+def test_a_workdir_cannot_escape_the_project(project):
+    role = AgentRole(name="escape", title="E", description="", system_prompt="",
+                     toolsets=["commands"], commands=["pwd"], workdir="../../")
+    tools = AgentTools(project, role)
+    assert tools.command_cwd == project          # falls back, never escapes
+
+
+def test_the_refusal_message_points_at_write_file(project):
+    role = AgentRole(name="r", title="R", description="", system_prompt="",
+                     toolsets=["commands"], commands=["pytest"])
+    refused = AgentTools(project, role).run_command("mkdir newdir")
+    assert "write_file creates parent directories" in refused.text

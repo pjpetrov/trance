@@ -178,6 +178,22 @@ def run_agent(
 
         messages.append(response.raw_message)
         for call in calls:
+            if call.malformed:
+                # Almost always the model ran out of output tokens partway
+                # through a large `content` argument. Say so — "missing
+                # required argument 'path'" sends it hunting for the wrong bug.
+                truncated = response.finish_reason == "length"
+                outcome = _malformed_call_outcome(call, truncated, model_config.max_tokens)
+                bus.emit("tool_call", session_id, agent=role.name, step_id=step_id, payload={
+                    "name": call.name, "arguments": {}, "ok": False,
+                    "result": outcome.text, "result_tokens": outcome.tokens,
+                    "detail": {"kind": "malformed", "raw": call.raw_arguments[:2000],
+                               "truncated": truncated},
+                })
+                turn.tool_calls += 1
+                messages.append({"role": "tool", "tool_call_id": call.id,
+                                 "name": call.name, "content": outcome.text})
+                continue
             outcome = tools.call(call.name, call.arguments)
             turn.tool_calls += 1
             turn.files_written += outcome.files_written
@@ -225,6 +241,27 @@ def run_agent(
 
     turn.usage = totals
     return turn
+
+
+def _malformed_call_outcome(call, truncated: bool, max_tokens: int):
+    from .tools import ToolOutcome
+
+    if truncated:
+        text = (
+            f"Your {call.name} call was cut off: the response hit the {max_tokens}-token "
+            f"output limit partway through its arguments, so they could not be parsed. "
+            f"Nothing was executed.\n\n"
+            f"Do not retry the same call — it will be cut off again. Write the file in "
+            f"smaller pieces (one file per call, and split a very large file across calls "
+            f"by writing it in sections), or shorten the content."
+        )
+    else:
+        text = (
+            f"Your {call.name} call had arguments that were not valid JSON, so they could "
+            f"not be parsed and nothing was executed. Send the arguments again as a single "
+            f"valid JSON object."
+        )
+    return ToolOutcome(text, ok=False)
 
 
 def _render_history(history: list[dict]) -> str:

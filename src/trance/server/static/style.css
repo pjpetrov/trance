@@ -310,7 +310,7 @@ body { overflow-x: hidden; }
 /* ── live agent console ────────────────────────────────────────────── */
 .console-panel { display: flex; flex-direction: column; }
 .console {
-  flex: 1; min-height: 320px; max-height: 76vh; overflow-y: auto;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
   background: var(--bg); border: 1px solid var(--line); border-radius: 9px;
   padding: 10px; font-family: var(--mono); font-size: 12.5px;
   display: flex; flex-direction: column; gap: 6px; scroll-behavior: smooth;
@@ -360,3 +360,38 @@ body { overflow-x: hidden; }
 .c-cursor::after {
   content: "▍"; color: var(--accent); animation: pulse 1s steps(2) infinite; margin-left: 2px;
 }
+
+
+/* The run screen owns the viewport: the console takes whatever is left and
+   scrolls internally, instead of growing the page. */
+#screen-run.active { display: flex; flex-direction: column; height: calc(100vh - 116px); }
+#screen-run .run-split { flex: 1 1 auto; min-height: 0; align-items: stretch; }
+#screen-run .run-split > .panel { display: flex; flex-direction: column; min-height: 0; }
+#screen-run .run-split > .panel:first-child { overflow-y: auto; }
+.console-panel { min-height: 0; }
+@media (max-width: 1000px) {
+  #screen-run.active { height: auto; }
+  .console { max-height: 70vh; }
+}
+
+/* ── intercept: talk to the agent about one specific action ────────── */
+.c-entry.interceptable .c-head::after {
+  content: "⤶ intercept"; font-size: 10.5px; color: var(--accent);
+  opacity: 0; transition: opacity .12s; flex: 0 0 auto;
+}
+.c-entry.interceptable:hover .c-head::after { opacity: 1; }
+.intercept {
+  border-top: 1px dashed var(--line); margin-top: 6px; padding: 8px 6px 4px;
+}
+.intercept textarea { min-height: 62px; font-size: 12px; }
+.intercept .row { justify-content: flex-end; margin-top: 6px; }
+.intercept-ref {
+  font-size: 11.5px; color: var(--muted); margin-bottom: 6px;
+  border-left: 2px solid var(--accent); padding-left: 8px;
+}
+.paused-hint {
+  display: none; align-items: center; gap: 8px; font-size: 12px;
+  border: 1px solid var(--warn); border-radius: 8px; padding: 6px 10px;
+  background: rgba(224,175,104,.10); margin-bottom: 8px;
+}
+.paused-hint.on { display: flex; }

@@ -136,13 +136,17 @@ def _parse(body: dict) -> ChatResponse:
     for call in message.get("tool_calls") or []:
         fn = call.get("function", {})
         raw_args = fn.get("arguments") or "{}"
+        malformed = False
         try:
             args = json.loads(raw_args)
+            if not isinstance(args, dict):
+                args, malformed = {}, True
         except json.JSONDecodeError:
-            args = {}  # a malformed call is a miss, not a crash — the loop reports it back
-        tool_calls.append(
-            ToolCall(id=call.get("id", ""), name=fn.get("name", ""), arguments=args, raw_arguments=raw_args)
-        )
+            args, malformed = {}, True
+        tool_calls.append(ToolCall(
+            id=call.get("id", ""), name=fn.get("name", ""), arguments=args,
+            raw_arguments=raw_args, malformed=malformed,
+        ))
 
     return ChatResponse(
         text=message.get("content") or "",

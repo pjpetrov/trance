@@ -411,6 +411,7 @@ function renderRun() {
 
   renderFlowView();
   renderSteerTargets();
+  paintPaused();
 }
 
 function renderSteerTargets() {
@@ -439,8 +440,17 @@ $("steer-send").onclick = async () => {
   toast("Steering queued.");
 };
 
-$("btn-pause").onclick = () => api(`/api/sessions/${state.session.id}/pause`, { method: "POST" });
-$("btn-resume").onclick = () => api(`/api/sessions/${state.session.id}/resume`, { method: "POST" });
+$("btn-pause").onclick = async () => {
+  await api(`/api/sessions/${state.session.id}/pause`, { method: "POST" });
+  state.session.paused = true;
+  paintPaused();
+  toast("Paused — click a console line to send a note about that action.");
+};
+$("btn-resume").onclick = async () => {
+  await api(`/api/sessions/${state.session.id}/resume`, { method: "POST" });
+  state.session.paused = false;
+  paintPaused();
+};
 $("btn-stop").onclick = () => api(`/api/sessions/${state.session.id}/stop`, { method: "POST" });
 $("btn-back-plan").onclick = () => { renderFlowEditor(); show("plan"); };
 
@@ -455,6 +465,7 @@ function connect(sessionId) {
     const event = JSON.parse(msg.data);
     if (event.type === "snapshot") {
       state.session = event.payload;
+      paintPaused();
       if (!["running", "paused"].includes(state.session.status)) clearActivity();
       renderRun();
       renderSessionBar();
@@ -1036,6 +1047,26 @@ function agentCard(agent, isNew) {
   });
   perms.append(toolsetRow);
 
+  // Commands + where they run — only meaningful with the commands toolset.
+  const cmdRow = el("div", "provider-grid");
+  const commands = el("input", "compact");
+  commands.value = (agent.commands || []).join(" ");
+  commands.placeholder = "default allowlist";
+  commands.title = "Space-separated programs this agent may run. Blank = the built-in default.";
+  const workdir = el("input", "compact");
+  workdir.value = agent.workdir || "";
+  workdir.placeholder = "project root";
+  workdir.title = "Directory (relative to the project) that commands run in";
+  const wrapField = (label, node, hint) => {
+    const l = el("label", null, label);
+    l.append(node);
+    if (hint) l.append(el("span", "hint", hint));
+    return l;
+  };
+  cmdRow.append(wrapField("Allowed commands", commands, "blank = default allowlist"),
+                wrapField("Run commands in", workdir, "blank = project root"));
+  perms.append(cmdRow);
+
   const paths = el("textarea");
   paths.rows = 3;
   paths.value = (agent.paths || []).join("\n");
@@ -1071,6 +1102,8 @@ function agentCard(agent, isNew) {
       paths: paths.value.split("\n").map((p) => p.trim()).filter(Boolean),
       toolsets: Object.keys(boxes).filter((t) => boxes[t].checked),
       verifier: verifierBox.checked,
+      commands: commands.value.split(/[\s,]+/).filter(Boolean),
+      workdir: workdir.value.trim(),
       preset: preset.value || null,
       color: color.value,
     };
@@ -1480,7 +1513,12 @@ function atBottom(box) {
   return box.scrollHeight - box.scrollTop - box.clientHeight < 80;
 }
 
+//: The event consoleAppend() is currently rendering, so consolePush can bind
+//: the intercept affordance without every call site having to pass it.
+let renderingEvent = null;
+
 function consolePush(node) {
+  if (renderingEvent) attachIntercept(node, renderingEvent);
   const box = $("console");
   if (!box) return;
   const empty = box.querySelector(".c-empty");
@@ -1540,6 +1578,7 @@ function labelWith(parts) {
 function consoleAppend(event) {
   const box = $("console");
   if (!box) return;
+  renderingEvent = event;
   const p = event.payload || {};
   const time = new Date(event.ts).toLocaleTimeString();
   const showReads = $("show-reads").checked;
@@ -1702,3 +1741,83 @@ $("show-reads").onchange = () => {
   if (!events.length) return consoleReset();
   events.forEach(consoleAppend);
 };
+
+/* ─────────────── intercept a specific action while paused ─────────── */
+
+function isPaused() {
+  return !!(state.session && (state.session.paused || state.session.status === "paused"));
+}
+
+function paintPaused() {
+  const hint = $("paused-hint");
+  if (hint) hint.className = `paused-hint${isPaused() ? " on" : ""}`;
+  document.querySelectorAll(".c-entry[data-ref]").forEach((entry) => {
+    entry.classList.toggle("interceptable", isPaused());
+  });
+}
+
+/** A one-line description of the action a console entry represents. */
+function entryReference(event) {
+  const p = event.payload || {};
+  const d = p.detail || {};
+  if (d.kind === "write") {
+    return `your ${d.created ? "creation of" : "edit to"} ${d.path} (+${d.added} −${d.removed})`;
+  }
+  if (d.kind === "command") return `the command you ran: ${d.command} (exit ${d.exit_code})`;
+  if (d.kind === "read") return `your read of ${d.path}`;
+  if (event.type === "tool_call") return `your ${p.name} call`;
+  if (event.type === "model_call") {
+    const wants = (p.tool_calls || []).map((t) => t.name).join(", ");
+    return wants ? `your decision to call ${wants}` : "your last message";
+  }
+  if (event.type === "verdict") return `the ${p.verdict} verdict`;
+  return "that step";
+}
+
+function attachIntercept(entry, event) {
+  entry.dataset.ref = "1";
+  entry.classList.toggle("interceptable", isPaused());
+
+  entry.querySelector(".c-head").addEventListener("click", (e) => {
+    if (!isPaused()) return;                       // normal expand/collapse
+    if (entry.querySelector(".intercept")) return; // already open
+    e.stopPropagation();
+
+    const box = el("div", "intercept");
+    const reference = entryReference(event);
+    box.append(el("div", "intercept-ref", `About ${reference}`));
+    const note = el("textarea");
+    note.placeholder = "e.g. don't hardcode the port here — read it from config";
+    box.append(note);
+
+    const row = el("div", "row");
+    const cancel = el("button", null, "Cancel");
+    const send = el("button", "primary", "Send + resume");
+    const sendOnly = el("button", null, "Queue only");
+    cancel.onclick = () => box.remove();
+
+    const deliver = async (resume) => {
+      const text = note.value.trim();
+      if (!text) return toast("Write a note first.");
+      const payload = `Regarding ${reference}: ${text}`;
+      await api(`/api/sessions/${state.session.id}/steer`, {
+        method: "POST", body: { note: payload, step_id: event.step_id || null },
+      });
+      box.remove();
+      if (resume) {
+        await api(`/api/sessions/${state.session.id}/resume`, { method: "POST" });
+        toast("Sent — the agent will see it on its next turn.");
+      } else {
+        toast("Queued for the agent's next turn.");
+      }
+    };
+    send.onclick = () => deliver(true);
+    sendOnly.onclick = () => deliver(false);
+
+    row.append(cancel, sendOnly, send);
+    box.append(row);
+    entry.append(box);
+    entry.classList.add("c-open");
+    note.focus();
+  }, true);   // capture, so it runs before the expand/collapse handler
+}

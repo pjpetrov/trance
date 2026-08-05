@@ -32,10 +32,11 @@ MAX_COMMAND_OUTPUT = 6_000
 MAX_LISTED_FILES = 300
 COMMAND_TIMEOUT_S = 180
 
-#: First token of a command must be one of these.
+#: Default allowlist. An agent may narrow or extend it via `role.commands`.
 ALLOWED_COMMANDS = {
     "pytest", "python", "python3", "npm", "npx", "node", "yarn", "pnpm",
     "tsc", "vitest", "jest", "ruff", "mypy", "ls", "cat", "make",
+    "mkdir", "touch", "pwd", "find", "head", "tail", "wc", "grep", "sed", "diff",
 }
 
 
@@ -67,6 +68,20 @@ class AgentTools:
         self.role = role
         self.graph = graph_tools
 
+    @property
+    def allowed_commands(self) -> set[str]:
+        """This agent's allowlist — its own if set, otherwise the default."""
+        return set(getattr(self.role, "commands", None) or ALLOWED_COMMANDS)
+
+    @property
+    def command_cwd(self) -> Path:
+        """Where commands run. A role may pin itself to a subdirectory."""
+        sub = (getattr(self.role, "workdir", "") or "").strip()
+        if not sub:
+            return self.project
+        target = self._resolve(sub)
+        return target if target is not None and target.is_dir() else self.project
+
     # ------------------------------------------------------------- schema
 
     def specs(self) -> list[dict]:
@@ -75,7 +90,9 @@ class AgentTools:
             out += [
                 _fn("read_file", "Read a file from the project.",
                     {"path": {"type": "string", "description": "Path relative to the project root."}}, ["path"]),
-                _fn("write_file", "Create or overwrite a file with complete contents.",
+                _fn("write_file",
+                    "Create or overwrite a file with complete contents. Parent directories "
+                    "are created automatically — never call mkdir first.",
                     {"path": {"type": "string"}, "content": {"type": "string",
                      "description": "The ENTIRE file contents. Not a diff, not a fragment."}},
                     ["path", "content"]),
@@ -100,7 +117,9 @@ class AgentTools:
         if "commands" in self.role.toolsets:
             out.append(_fn(
                 "run_command",
-                f"Run a command in the project root. Allowed programs: {', '.join(sorted(ALLOWED_COMMANDS))}.",
+                f"Run a command in {self.role.workdir or 'the project root'}. "
+                f"Allowed programs: {', '.join(sorted(self.allowed_commands))}. "
+                f"You do not need mkdir before write_file — it creates parent directories.",
                 {"command": {"type": "string", "description": "e.g. 'pytest -q'"}}, ["command"]))
         if "graph" in self.role.toolsets and self.graph is not None:
             out += self.graph_specs()
@@ -130,14 +149,60 @@ class AgentTools:
                 f"Refused: you do not have the {name!r} tool. "
                 f"Available: {', '.join(sorted(granted))}.", ok=False)
         if name in handlers:
+            problem = self._argument_problem(name, arguments)
+            if problem:
+                return ToolOutcome(problem, ok=False)
             try:
                 return handlers[name](**arguments)
             except TypeError as exc:
-                return ToolOutcome(f"Bad arguments for {name}: {exc}", ok=False)
+                return ToolOutcome(
+                    f"{name} could not be called with those arguments ({exc}). "
+                    f"{self._usage(name)}", ok=False)
         if self.graph is not None:
             result = self.graph.call(name, arguments)
             return ToolOutcome(result.text, ok=result.hit)
         return ToolOutcome(f"No such tool: {name}", ok=False)
+
+    def _schema(self, name: str) -> dict:
+        for spec in self.specs():
+            if spec["function"]["name"] == name:
+                return spec["function"]["parameters"]
+        return {}
+
+    def _usage(self, name: str) -> str:
+        schema = self._schema(name)
+        props = schema.get("properties", {})
+        required = schema.get("required", [])
+        args = ", ".join(
+            f'"{k}": <{v.get("type", "value")}>' + ("" if k in required else "  (optional)")
+            for k, v in props.items()
+        )
+        return f"Expected arguments: {{{args}}}."
+
+    def _argument_problem(self, name: str, arguments: dict) -> str | None:
+        """A readable complaint about arguments, before Python raises TypeError.
+
+        The raw TypeError ("missing 2 required positional arguments") leaks the
+        Python signature and reads as an internal fault rather than something
+        the agent can fix.
+        """
+        schema = self._schema(name)
+        if not schema:
+            return None
+        props, required = schema.get("properties", {}), schema.get("required", [])
+        missing = [k for k in required if k not in arguments]
+        unknown = [k for k in arguments if k not in props]
+        if not missing and not unknown:
+            return None
+
+        parts = []
+        if missing:
+            parts.append(f"missing required argument(s): {', '.join(missing)}")
+        if unknown:
+            parts.append(f"unexpected argument(s): {', '.join(unknown)}")
+        got = ", ".join(sorted(arguments)) or "none"
+        return (f"{name} was called with {got}, but {' and '.join(parts)}. "
+                f"Nothing was executed. {self._usage(name)}")
 
     # ------------------------------------------------------------- files
 
@@ -265,15 +330,18 @@ class AgentTools:
             return ToolOutcome(f"Could not parse command: {exc}", ok=False)
         if not parts:
             return ToolOutcome("Empty command.", ok=False)
-        if parts[0] not in ALLOWED_COMMANDS:
+        if parts[0] not in self.allowed_commands:
             return ToolOutcome(
-                f"Refused: {parts[0]!r} is not an allowed program. "
-                f"Allowed: {', '.join(sorted(ALLOWED_COMMANDS))}.",
+                f"Refused: {parts[0]!r} is not an allowed program for this agent. "
+                f"Allowed: {', '.join(sorted(self.allowed_commands))}. "
+                f"(write_file creates parent directories on its own, so you never "
+                f"need mkdir to write into a new folder.)",
                 ok=False,
             )
         try:
             proc = subprocess.run(
-                parts, cwd=self.project, capture_output=True, text=True, timeout=COMMAND_TIMEOUT_S
+                parts, cwd=self.command_cwd, capture_output=True, text=True,
+                timeout=COMMAND_TIMEOUT_S
             )
         except subprocess.TimeoutExpired:
             return ToolOutcome(f"Timed out after {COMMAND_TIMEOUT_S}s: {command}", ok=False)
@@ -329,6 +397,10 @@ def permissions_brief(role: AgentRole) -> str:
             f"You may READ any file in the project, including outside your write remit. "
             f"Reads are truncated at {MAX_READ_BYTES:,} bytes."
         )
+        lines.append(
+            "write_file creates any missing parent directories, so you never need to "
+            "create a folder before writing into it."
+        )
     elif "inspect" not in role.toolsets:
         lines.append("You have NO file access: you cannot read or write files.")
 
@@ -348,9 +420,10 @@ def permissions_brief(role: AgentRole) -> str:
         )
 
     if "commands" in role.toolsets:
+        allowed = sorted(getattr(role, "commands", None) or ALLOWED_COMMANDS)
+        where = f"in {role.workdir}" if getattr(role, "workdir", "") else "in the project root"
         lines.append(
-            "You may run commands in the project root, limited to: "
-            + ", ".join(sorted(ALLOWED_COMMANDS))
+            f"You may run commands {where}, limited to: " + ", ".join(allowed)
             + f". Anything else is refused. Commands time out after {COMMAND_TIMEOUT_S}s."
         )
     else:

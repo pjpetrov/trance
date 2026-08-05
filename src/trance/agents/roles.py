@@ -33,6 +33,11 @@ class AgentRole:
     #: Globs this role may write to. Empty means "no writes" (advisory roles).
     paths: list[str] = field(default_factory=list)
     toolsets: list[str] = field(default_factory=lambda: ["files", "graph"])
+    #: Programs this agent may run. Empty = the built-in default allowlist.
+    commands: list[str] = field(default_factory=list)
+    #: Directory (relative to the project) that commands run in. Empty = the
+    #: project root. Confined to the project either way.
+    workdir: str = ""
     #: May this agent be chosen to verify another step? Only agents that can
     #: actually inspect the result should be — an agent with no tools would
     #: return a verdict it has no way to have checked.

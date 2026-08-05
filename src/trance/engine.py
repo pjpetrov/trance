@@ -213,6 +213,11 @@ class FlowEngine:
 
     def _verify(self, step: Step, attempt: Attempt) -> str | None:
         if not step.verify_with:
+            # Silence here reads as "it was verified and passed". Say plainly
+            # that nobody checked, so a missing verifier is visible in the log.
+            self._emit("verification_skipped", agent=step.role, step_id=step.id, payload={
+                "message": "No verifier is set on this step, so nothing checked the result.",
+            })
             return None
         verifier = self.session.role(step.verify_with)
         if verifier is None:

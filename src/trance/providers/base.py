@@ -67,6 +67,11 @@ class ToolCall:
     name: str
     arguments: dict[str, Any]
     raw_arguments: str = ""
+    #: True when `arguments` could not be parsed. Reporting an unparsable call
+    #: as `{}` makes it indistinguishable from a call with no arguments, and
+    #: the agent then gets a confusing "missing required argument" error
+    #: instead of the real problem (usually output truncated at max_tokens).
+    malformed: bool = False
 
 
 @dataclass
