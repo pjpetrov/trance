@@ -184,3 +184,110 @@ def test_rerun_does_not_launch_a_second_engine_while_one_is_live(tmp_path, monke
         assert client.post(f"/api/sessions/{sid}/start").status_code == 409
     finally:
         keep_going.set()
+
+
+# ------------------------------------------------------ pause / resume
+
+def _client(tmp_path, monkeypatch, engines):
+    """A client whose FlowEngine records starts and leaves no live thread."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    class FakeEngine:
+        def __init__(self, session, config, bus, on_change=None):
+            self.session = session
+
+        def start(self):
+            engines.append(self.session.id)
+            self.session.status = "running"
+            return None        # no live thread, exactly like a finished/stopped run
+
+    monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    return TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+
+def test_resume_after_stop_starts_a_fresh_engine(tmp_path, monkeypatch):
+    """Regression: stop makes the engine thread exit, so clearing the pause flag
+    resumed nothing and the run sat there looking paused."""
+    engines = []
+    client = _client(tmp_path, monkeypatch, engines)
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow",
+               json={"steps": [{"role": "backend", "task": "do it"}]})
+    client.post(f"/api/sessions/{sid}/start")
+    assert engines == [sid]
+
+    client.post(f"/api/sessions/{sid}/stop")
+    session = client.app.state.store.get(sid)
+    assert session.stopping
+
+    body = client.post(f"/api/sessions/{sid}/resume").json()
+    assert body["running"] is True and body["restarted"] is True
+    assert engines == [sid, sid]
+    assert not session.stopping          # the flag must not survive a resume
+
+
+def test_resume_while_merely_paused_does_not_start_a_second_engine(tmp_path, monkeypatch):
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    engines = []
+    running = threading.Event()
+
+    class FakeEngine:
+        def __init__(self, session, config, bus, on_change=None):
+            self.session = session
+
+        def start(self):
+            engines.append(self.session.id)
+            thread = threading.Thread(target=running.wait, daemon=True)
+            thread.start()
+            self.session._thread = thread
+            self.session.status = "running"
+            return thread
+
+    monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    try:
+        sid = client.post("/api/sessions", json={
+            "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+        client.put(f"/api/sessions/{sid}/flow",
+                   json={"steps": [{"role": "backend", "task": "t"}]})
+        client.post(f"/api/sessions/{sid}/start")
+
+        client.post(f"/api/sessions/{sid}/pause")
+        assert client.app.state.store.get(sid).paused
+
+        body = client.post(f"/api/sessions/{sid}/resume").json()
+        assert body["restarted"] is False and body["running"] is True
+        assert engines == [sid]                 # the live engine simply continues
+        assert not client.app.state.store.get(sid).paused
+    finally:
+        running.set()
+
+
+def test_resume_with_nothing_pending_says_so(tmp_path, monkeypatch):
+    engines = []
+    client = _client(tmp_path, monkeypatch, engines)
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow",
+               json={"steps": [{"role": "backend", "task": "t"}]})
+    session = client.app.state.store.get(sid)
+    session.flow.steps[0].status = "done"
+
+    body = client.post(f"/api/sessions/{sid}/resume").json()
+    assert body["running"] is False
+    assert "rerun one" in body["reason"]
+    assert engines == []                        # nothing was started

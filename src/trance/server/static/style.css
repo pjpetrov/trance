@@ -427,3 +427,7 @@ input.tiny { width: 62px; min-width: 0; }
 /* and each of those containers must be allowed to shrink below its content
    so `overflow-y: auto` actually engages instead of stretching the page */
 .console, .event-log, .flow-view, .chat-log { min-height: 0; }
+.c-running { border-color: var(--warn) !important; background: rgba(224,175,104,.07); }
+.c-elapsed { flex: 0 0 auto; font-size: 11px; color: var(--warn); font-variant-numeric: tabular-nums; }
+.allow-btn { border-color: var(--accent); color: var(--accent); }
+.allow-btn:disabled { opacity: .6; }

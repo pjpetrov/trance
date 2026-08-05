@@ -136,6 +136,40 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         bus.emit("commands_updated", "system", payload=policy.to_dict())
         return policy.to_dict()
 
+    @app.post("/api/commands/cancel/{command_id}")
+    def cancel_running_command(command_id: str):
+        """Kill a command that is still running."""
+        from ..agents.tools import cancel_command, running_commands
+
+        killed = cancel_command(command_id)
+        return {"cancelled": killed, "still_running": running_commands()}
+
+    @app.post("/api/commands/allow")
+    def allow_programs(body: dict):
+        """Add programs to an allowlist — the global one, or an agent's own."""
+        programs = [str(p).strip() for p in (body.get("programs") or []) if str(p).strip()]
+        if not programs:
+            raise HTTPException(400, "programs is required")
+        bad = [p for p in programs if "/" in p or " " in p]
+        if bad:
+            raise HTTPException(400, f"program names only: {', '.join(bad[:4])}")
+
+        agent_name = body.get("agent")
+        agent = roles.get(agent_name) if agent_name else None
+        # Adding to the global list has no effect on an agent that overrides it.
+        if agent is not None and agent.commands:
+            agent.commands = sorted(set(agent.commands) | set(programs))
+            roles.upsert(agent)
+            for session in store.all():
+                refresh_team(session)
+                touch(session)
+            return {"scope": "agent", "agent": agent.name, "allowed": agent.commands}
+
+        policy = commands.update(allowed=sorted(set(commands.policy.allowed) | set(programs)))
+        set_command_policy(policy)
+        bus.emit("commands_updated", "system", payload=policy.to_dict())
+        return {"scope": "global", "allowed": policy.allowed}
+
     @app.post("/api/commands/reset")
     def reset_commands():
         policy = commands.reset()
@@ -539,17 +573,41 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.post("/api/sessions/{session_id}/resume")
     def resume(session_id: str):
+        """Resume a paused run, or restart one that was stopped.
+
+        Clearing the pause flag is only enough while the engine thread is still
+        alive. `stop` makes it exit, so resuming after a stop needs a new engine
+        — otherwise nothing happens and the session sits there looking paused.
+        """
         session = _need(store, session_id)
         session.resume()
-        session.status = "running"
-        bus.emit("resumed", session_id, payload={})
-        return {"paused": False}
+        session.clear_stop()
+
+        if engine_alive(session):
+            session.status = "running"
+            bus.emit("resumed", session_id, payload={"restarted": False})
+            return {"paused": False, "running": True, "restarted": False}
+
+        if ensure_running(session):
+            session.status = "running"
+            bus.emit("resumed", session_id, payload={"restarted": True})
+            return {"paused": False, "running": True, "restarted": True}
+
+        # Nothing pending: say so rather than reporting a run that isn't running.
+        reason = ("every step is finished, failed or skipped — rerun one, or edit a "
+                  "step to re-queue it")
+        session.status = "finished" if session.status != "error" else session.status
+        bus.emit("warning", session_id, payload={
+            "message": f"Nothing to resume: {reason}."})
+        return {"paused": False, "running": False, "restarted": False, "reason": reason}
 
     @app.post("/api/sessions/{session_id}/stop")
     def stop(session_id: str):
         session = _need(store, session_id)
         session.stop()
-        bus.emit("stopping", session_id, payload={})
+        bus.emit("stopping", session_id, payload={
+            "message": ("Stopping after the current agent turn. Resume will start a "
+                        "fresh engine from the next pending step.")})
         return {"stopping": True}
 
     @app.post("/api/sessions/{session_id}/steer")

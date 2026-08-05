@@ -471,9 +471,11 @@ $("btn-pause").onclick = async () => {
   toast("Paused — click a console line to send a note about that action.");
 };
 $("btn-resume").onclick = async () => {
-  await api(`/api/sessions/${state.session.id}/resume`, { method: "POST" });
+  const r = await api(`/api/sessions/${state.session.id}/resume`, { method: "POST" });
   state.session.paused = false;
   paintPaused();
+  if (!r.running) toast(`Nothing to resume — ${r.reason}.`);
+  else if (r.restarted) toast("Restarted from the next pending step.");
 };
 $("btn-stop").onclick = () => api(`/api/sessions/${state.session.id}/stop`, { method: "POST" });
 $("btn-back-plan").onclick = () => { renderFlowEditor(); show("plan"); };
@@ -1693,9 +1695,11 @@ function consoleAppend(event) {
       const refused = p.ok === false && !d.kind;
 
       if (refused) {
+        const head = labelWith([[`${p.name} refused`, ""]]);
+        if (d.kind === "refused_program") head.append(allowButton(d));
         consolePush(consoleEntry({
           kind: "read", icon: ICON.fail, time, failed: true, tag: event.agent,
-          label: labelWith([[`${p.name} refused`, ""]]),
+          label: head,
           body: () => el("pre", null, p.result || ""),
           open: true,
         }));
@@ -1720,12 +1724,15 @@ function consoleAppend(event) {
         return;
       }
       if (d.kind === "command") {
-        const failedCmd = d.exit_code !== 0;
+        const failedCmd = d.exit_code !== 0 || d.timed_out || d.cancelled;
         consolePush(consoleEntry({
           kind: "cmd", icon: ICON.cmd, time, tag: event.agent, failed: failedCmd,
           label: labelWith([
             [d.command, ""],
-            [`  exit ${d.exit_code}`, failedCmd ? "c-exit-n" : "c-exit-0"],
+            [d.timed_out ? `  timed out after ${d.seconds}s`
+              : d.cancelled ? "  cancelled"
+              : `  exit ${d.exit_code}${d.seconds > 3 ? ` · ${d.seconds}s` : ""}`,
+             failedCmd ? "c-exit-n" : "c-exit-0"],
           ]),
           body: () => {
             const wrap = el("div");
@@ -1781,6 +1788,14 @@ function consoleAppend(event) {
       }));
       return;
     }
+
+    case "command_started":
+      pushRunningCommand(event);
+      return;
+
+    case "command_finished":
+      finishRunningCommand(event);
+      return;
 
     case "gate_failed":
       consolePush(consoleEntry({
@@ -1848,3 +1863,77 @@ $("show-reads").onchange = () => {
   if (!events.length) return consoleReset();
   events.forEach(consoleAppend);
 };
+
+/* ───────────── live command entries: elapsed, cancel, allow ────────── */
+
+const liveCommands = new Map();   // command_id -> { entry, elapsedEl, started }
+let liveTicker = null;
+
+function tickLiveCommands() {
+  const now = Date.now();
+  liveCommands.forEach((live) => {
+    live.elapsedEl.textContent = `${Math.round((now - live.started) / 1000)}s`;
+  });
+  if (!liveCommands.size && liveTicker) {
+    clearInterval(liveTicker);
+    liveTicker = null;
+  }
+}
+
+function pushRunningCommand(event) {
+  const p = event.payload || {};
+  const entry = el("div", "c-entry c-cmd c-running");
+  const head = el("div", "c-head");
+  head.append(el("span", "c-time", new Date(event.ts).toLocaleTimeString()));
+  head.append(el("span", "c-icon spin", "◐"));
+  head.append(el("span", "c-label", p.command));
+
+  const elapsedEl = el("span", "c-elapsed", "0s");
+  head.append(elapsedEl, el("span", "c-tag", `limit ${p.timeout_s}s`));
+
+  const cancel = el("button", "copy-btn", "cancel");
+  cancel.title = "Kill this command";
+  cancel.onclick = async (e) => {
+    e.stopPropagation();
+    cancel.textContent = "cancelling…";
+    const r = await api(`/api/commands/cancel/${encodeURIComponent(p.command_id)}`,
+                        { method: "POST" });
+    if (!r.cancelled) toast("It had already finished.");
+  };
+  head.append(cancel);
+  entry.append(head);
+
+  liveCommands.set(p.command_id, { entry, elapsedEl, started: Date.now() });
+  if (!liveTicker) liveTicker = setInterval(tickLiveCommands, 1000);
+  consolePush(entry);
+}
+
+function finishRunningCommand(event) {
+  const live = liveCommands.get(event.payload?.command_id);
+  if (!live) return;
+  liveCommands.delete(event.payload.command_id);
+  live.entry.remove();          // the tool_call entry replaces it with the result
+  tickLiveCommands();
+}
+
+/** Offer to allow the programs a refusal named. */
+function allowButton(detail) {
+  const programs = detail.programs || [];
+  const scope = detail.agent_has_own_list ? `${detail.agent}'s list` : "the allowlist";
+  const btn = el("button", "copy-btn allow-btn", `allow ${programs.join(", ")}`);
+  btn.title = `Add to ${scope} and let the agent try again`;
+  btn.onclick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const r = await api("/api/commands/allow", {
+      method: "POST",
+      body: { programs, agent: detail.agent },
+    });
+    btn.textContent = "allowed";
+    btn.disabled = true;
+    toast(r.scope === "agent"
+      ? `Added to ${r.agent}'s allowlist — it applies on the next call.`
+      : `Added to the global allowlist — it applies on the next call.`);
+  };
+  return btn;
+}

@@ -94,7 +94,10 @@ def run_agent(
 ) -> AgentTurn:
     model_config = config
     client = client_for(model_config)
-    tools = AgentTools(project, role, graph_tools)
+    def notify(kind: str, payload: dict) -> None:
+        bus.emit(kind, session_id, agent=role.name, step_id=step_id, payload=payload)
+
+    tools = AgentTools(project, role, graph_tools, notify=notify)
     specs = tools.specs()
 
     user_parts = [f"## Task\n{task}"]

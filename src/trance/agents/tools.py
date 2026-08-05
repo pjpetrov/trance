@@ -16,9 +16,14 @@ processes:
 from __future__ import annotations
 
 import difflib
+import os
 import re
 import shlex
+import signal
 import subprocess
+import threading
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -108,6 +113,42 @@ class CommandPolicy:
 
 _POLICY = CommandPolicy()
 
+#: Commands currently executing, so the UI can show and cancel them.
+_RUNNING: dict[str, subprocess.Popen] = {}
+_RUNNING_LOCK = threading.Lock()
+
+
+def running_commands() -> list[str]:
+    with _RUNNING_LOCK:
+        return list(_RUNNING)
+
+
+def kill_process_group(proc: subprocess.Popen) -> None:
+    """Kill the command *and anything it spawned*.
+
+    Killing only the direct child leaves grandchildren alive — and a
+    backgrounded one (`node server.js &`) keeps the stdout pipe open, so
+    reading the remaining output then blocks forever. start_new_session makes
+    the child a group leader so the whole group can go at once.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
+def cancel_command(command_id: str) -> bool:
+    """Kill a command that is still running. Returns whether one was killed."""
+    with _RUNNING_LOCK:
+        proc = _RUNNING.get(command_id)
+    if proc is None or proc.poll() is not None:
+        return False
+    kill_process_group(proc)
+    return True
+
 
 def command_policy() -> CommandPolicy:
     return _POLICY
@@ -143,10 +184,13 @@ class ToolOutcome:
 
 
 class AgentTools:
-    def __init__(self, project: Path, role: AgentRole, graph_tools=None):
+    def __init__(self, project: Path, role: AgentRole, graph_tools=None, notify=None):
         self.project = Path(project).resolve()
         self.role = role
         self.graph = graph_tools
+        #: Called with (event_type, payload) so a long command is visible while
+        #: it runs instead of only when it finishes.
+        self.notify = notify or (lambda kind, payload: None)
 
     @property
     def allowed_commands(self) -> set[str]:
@@ -409,36 +453,98 @@ class AgentTools:
             "blank": not text.strip(),
         }
 
+    def _execute(self, argv: list, command: str, shell: bool) -> ToolOutcome:
+        """Run a command, announcing it first and staying cancellable.
+
+        Uses Popen rather than run() so the process is visible while it works
+        and can be killed — a command that blocks for the full timeout used to
+        leave the UI showing nothing at all.
+        """
+        command_id = f"cmd_{uuid.uuid4().hex[:10]}"
+        started = time.time()
+        self.notify("command_started", {
+            "command_id": command_id, "command": command,
+            "cwd": str(self.command_cwd), "timeout_s": COMMAND_TIMEOUT_S,
+        })
+        try:
+            proc = subprocess.Popen(
+                argv, cwd=self.command_cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,   # never block waiting for input
+                text=True, start_new_session=True,   # kill() reaches its children
+            )
+        except FileNotFoundError:
+            self.notify("command_finished", {"command_id": command_id, "exit_code": None})
+            return ToolOutcome(f"{argv[0]} is not installed on this machine.", ok=False)
+
+        with _RUNNING_LOCK:
+            _RUNNING[command_id] = proc
+        timed_out = cancelled = False
+        try:
+            output = proc.communicate(timeout=COMMAND_TIMEOUT_S)[0] or ""
+        except subprocess.TimeoutExpired:
+            kill_process_group(proc)
+            try:
+                # Bounded: a surviving grandchild holding the pipe must not
+                # block us a second time.
+                output = proc.communicate(timeout=5)[0] or ""
+            except subprocess.TimeoutExpired:
+                output = "(output unavailable — a background process kept the pipe open)"
+            timed_out = True
+        finally:
+            with _RUNNING_LOCK:
+                _RUNNING.pop(command_id, None)
+
+        code = proc.returncode
+        if code is not None and code < 0 and not timed_out:
+            cancelled = True
+        elapsed = round(time.time() - started, 1)
+        self.notify("command_finished", {
+            "command_id": command_id, "exit_code": code, "seconds": elapsed,
+            "timed_out": timed_out, "cancelled": cancelled,
+        })
+
+        output = output.strip() or "(no output)"
+        if len(output) > MAX_COMMAND_OUTPUT:
+            half = MAX_COMMAND_OUTPUT // 2
+            output = output[:half] + "\n… (trimmed) …\n" + output[-half:]
+
+        if cancelled:
+            text = f"$ {command}\nCancelled by the user after {elapsed}s.\n{output}"
+        elif timed_out:
+            text = (f"$ {command}\nTimed out after {COMMAND_TIMEOUT_S}s and was killed.\n"
+                    f"{output}\n\nA command that does not exit on its own — a server, a "
+                    f"watcher, anything ending in `&` — will always hit this. Start "
+                    f"long-lived processes only if you also stop them in the same command.")
+        else:
+            text = f"$ {command}\nexit={code}\n{output}"
+
+        return ToolOutcome(
+            text, ok=(code == 0 and not timed_out and not cancelled),
+            detail={"kind": "command", "command": command, "exit_code": code,
+                    "output": output, "shell": shell, "seconds": elapsed,
+                    "timed_out": timed_out, "cancelled": cancelled,
+                    "command_id": command_id},
+        )
+
     def _run_via_shell(self, command: str) -> ToolOutcome:
         """Run through a shell, but still check every program it would invoke."""
         programs = programs_in(command)
         missing = _shell_missing(programs, self.allowed_commands)
         if missing:
-            return ToolOutcome(
-                f"Refused: {', '.join(repr(m) for m in missing)} "
-                f"{'is' if len(missing) == 1 else 'are'} not in this agent's allowlist. "
-                f"Nothing was executed. Allowed: {', '.join(sorted(self.allowed_commands))}.",
-                ok=False,
-            )
-        try:
-            proc = subprocess.run(
-                ["bash", "-c", command], cwd=self.command_cwd, capture_output=True,
-                text=True, timeout=COMMAND_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            return ToolOutcome(f"Timed out after {COMMAND_TIMEOUT_S}s: {command}", ok=False)
-        except FileNotFoundError:
-            return ToolOutcome("bash is not available on this machine.", ok=False)
+            return self._refuse_programs(missing, command)
+        return self._execute(["bash", "-c", command], command, shell=True)
 
-        output = (proc.stdout + proc.stderr).strip() or "(no output)"
-        if len(output) > MAX_COMMAND_OUTPUT:
-            half = MAX_COMMAND_OUTPUT // 2
-            output = output[:half] + "\n… (trimmed) …\n" + output[-half:]
+
+    def _refuse_programs(self, missing: list, command: str) -> ToolOutcome:
+        """Refuse, naming the programs so the UI can offer to allow them."""
         return ToolOutcome(
-            f"$ {command}\nexit={proc.returncode}\n{output}",
-            ok=proc.returncode == 0,
-            detail={"kind": "command", "command": command,
-                    "exit_code": proc.returncode, "output": output, "shell": True},
+            f"Refused: {', '.join(repr(m) for m in missing)} "
+            f"{'is' if len(missing) == 1 else 'are'} not in this agent's allowlist. "
+            f"Nothing was executed. Allowed: {', '.join(sorted(self.allowed_commands))}.",
+            ok=False,
+            detail={"kind": "refused_program", "programs": missing, "command": command,
+                    "agent": self.role.name,
+                    "agent_has_own_list": bool(getattr(self.role, "commands", None))},
         )
 
     # ---------------------------------------------------------- commands
@@ -468,33 +574,8 @@ class AgentTools:
                 ok=False,
             )
         if parts[0] not in self.allowed_commands:
-            return ToolOutcome(
-                f"Refused: {parts[0]!r} is not an allowed program for this agent. "
-                f"Allowed: {', '.join(sorted(self.allowed_commands))}. "
-                f"(write_file creates parent directories on its own, so you never "
-                f"need mkdir to write into a new folder.)",
-                ok=False,
-            )
-        try:
-            proc = subprocess.run(
-                parts, cwd=self.command_cwd, capture_output=True, text=True,
-                timeout=COMMAND_TIMEOUT_S
-            )
-        except subprocess.TimeoutExpired:
-            return ToolOutcome(f"Timed out after {COMMAND_TIMEOUT_S}s: {command}", ok=False)
-        except FileNotFoundError:
-            return ToolOutcome(f"{parts[0]} is not installed on this machine.", ok=False)
-
-        output = (proc.stdout + proc.stderr).strip() or "(no output)"
-        if len(output) > MAX_COMMAND_OUTPUT:
-            half = MAX_COMMAND_OUTPUT // 2
-            output = output[:half] + "\n… (trimmed) …\n" + output[-half:]
-        return ToolOutcome(
-            f"$ {command}\nexit={proc.returncode}\n{output}",
-            ok=proc.returncode == 0,
-            detail={"kind": "command", "command": command,
-                    "exit_code": proc.returncode, "output": output},
-        )
+            return self._refuse_programs([parts[0]], command)
+        return self._execute(parts, command, shell=False)
 
 
 def _shell_missing(programs: list[str], allowed: set[str]) -> list[str]:

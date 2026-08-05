@@ -64,6 +64,14 @@ class Session:
         self._stop.set()
         self._pause.clear()
 
+    def clear_stop(self) -> None:
+        """Allow a stopped session to run again.
+
+        `stop()` makes the engine thread exit, so resuming needs both this and
+        a fresh engine — the old one is gone.
+        """
+        self._stop.clear()
+
     @property
     def stopping(self) -> bool:
         return self._stop.is_set()
