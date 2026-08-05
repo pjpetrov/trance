@@ -236,7 +236,7 @@ body { overflow-x: hidden; }
 
 
 /* ── pipeline: scrollable, compact when done ───────────────────────── */
-.flow-view { max-height: 52vh; overflow-y: auto; padding-right: 4px; }
+.flow-view { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .flow-node { cursor: pointer; }
 .flow-node:hover { border-color: var(--accent); }
 .flow-node.done, .flow-node.skipped, .flow-node.failed { padding: 6px 10px; }
@@ -263,20 +263,6 @@ body { overflow-x: hidden; }
 .attempt.unknown { border-left-color: var(--warn); }
 .step-modal pre.code { max-height: 340px; }
 
-/* ── agent scorecards ──────────────────────────────────────────────── */
-.score-list { display: flex; flex-direction: column; gap: 8px; }
-.score-card {
-  border: 1px solid var(--line); border-left: 4px solid var(--accent);
-  border-radius: 8px; padding: 9px 11px; background: var(--panel-2);
-}
-.score-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-.score-value { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.score-good { color: var(--ok); } .score-mid { color: var(--warn); } .score-bad { color: var(--err); }
-.score-bar { height: 5px; border-radius: 3px; background: var(--line); margin: 7px 0; overflow: hidden; }
-.score-bar > i { display: block; height: 100%; border-radius: 3px; }
-.score-parts { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11.5px; color: var(--muted); }
-.score-parts b { color: var(--fg); font-variant-numeric: tabular-nums; }
-.score-empty { color: var(--muted); font-size: 12px; }
 
 /* ── who is working right now ──────────────────────────────────────── */
 @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
@@ -305,7 +291,6 @@ body { overflow-x: hidden; }
 .activity-elapsed { color: var(--muted); font-variant-numeric: tabular-nums; }
 .flow-node.running { animation: none; }
 .flow-node.running .flow-title { position: relative; }
-.score-card.working { box-shadow: 0 0 0 1px var(--accent) inset; }
 
 /* ── live agent console ────────────────────────────────────────────── */
 .console-panel { display: flex; flex-direction: column; }
@@ -372,7 +357,7 @@ body { overflow-x: hidden; }
 #screen-run.active { display: flex; flex-direction: column; height: calc(100vh - 116px); }
 #screen-run .run-split { flex: 1 1 auto; min-height: 0; align-items: stretch; }
 #screen-run .run-split > .panel { display: flex; flex-direction: column; min-height: 0; }
-#screen-run .run-split > .panel:first-child { overflow-y: auto; }
+#screen-run .run-split > .panel:first-child { overflow: hidden; }
 .console-panel { min-height: 0; }
 @media (max-width: 1000px) {
   #screen-run.active { height: auto; }
@@ -436,10 +421,9 @@ input.tiny { width: 62px; min-width: 0; }
 .event-log > *,
 .flow-view > *,
 .chat-log > *,
-.score-list > *,
 .provider-list > *,
 .team-list > * { flex: 0 0 auto; }
 
 /* and each of those containers must be allowed to shrink below its content
    so `overflow-y: auto` actually engages instead of stretching the page */
-.console, .event-log, .flow-view, .chat-log, .score-list { min-height: 0; }
+.console, .event-log, .flow-view, .chat-log { min-height: 0; }
