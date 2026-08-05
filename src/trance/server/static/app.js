@@ -1493,3 +1493,358 @@ $("cmd-reset").onclick = async () => {
   await renderCommands();
   toast("Reset to defaults.");
 };
+
+/* ─────────────────── who is working, right now ────────────────────── */
+
+const activity = { agent: null, what: "", since: 0, model: "" };
+let activityTimer = null;
+
+function setActivity(agent, what, model) {
+  if (agent !== activity.agent || what !== activity.what) {
+    if (agent !== activity.agent) activity.since = Date.now();
+    activity.agent = agent;
+    activity.what = what;
+    if (model) activity.model = model;
+  }
+  if (!activityTimer) activityTimer = setInterval(paintActivity, 1000);
+  paintActivity();
+}
+
+function clearActivity() {
+  activity.agent = null;
+  activity.what = "";
+  clearInterval(activityTimer);
+  activityTimer = null;
+  paintActivity();
+}
+
+function elapsed(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+function paintActivity() {
+  const header = $("now-working");
+  const strip = $("activity-strip");
+  if (!activity.agent) {
+    header.className = "now-working";
+    header.innerHTML = "";
+    if (strip) { strip.className = "activity-strip"; strip.innerHTML = ""; }
+    return;
+  }
+  const role = state.roles[activity.agent];
+  const since = elapsed(Date.now() - activity.since);
+
+  header.className = "now-working active";
+  header.innerHTML = "";
+  header.append(el("span", "dot"));
+  const badge = el("span", "badge role", activity.agent);
+  if (role) badge.style.background = role.color;
+  header.append(badge, el("span", "muted", clip(activity.what, 40)), el("span", "activity-elapsed", since));
+
+  if (strip) {
+    strip.className = "activity-strip active";
+    strip.innerHTML = "";
+    const b2 = el("span", "badge role", activity.agent);
+    if (role) b2.style.background = role.color;
+    strip.append(el("span", "dot"), b2,
+                 el("span", "activity-what", activity.what),
+                 el("span", "activity-elapsed", since));
+    if (activity.model) strip.append(el("span", "muted small", shortModel(activity.model)));
+  }
+}
+
+function trackActivity(event) {
+  const p = event.payload || {};
+  switch (event.type) {
+    case "step_started":
+      setActivity(event.agent, clip(p.task, 70) || "working"); break;
+    case "step_verifying":
+      setActivity(p.verifier || event.agent, "verifying the previous step"); break;
+    case "model_call":
+      setActivity(event.agent, p.tool_calls?.length
+        ? `deciding — ${p.tool_calls.map((t) => t.name).join(", ")}`
+        : "thinking", p.model); break;
+    case "tool_call":
+      setActivity(event.agent, `${p.name}(${Object.values(p.arguments || {})
+        .map((v) => clip(String(v), 20)).join(", ")})`); break;
+    case "context_bundle":
+      setActivity(event.agent, "receiving curated context"); break;
+    case "index":
+      setActivity("orchestrator", "indexing the project"); break;
+    case "step_finished": case "step_failed": case "run_finished":
+    case "run_stopped": case "paused": case "error":
+      clearActivity(); break;
+    default: break;
+  }
+}
+
+/* ═══════════════════ live console of the working agent ═════════════ */
+
+const ICON = {
+  write: "✎", create: "✚", cmd: "$", read: "◇", graph: "⌕",
+  think: "◐", tool: "▸", fail: "✕", step: "▶", verdict: "✓",
+};
+let consoleStep = null;
+
+function consoleReset(label) {
+  const box = $("console");
+  if (!box) return;
+  box.innerHTML = "";
+  box.append(el("div", "c-empty", label || "Waiting for the agent to do something…"));
+  const scope = $("console-scope");
+  if (scope) scope.textContent = "";
+}
+
+function atBottom(box) {
+  return box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+}
+
+//: The event consoleAppend() is currently rendering, so consolePush can bind
+//: the intercept affordance without every call site having to pass it.
+let renderingEvent = null;
+
+function consolePush(node) {
+  if (renderingEvent) attachIntercept(node, renderingEvent);
+  const box = $("console");
+  if (!box) return;
+  const empty = box.querySelector(".c-empty");
+  if (empty) empty.remove();
+  const stick = $("follow").checked || atBottom(box);
+  box.append(node);
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+/** One collapsible console line. `body` builds the expanded content lazily. */
+function consoleEntry({ kind, icon, label, tag, time, body, open = false, failed = false }) {
+  const entry = el("div", `c-entry c-${kind}${failed ? " c-fail" : ""}`);
+  const head = el("div", "c-head");
+  head.append(el("span", "c-time", time));
+  head.append(el("span", "c-icon", icon));
+  const text = el("span", "c-label");
+  if (typeof label === "string") text.textContent = label; else text.append(label);
+  head.append(text);
+  if (tag) head.append(el("span", "c-tag", tag));
+  entry.append(head);
+
+  if (body) {
+    const wrap = el("div", "c-body");
+    wrap.style.display = open ? "" : "none";
+    if (open) { wrap.append(body()); entry.classList.add("c-open"); }
+    let built = open;
+    head.onclick = () => {
+      const showing = wrap.style.display !== "none";
+      if (!built && !showing) { wrap.append(body()); built = true; }
+      wrap.style.display = showing ? "none" : "";
+      entry.classList.toggle("c-open", !showing);
+    };
+    entry.append(wrap);
+  }
+  return entry;
+}
+
+function renderDiff(diff) {
+  const pre = el("pre", "diff");
+  (diff || "").split("\n").forEach((line) => {
+    let cls = "l";
+    if (line.startsWith("+++") || line.startsWith("---")) cls = "l l-meta";
+    else if (line.startsWith("@@")) cls = "l l-hunk";
+    else if (line.startsWith("+")) cls = "l l-add";
+    else if (line.startsWith("-")) cls = "l l-del";
+    pre.append(el("span", cls, line || " "));
+  });
+  return pre;
+}
+
+function labelWith(parts) {
+  const span = el("span");
+  parts.forEach(([text, cls]) => span.append(el("span", cls || null, text)));
+  return span;
+}
+
+function consoleAppend(event) {
+  const box = $("console");
+  if (!box) return;
+  renderingEvent = event;
+  const p = event.payload || {};
+  const time = new Date(event.ts).toLocaleTimeString();
+  const showReads = $("show-reads").checked;
+
+  // Scope the console to the step being worked on — the full history for a
+  // finished step stays available by clicking it in the pipeline.
+  if (event.type === "step_started") {
+    consoleStep = event.step_id;
+    box.innerHTML = "";
+    $("console-scope").textContent = `${event.agent} · attempt ${p.attempt || 1}`;
+    consolePush(consoleEntry({
+      kind: "step", icon: ICON.step, time, tag: event.agent,
+      label: labelWith([[clip(p.task, 90), ""]]),
+    }));
+    return;
+  }
+  if (event.step_id && consoleStep && event.step_id !== consoleStep) return;
+
+  switch (event.type) {
+    case "tool_call": {
+      const d = p.detail || {};
+      // `ok === false` covers both "never ran" and "ran and exited non-zero".
+      // Only the first is a refusal; a failing command has a detail and is
+      // rendered below with its exit code.
+      const refused = p.ok === false && !d.kind;
+
+      if (refused) {
+        consolePush(consoleEntry({
+          kind: "read", icon: ICON.fail, time, failed: true, tag: event.agent,
+          label: labelWith([[`${p.name} refused`, ""]]),
+          body: () => el("pre", null, p.result || ""),
+          open: true,
+        }));
+        return;
+      }
+      if (d.kind === "write") {
+        consolePush(consoleEntry({
+          kind: "write", icon: d.created ? ICON.create : ICON.write, time, tag: event.agent,
+          label: labelWith([
+            [d.created ? "create " : "edit ", ""], [d.path, "c-path"],
+            ["  +" + d.added, "c-add"], [" −" + d.removed, "c-del"],
+          ]),
+          body: () => {
+            const wrap = el("div");
+            wrap.append(copyButton(() => d.diff || "", "copy diff"));
+            wrap.append(renderDiff(d.diff));
+            if (d.truncated) wrap.append(el("div", "muted small", "diff truncated for display"));
+            return wrap;
+          },
+          open: true,
+        }));
+        return;
+      }
+      if (d.kind === "command") {
+        const failedCmd = d.exit_code !== 0;
+        consolePush(consoleEntry({
+          kind: "cmd", icon: ICON.cmd, time, tag: event.agent, failed: failedCmd,
+          label: labelWith([
+            [d.command, ""],
+            [`  exit ${d.exit_code}`, failedCmd ? "c-exit-n" : "c-exit-0"],
+          ]),
+          body: () => {
+            const wrap = el("div");
+            wrap.append(copyButton(() => `$ ${d.command}\n${d.output}`, "copy"));
+            wrap.append(el("pre", null, d.output || "(no output)"));
+            return wrap;
+          },
+          open: failedCmd,
+        }));
+        return;
+      }
+      if (d.kind === "read" || ["get_definition", "get_callers", "get_callees", "search_symbols",
+                               "list_files"].includes(p.name)) {
+        if (!showReads) return;
+        const what = d.path || Object.values(p.arguments || {})[0] || "";
+        consolePush(consoleEntry({
+          kind: d.kind === "read" ? "read" : "graph",
+          icon: d.kind === "read" ? ICON.read : ICON.graph, time, tag: event.agent,
+          label: labelWith([[`${p.name} `, ""], [String(what), "c-path"]]),
+          body: () => el("pre", null, p.result || ""),
+        }));
+        return;
+      }
+      consolePush(consoleEntry({
+        kind: "read", icon: ICON.tool, time, tag: event.agent,
+        label: `${p.name}(${Object.values(p.arguments || {}).map((v) => clip(String(v), 24)).join(", ")})`,
+        body: () => el("pre", null, p.result || ""),
+      }));
+      return;
+    }
+
+    case "model_call": {
+      const wants = (p.tool_calls || []).map((t) => t.name);
+      const label = wants.length
+        ? `thinking → ${wants.join(", ")}`
+        : (clip(p.response_text, 80) || "thinking");
+      consolePush(consoleEntry({
+        kind: "think", icon: ICON.think, time, tag: shortModel(p.model),
+        label,
+        body: () => {
+          const wrap = el("div");
+          if (p.reasoning) {
+            wrap.append(el("div", "msg-role", "reasoning"));
+            wrap.append(el("pre", null, p.reasoning));
+          }
+          if (p.response_text) {
+            wrap.append(copyButton(() => p.response_text, "copy"));
+            wrap.append(el("pre", null, p.response_text));
+          }
+          if (!p.reasoning && !p.response_text) wrap.append(el("pre", null, "(tool call only)"));
+          return wrap;
+        },
+      }));
+      return;
+    }
+
+    case "gate_failed":
+      consolePush(consoleEntry({
+        kind: "cmd", icon: "↺", time, tag: event.agent, failed: true,
+        label: p.message, open: false,
+      }));
+      return;
+
+    case "verdict":
+      consolePush(consoleEntry({
+        kind: p.verdict === "PASS" ? "write" : "cmd", icon: ICON.verdict, time,
+        tag: event.agent, failed: p.verdict === "FAIL",
+        label: `${p.gate || event.agent} (${p.position}/${p.of}): ${p.verdict}`,
+        body: () => el("pre", null, p.detail || ""), open: p.verdict !== "PASS",
+      }));
+      return;
+
+    case "step_verifying":
+      $("console-scope").textContent =
+        `${p.verifier} · check ${p.gate || 1}/${p.of || 1}`;
+      consolePush(consoleEntry({
+        kind: "step", icon: ICON.step, time, tag: p.verifier,
+        label: `check ${p.gate || 1} of ${p.of || 1}` +
+               (p.chain ? ` — ${p.chain.join(" → ")}` : ""),
+      }));
+      return;
+
+    case "step_retry":
+      consolePush(consoleEntry({
+        kind: "step", icon: "↺", time, tag: event.agent, label: p.message || "retrying",
+        body: () => el("pre", null, p.feedback || ""), open: false,
+      }));
+      return;
+
+    case "supervision": case "warning": case "error":
+      consolePush(consoleEntry({
+        kind: "cmd", icon: ICON.fail, time, failed: true, tag: event.agent || "system",
+        label: clip(p.message || p.error || "", 90),
+        body: () => el("pre", null, [p.message, p.traceback].filter(Boolean).join("\n\n")),
+        open: true,
+      }));
+      return;
+
+    case "step_finished": case "step_failed":
+      consolePush(consoleEntry({
+        kind: event.type === "step_failed" ? "cmd" : "write",
+        icon: event.type === "step_failed" ? ICON.fail : ICON.verdict, time,
+        failed: event.type === "step_failed", tag: event.agent,
+        label: `step ${event.type === "step_failed" ? "failed" : p.status || "done"}` +
+               ((p.files || []).length ? ` — ${p.files.join(", ")}` : ""),
+        body: () => el("pre", null, p.summary || p.reason || ""),
+      }));
+      return;
+
+    default:
+      return;   // everything else lives in the step detail, not the console
+  }
+}
+
+$("show-reads").onchange = () => {
+  // Replay the current step so the reads appear or disappear in place.
+  const box = $("console");
+  box.innerHTML = "";
+  const events = state.events.filter((e) => !consoleStep || e.step_id === consoleStep);
+  if (!events.length) return consoleReset();
+  events.forEach(consoleAppend);
+};
