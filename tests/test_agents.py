@@ -3501,3 +3501,80 @@ def test_a_trimmed_result_may_be_fetched_again(tmp_path, monkeypatch):
 
     assert "call the tool again" not in TRIMMED       # no longer an invitation
     assert "only fetch this again if you cannot proceed" in TRIMMED
+
+
+# ------------------- large files answer with their shape, not their bulk
+
+def _indexed_tools(tmp_path, role="frontend"):
+    from trance.agents.tools import AgentTools
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import ContextTools
+
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+    return AgentTools(tmp_path, BUILTIN_ROLES[role], ContextTools(db, tmp_path),
+                      notify=lambda *a, **k: None)
+
+
+def test_a_large_indexed_file_returns_an_outline(tmp_path):
+    """A 10KB file is ~2,600 tokens; its outline is ~150, and the agent nearly
+    always wanted one function out of it."""
+    body = "import os\n\n" + "\n\n".join(
+        f"def handler_{i}(request):\n" + "    pass\n" * 40 for i in range(12))
+    (tmp_path / "app.py").write_text(body)
+    assert len(body) > 4000
+
+    outcome = _indexed_tools(tmp_path).call("read_file", {"path": "app.py"})
+
+    assert outcome.detail["outline"] is True
+    assert "handler_0" in outcome.text and "handler_11" in outcome.text
+    assert "import os" in outcome.text            # the top of the file comes too
+    assert "pass" not in outcome.text             # but not the bodies
+    assert len(outcome.text) < len(body) // 4
+
+
+def test_a_small_file_still_comes_back_whole(tmp_path):
+    (tmp_path / "app.py").write_text("def charge(order):\n    return order.total\n")
+    outcome = _indexed_tools(tmp_path).call("read_file", {"path": "app.py"})
+    assert not outcome.detail.get("outline")
+    assert "return order.total" in outcome.text
+
+
+def test_a_file_with_nothing_indexed_comes_back_whole(tmp_path):
+    """An outline of nothing would be worse than the file."""
+    (tmp_path / "data.json").write_text('{"a": ' + '"x",' * 2000 + '"b": 1}')
+    outcome = _indexed_tools(tmp_path).call("read_file", {"path": "data.json"})
+    assert not outcome.detail.get("outline")
+
+
+def test_full_true_is_the_way_to_rewrite_a_file(tmp_path):
+    """An agent about to rewrite a file genuinely needs every line of it."""
+    body = "import os\n\n" + "\n\n".join(
+        f"def handler_{i}(request):\n" + "    pass\n" * 40 for i in range(12))
+    (tmp_path / "app.py").write_text(body)
+    tools = _indexed_tools(tmp_path)
+
+    assert tools.call("read_file", {"path": "app.py"}).detail["outline"] is True
+    whole = tools.call("read_file", {"path": "app.py", "full": True})
+    assert not whole.detail.get("outline")
+    assert whole.text.count("def handler_") == 12
+
+
+def test_paging_past_line_one_is_never_an_outline(tmp_path):
+    body = "import os\n\n" + "\n\n".join(
+        f"def handler_{i}(request):\n" + "    pass\n" * 40 for i in range(12))
+    (tmp_path / "app.py").write_text(body)
+
+    page = _indexed_tools(tmp_path).call("read_file", {"path": "app.py", "start_line": 200})
+    assert not page.detail.get("outline")
+    assert "pass" in page.text
+
+
+def test_an_agent_without_the_graph_reads_whole_files(tmp_path):
+    """The outline comes from the index; with no index there is nothing to
+    offer instead."""
+    body = "def a():\n" + "    pass\n" * 900
+    (tmp_path / "app.py").write_text(body)
+    tools = _tools(tmp_path)                       # no graph tools attached
+    assert not tools.call("read_file", {"path": "app.py"}).detail.get("outline")

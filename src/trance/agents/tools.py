@@ -35,6 +35,13 @@ from .roles import AgentRole
 #: context window on its own — the runner trims, but not overflowing in the
 #: first place is cheaper and keeps the model's attention on relevant code.
 MAX_READ_BYTES = 24_000
+#: Below this a whole file is cheap enough that an outline would just cost a
+#: round trip. Above it, an indexed file answers with its shape first.
+OUTLINE_OVER_BYTES = 4_000
+#: How much of the top of the file comes with the outline. Imports, requires and
+#: module constants are what an agent actually needs alongside the symbol list,
+#: and they are always at the top.
+OUTLINE_HEAD_LINES = 30
 MAX_COMMAND_OUTPUT = 6_000
 MAX_LISTED_FILES = 300
 COMMAND_TIMEOUT_S = 180
@@ -314,12 +321,17 @@ class AgentTools:
         if "files" in self.role.toolsets:
             out += [
                 _fn("read_file",
-                    "Read a file from the project. Large files come back in pages — the "
-                    "header says which lines you got.",
+                    "Read a file. A large indexed file answers with its outline — the "
+                    "symbols it defines and their line numbers — because you almost "
+                    "always want one of them, and get_definition returns that exactly. "
+                    "Small files come back whole.",
                     {"path": {"type": "string", "description": "Path relative to the project root."},
                      "start_line": {"type": "integer",
-                                    "description": ("First line to return, 1-based. Use this to "
-                                                    "continue past a truncated read.")}},
+                                    "description": ("First line to return, 1-based. Pages "
+                                                    "through a file past a truncated read.")},
+                     "full": {"type": "boolean",
+                              "description": ("Return every line instead of an outline. Needed "
+                                              "only when you are about to rewrite the file.")}},
                     ["path"]),
                 _fn("write_file",
                     "Create or overwrite a file with complete contents. Parent directories "
@@ -488,7 +500,44 @@ class AgentTools:
             return candidate
         return None  # escaped the project root
 
-    def read_file(self, path: str, start_line: int = 1) -> ToolOutcome:  # noqa: D401
+    def _outline(self, rel: str, text: str) -> ToolOutcome | None:
+        """The shape of a big file instead of all of it.
+
+        A 10KB file is ~2,600 tokens; its outline is ~150. The agent nearly
+        always wants one function out of it, and get_definition gives exactly
+        that. Whole-file reads stay available — `full=true` — because an agent
+        about to rewrite a file genuinely needs every line of it.
+        """
+        if self.graph is None:
+            return None
+        try:
+            symbols = self.graph.db.symbols_in_file(rel)
+        except Exception:                                  # never break a read
+            return None
+        named = [s for s in symbols if s.kind != "variable"]
+        if not named:
+            return None
+
+        lines = text.splitlines()
+        first = min((s.start_line for s in named), default=len(lines) + 1)
+        head = lines[:max(0, min(first - 1, OUTLINE_HEAD_LINES))]
+        listing = "\n".join(
+            f"  {s.kind} {s.qualname.split('::', 1)[-1]}  (lines {s.start_line}-{s.end_line})"
+            for s in symbols[:60])
+        body = (
+            f"# {rel} — outline ({len(lines)} lines, {len(symbols)} symbols)\n\n"
+            + ("Top of the file:\n" + "\n".join(head) + "\n\n" if head else "")
+            + f"Defines:\n{listing}\n\n"
+            + "This file is large, so you have its shape rather than all of it. "
+              "get_definition('<name>') returns any of those in full; read_file with "
+              "start_line pages through it; read_file with full=true gives the whole "
+              "file, which you need only if you are about to rewrite it."
+        )
+        return ToolOutcome(body, detail={"kind": "read", "path": rel, "bytes": len(text),
+                                         "outline": True, "symbols": len(symbols),
+                                         "lines": len(lines)})
+
+    def read_file(self, path: str, start_line: int = 1, full: bool = False) -> ToolOutcome:  # noqa: D401
         target = self._resolve(path)
         if target is None:
             return ToolOutcome(f"Refused: {path!r} is outside the project directory.", ok=False)
@@ -496,8 +545,15 @@ class AgentTools:
             return ToolOutcome(f"{path} does not exist. Use list_files to see what does.", ok=False)
         raw = target.read_bytes()
         text = raw.decode("utf8", errors="replace")
-        lines = text.splitlines()
+        rel = target.relative_to(self.project).as_posix()
         start = max(1, int(start_line or 1))
+
+        if not full and start == 1 and len(raw) > OUTLINE_OVER_BYTES:
+            outline = self._outline(rel, text)
+            if outline is not None:
+                return outline
+
+        lines = text.splitlines()
 
         # A file bigger than the cap used to return its first 24KB and nothing
         # else, so an agent that needed line 900 could only read the same first

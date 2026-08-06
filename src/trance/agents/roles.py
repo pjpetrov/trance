@@ -79,9 +79,11 @@ Fetch the smallest thing that answers your question. If you know the name of a
 function or class, get_definition gives you exactly that; get_callers and
 get_callees tell you what depends on it before you change its shape. The project
 map above lists what is already indexed, so these are lookups, not guesses.
-read_file is for a file you are about to rewrite, or one the map shows no
-symbols for. Reading whole files to find one function wastes the context you
-need for the work itself.
+read_file on a large indexed file gives you its outline — the symbols and their
+line numbers — not its contents; take a name from that and call get_definition.
+Ask for the whole file (full=true) only when you are about to rewrite it.
+Reading whole files to find one function wastes the context you need for the
+work itself.
 
 ## What the team knows
 

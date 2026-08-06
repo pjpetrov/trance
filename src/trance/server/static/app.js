@@ -2345,7 +2345,12 @@ function consoleAppend(event) {
         consolePush(consoleEntry({
           kind: d.kind === "read" ? "read" : "graph",
           icon: d.kind === "read" ? ICON.read : ICON.graph, time, tag: event.agent,
-          label: labelWith([[`${p.name} `, ""], [String(what), "c-path"]]),
+          label: labelWith([
+            [`${p.name} `, ""], [String(what), "c-path"],
+            [d.outline ? `  outline · ${d.symbols} symbols`
+             : d.lines && d.last_line && d.last_line < d.lines
+               ? `  lines ${d.start_line}-${d.last_line} of ${d.lines}` : "", "muted"],
+          ]),
           body: () => el("pre", null, p.result || ""),
         }));
         return;
