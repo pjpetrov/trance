@@ -568,9 +568,14 @@ function renderMemory() {
   if (!box) return;
   const data = state.memory || { notes: [], raw: "", prompt_view: "" };
   $("memory-path").textContent = data.path || "";
-  $("memory-budget").textContent = data.prompt_view
+  const cost = data.prompt_view
     ? `~${Math.round(data.prompt_view.length / 4)} tokens added to every agent's prompt`
     : "";
+  $("memory-budget").textContent = data.oversized
+    ? `${cost} — over ${data.max_notes} notes; it will be compacted after the next step`
+    : cost;
+  $("memory-budget").className = data.oversized ? "small c-exit-n" : "muted small";
+  $("memory-compact").disabled = !data.notes.length;
 
   box.innerHTML = "";
   if (!data.notes.length) {
@@ -616,6 +621,25 @@ $("memory-edit").onclick = () => {
 };
 
 $("memory-cancel").onclick = () => memoryEditing(false);
+
+$("memory-compact").onclick = async () => {
+  const button = $("memory-compact");
+  button.disabled = true;
+  button.textContent = "compacting…";
+  try {
+    const result = await api(`/api/sessions/${state.session.id}/memory/compact`,
+                             { method: "POST" });
+    await loadMemory();
+    renderMemory();
+    toast(result.compacted
+      ? `Compacted ${result.before} notes to ${result.after}. The originals are in ` +
+        "memory.archive.md."
+      : `Left unchanged — ${result.reason}.`);
+  } finally {
+    button.textContent = "Compact";
+    button.disabled = false;
+  }
+};
 
 $("memory-save").onclick = async () => {
   await api(`/api/sessions/${state.session.id}/memory`, {
@@ -711,6 +735,9 @@ function headline(event) {
       return `${p.message || "fixing"}` +
              (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
     case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
+    case "memory_compacted":
+      return p.compacted ? `project memory: ${p.before} notes → ${p.after}`
+                         : `memory left as it was — ${p.reason}`;
     case "context_bundle":
       return `${p.stats?.symbols ?? 0} symbols · ~${p.stats?.est_tokens ?? 0} tok (${p.entry || ""})`;
     case "chat": return clip(p.content, 100);
@@ -2206,6 +2233,18 @@ function consoleAppend(event) {
           return wrap;
         },
       }));
+      return;
+
+    case "memory_compacted":
+      consolePush(consoleEntry({
+        kind: "step", icon: "🧠", time, tag: "memory",
+        label: p.compacted
+          ? `compacted project memory: ${p.before} notes → ${p.after}`
+          : `memory left as it was — ${p.reason}`,
+        body: () => el("pre", null, (p.notes || []).join("\n")
+                       + (p.archive ? `\n\noriginals kept in ${p.archive}` : "")),
+      }));
+      loadMemory();
       return;
 
     case "fixed":

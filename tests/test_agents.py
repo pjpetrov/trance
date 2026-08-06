@@ -2045,7 +2045,7 @@ def test_memory_is_in_every_request_of_a_turn(tmp_path, monkeypatch):
     runner.run_agent(role=BUILTIN_ROLES["frontend"], task="build the ui", project=tmp_path,
                      config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
 
-    assert len(seen) == 4
+    assert len(seen) == 5          # 4 rounds, plus the end-of-step memory nudge
     assert all("POST /api/games" in prompt for prompt in seen)
 
 
@@ -2092,3 +2092,228 @@ def test_the_orchestrator_plans_against_the_teams_decisions(tmp_path, monkeypatc
 
     assert "3100" in captured["system"]
     assert "already decided" in captured["system"]
+
+
+# --------------------------------- making every step update the memory
+
+def _turn_with(monkeypatch, replies, role="backend", project=None, **kw):
+    """Drive run_agent with a scripted sequence of model replies."""
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    prompts = []
+
+    class Scripted:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None):
+            prompts.append(str(messages[-1].get("content")))
+            reply = replies[min(self.n, len(replies) - 1)]
+            self.n += 1
+            return reply
+
+    monkeypatch.setattr(runner, "client_for", lambda config: Scripted())
+    turn = runner.run_agent(role=BUILTIN_ROLES[role], task="do it", project=project,
+                            config=ModelConfig(), bus=EventBus(),
+                            session_id="s", step_id="st", **kw)
+    return turn, prompts
+
+
+def test_an_agent_that_did_work_is_asked_what_to_remember(tmp_path, monkeypatch):
+    """Asking after the step is over is too late — the agent is gone."""
+    from trance.providers.base import ChatResponse, ToolCall
+
+    replies = [
+        ChatResponse(text="", tool_calls=[ToolCall(
+            id="c1", name="write_file",
+            arguments={"path": "server/app.py", "content": "x = 1\n"})]),
+        ChatResponse(text="Wrote the app.\n\nOUTCOME: SUCCESS"),
+        ChatResponse(text="", tool_calls=[ToolCall(
+            id="c2", name="remember",
+            arguments={"note": "the API is POST /api/games"})]),
+        ChatResponse(text="OUTCOME: SUCCESS"),
+    ]
+    turn, prompts = _turn_with(monkeypatch, replies, project=tmp_path)
+
+    assert any("does anything you just did change what the OTHER agents" in p
+               for p in prompts)
+    assert turn.notes_written == 1
+    assert turn.outcome[0] == "SUCCESS"          # the outcome survives the nudge
+
+    from trance.agents.memory import ProjectMemory
+    assert "POST /api/games" in ProjectMemory(tmp_path).for_prompt()
+
+
+def test_the_nudge_happens_once_and_takes_no_for_an_answer(tmp_path, monkeypatch):
+    from trance.providers.base import ChatResponse, ToolCall
+
+    replies = [
+        ChatResponse(text="", tool_calls=[ToolCall(
+            id="c1", name="write_file",
+            arguments={"path": "server/app.py", "content": "x = 1\n"})]),
+        ChatResponse(text="Done.\n\nOUTCOME: SUCCESS"),
+        ChatResponse(text="Nothing the others need.\n\nOUTCOME: SUCCESS"),
+    ]
+    turn, prompts = _turn_with(monkeypatch, replies, project=tmp_path)
+
+    asked = sum("OTHER agents" in p for p in prompts)
+    assert asked == 1                            # not once per round
+    assert turn.notes_written == 0
+    assert turn.outcome[0] == "SUCCESS"
+
+
+def test_an_agent_that_already_remembered_is_not_asked(tmp_path, monkeypatch):
+    from trance.providers.base import ChatResponse, ToolCall
+
+    replies = [
+        ChatResponse(text="", tool_calls=[ToolCall(
+            id="c1", name="remember", arguments={"note": "the port is 3100"})]),
+        ChatResponse(text="Done.\n\nOUTCOME: SUCCESS"),
+    ]
+    turn, prompts = _turn_with(monkeypatch, replies, project=tmp_path)
+
+    assert not any("OTHER agents" in p for p in prompts)
+    assert turn.notes_written == 1
+
+
+def test_an_agent_that_did_nothing_is_not_asked(tmp_path, monkeypatch):
+    """No work, nothing to hand over — the extra round would be pure cost."""
+    from trance.providers.base import ChatResponse
+
+    turn, prompts = _turn_with(monkeypatch, [ChatResponse(text="OUTCOME: FAILED — blocked")],
+                               project=tmp_path)
+    assert not any("OTHER agents" in p for p in prompts)
+    assert turn.rounds == 1
+
+
+# ------------------------------------------ keeping the memory small
+
+def _fill(memory, n, prefix="fact"):
+    for i in range(n):
+        memory.note("backend", f"{prefix} number {i} that the team must follow")
+
+
+def test_memory_is_compacted_once_it_outgrows_every_prompt(tmp_path):
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    _fill(memory, 30)
+    assert memory.oversized() is True
+
+    result = memory.compact(lambda text: "- **backend**: the ports are 3100 and 3101\n"
+                                         "- **backend**: routes live under /api")
+    assert result["compacted"] is True and result["before"] == 30 and result["after"] == 2
+    assert len(memory.notes()) == 2
+    assert "3100" in memory.for_prompt()
+    assert memory.oversized() is False
+
+
+def test_compaction_archives_what_it_replaced(tmp_path):
+    """A memory you cannot audit is worse than a long one — the agents were
+    told those facts, and a run gets debugged after it goes wrong."""
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    _fill(memory, 30)
+    memory.compact(lambda text: "- **backend**: everything is fine")
+
+    archive = (tmp_path / ".trance" / "memory.archive.md").read_text()
+    assert "fact number 0" in archive and "fact number 29" in archive
+    assert "Compacted from 30 to 1 notes" in archive
+
+
+def test_a_rewrite_that_loses_the_notes_is_refused(tmp_path):
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    _fill(memory, 30)
+
+    for bad in ("", "Sure! Here is a summary of the project.", "   "):
+        result = memory.compact(lambda text, b=bad: b)
+        assert result["compacted"] is False
+        assert len(memory.notes()) == 30          # untouched
+
+
+def test_a_rewrite_that_grew_is_refused(tmp_path):
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    _fill(memory, 30)
+    result = memory.compact(lambda text: "\n".join(f"- note {i}" for i in range(60)))
+    assert result["compacted"] is False and len(memory.notes()) == 30
+
+
+def test_a_failing_rewrite_leaves_the_memory_alone(tmp_path):
+    """The endpoint being down must not cost the team its shared facts."""
+    from trance.agents.memory import ProjectMemory
+
+    def explode(text):
+        raise RuntimeError("connection refused")
+
+    memory = ProjectMemory(tmp_path)
+    _fill(memory, 30)
+    result = memory.compact(explode)
+    assert result["compacted"] is False and "connection refused" in result["reason"]
+    assert len(memory.notes()) == 30
+
+
+def test_a_small_memory_is_left_alone(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])
+    engine.memory.note("backend", "the port is 3100")
+    called = []
+    monkeypatch.setattr(engine.memory, "compact", lambda *a, **k: called.append(1) or {})
+
+    engine._compact_memory()
+    assert called == []
+
+
+def test_the_engine_compacts_between_steps_not_during_one(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])
+    _fill(engine.memory, 30)
+    seen = []
+
+    def fake(**kw):
+        seen.append(len(engine.memory.notes()))
+        return _Turn(None, "done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    monkeypatch.setattr(engine.memory, "compact",
+                        lambda rewrite: {"compacted": True, "before": 30, "after": 2})
+
+    engine._execute(Step(role="backend", task="t"))
+    assert seen == [30]        # the step ran against a stable memory
+
+
+def test_compaction_can_be_triggered_from_the_ui(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.agents.memory import ProjectMemory
+    from trance.config import Config
+    from trance.providers.base import ChatResponse
+    from trance.server import app as app_module
+
+    monkeypatch.setattr(app_module, "client_for", lambda config: type(
+        "C", (), {"complete": lambda self, messages, tools=None: ChatResponse(
+            text="- **backend**: the API is POST /api/games on port 3100")})())
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    memory = ProjectMemory(project)
+    _fill(memory, 30)
+    assert client.get(f"/api/sessions/{sid}/memory").json()["oversized"] is True
+
+    body = client.post(f"/api/sessions/{sid}/memory/compact").json()
+    assert body["compacted"] is True and body["after"] == 1
+    assert client.get(f"/api/sessions/{sid}/memory").json()["oversized"] is False

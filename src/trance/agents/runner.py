@@ -41,6 +41,28 @@ def _tokens(messages: list[dict]) -> int:
     return total
 
 
+#: Asked once, at the point the agent believes it is done. The examples matter:
+#: without them models answer "I remembered to write the tests", which is a
+#: progress report and costs every later agent for nothing.
+_REMEMBER_PROMPT = (
+    "Before you finish: does anything you just did change what the OTHER agents "
+    "must do? A route and its payload shape, a port, where files live, the command "
+    "that runs the tests, a library or format everyone has to match.\n\n"
+    "If yes, call remember now — one short, specific sentence per fact. If there is "
+    "genuinely nothing the others need, say so in one line and do not call it.\n\n"
+    "Either way, end your reply with your OUTCOME line again."
+)
+
+
+def _should_ask_to_remember(turn, role, already_asked: bool) -> bool:
+    """Only nudge an agent that did work, has the tool, and wrote nothing."""
+    if already_asked or turn.notes_written:
+        return False
+    if not {"files", "commands", "graph"} & set(role.toolsets):
+        return False
+    return bool(turn.files_written or turn.tool_calls)
+
+
 #: Per-entry cap on what the transcript keeps. The full text is in the event
 #: trace either way; this copy exists only to be handed to another agent.
 MAX_RECORDED_CHARS = 6000
@@ -112,6 +134,8 @@ class AgentTurn:
     stop_reason: str = "stop"
     salvaged_calls: int = 0
     truncated_calls: int = 0
+    #: Notes this agent added to the shared memory.
+    notes_written: int = 0
     model_event_ids: list[str] = field(default_factory=list)
     #: Everything this agent did, in order — the raw material for the handoff
     #: to a fixer. Never fed back to this agent; the conversation already holds
@@ -209,6 +233,7 @@ def run_agent(
 
     turn = AgentTurn(text="")
     totals = {"input_tokens": 0, "output_tokens": 0}
+    asked_to_remember = False
 
     for round_n in range(1, max_rounds + 1):
         if should_stop and should_stop():
@@ -300,6 +325,21 @@ def run_agent(
                 response.raw_message = {"role": "assistant", "content": response.text}
 
         if not calls:
+            # It thinks it is finished. Before letting it go, make it decide once
+            # whether anything it just did has to reach the next agent — asking
+            # after the step is over is too late, and asking every round would
+            # train it to say no.
+            if _should_ask_to_remember(turn, role, asked_to_remember):
+                asked_to_remember = True
+                bus.emit("model_call", session_id, agent=role.name, step_id=step_id,
+                         payload={"round": round_n, "model": model_config.model,
+                                  "asked_to_remember": True,
+                                  "messages": [], "response_text": response.text,
+                                  "tool_calls": [], "usage": {}, "summary": {}})
+                messages.append(response.raw_message or
+                                {"role": "assistant", "content": response.text})
+                messages.append({"role": "user", "content": _REMEMBER_PROMPT})
+                continue
             turn.stop_reason = response.finish_reason
             break
 
@@ -343,6 +383,8 @@ def run_agent(
                     "detail": outcome.detail,
                 },
             )
+            if (outcome.detail or {}).get("kind") == "memory" and outcome.detail.get("stored"):
+                turn.notes_written += 1
             _record(turn, call.name, call.arguments, outcome.text, outcome.ok, outcome.detail)
             messages.append({
                 "role": "tool", "tool_call_id": call.id, "name": call.name, "content": outcome.text,

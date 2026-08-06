@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..agents import orchestrator as orchestrator_agent
-from ..agents.memory import ProjectMemory
+from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
 from ..agents.store import CommandStore, PROTECTED, RoleStore, validate as validate_agent
 from ..agents.tools import ALLOWED_COMMANDS, set_command_policy
@@ -20,7 +20,7 @@ from ..config import Config
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
 from ..flow import Flow, Step
-from ..providers import KIND_DEFAULTS, ModelPreset, ProviderConfig, ProviderStore
+from ..providers import KIND_DEFAULTS, ModelPreset, ProviderConfig, ProviderStore, client_for
 from ..session import ChatMessage, SessionStore
 from ..worker.client import BackendError
 
@@ -452,7 +452,25 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         session = _need(store, session_id)
         memory = ProjectMemory(Path(session.project_dir).expanduser())
         return {"path": str(memory.path), "notes": memory.notes(),
-                "raw": memory.raw(), "prompt_view": memory.for_prompt()}
+                "raw": memory.raw(), "prompt_view": memory.for_prompt(),
+                "oversized": memory.oversized(), "max_notes": MAX_NOTES}
+
+    @app.post("/api/sessions/{session_id}/memory/compact")
+    def compact_memory(session_id: str):
+        """Compact on demand, using the orchestrator's model."""
+        session = _need(store, session_id)
+        memory = ProjectMemory(Path(session.project_dir).expanduser())
+        model_config = config.for_orchestrator()
+
+        def rewrite(text: str) -> str:
+            return client_for(model_config).complete([
+                {"role": "system", "content": COMPACT_PROMPT},
+                {"role": "user", "content": text},
+            ]).text
+
+        result = memory.compact(rewrite)
+        bus.emit("memory_compacted", session_id, agent="orchestrator", payload=result)
+        return {**result, "raw": memory.raw(), "notes": memory.notes()}
 
     @app.put("/api/sessions/{session_id}/memory")
     def put_memory(session_id: str, body: dict):

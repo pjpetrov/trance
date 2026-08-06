@@ -38,7 +38,8 @@ const RESPONSES = {
   "/api/sessions": [],
   "/api/sessions/s1/memory": { path: "/p/.trance/memory.md", raw: "- **backend**: port 3100",
                                notes: ["- **backend**: port 3100", "- plain note"],
-                               prompt_view: "- **backend**: port 3100" },
+                               prompt_view: "- **backend**: port 3100",
+                               oversized: false, max_notes: 25 },
 };
 global.fetch = async (path) => ({
   ok: true, status: 200,
@@ -120,6 +121,11 @@ try {
       payload: { summary: "inverted the collision", files: ["server/game.js"] } },
     { type: "step_retry", agent: "tester", step_id: "st1",
       payload: { message: "tester will try again", feedback: "bug" } },
+    { type: "memory_compacted", agent: "orchestrator",
+      payload: { compacted: true, before: 30, after: 4, archive: "/p/.trance/memory.archive.md",
+                 notes: ["- **backend**: port 3100"] } },
+    { type: "memory_compacted", agent: "orchestrator",
+      payload: { compacted: false, reason: "the rewrite produced no notes" } },
   ]) {
     api.consoleAppend({ ...ev, ts: new Date().toISOString() });
     api.trackActivity(ev);
@@ -149,6 +155,8 @@ try {
                        notes: ["- **backend**: port 3100", "- a note with no author"] };
   api.renderMemory();
   api.paintMemoryCount();
+  api.state.memory.oversized = true;      // the "over budget" branch
+  api.renderMemory();
   console.log("context gauge:", text, "·", gauge.className);
   console.log("all render paths ran without a ReferenceError");
   process.exit(0);

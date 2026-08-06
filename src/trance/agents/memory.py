@@ -30,6 +30,30 @@ MAX_PROMPT_CHARS = 4000
 #: One note. Long enough for a route signature, short enough to stay a note.
 MAX_NOTE_CHARS = 400
 
+#: Past either of these the memory is compacted. They are deliberately below
+#: MAX_PROMPT_CHARS: once notes are being dropped from the prompt, agents are
+#: already working from a partial picture, and compaction should have happened
+#: before that — not as a consequence of it.
+MAX_NOTES = 25
+MAX_CHARS = 3000
+
+COMPACT_PROMPT = """\
+Below is a team of coding agents' shared memory for one project. Every line is \
+read into every agent's prompt, so it has to stay short.
+
+Rewrite it as a shorter list of the facts that are still true and still matter:
+
+- Merge notes that say the same thing.
+- Where a later note supersedes an earlier one (a port changed, a route was \
+renamed), keep ONLY the current fact.
+- Drop anything that was about doing the work rather than about the result, and \
+anything obvious from reading the code.
+- Keep contracts between components, ports and paths, formats, and commands. \
+When in doubt, keep it.
+
+Do not invent, generalise, or soften. Reply with the list only — one fact per \
+line, each starting with "- " and keeping its **author** tag. No preamble."""
+
 _HEADER = """# Project memory
 
 Shared by every agent on this project. Facts and decisions that outlive the step
@@ -90,6 +114,50 @@ class ProjectMemory:
             with self.path.open("a", encoding="utf8") as handle:
                 handle.write(f"\n- **{agent}**: {text}")
         return True, f"Remembered, and every agent after you will see it: {text}"
+
+    # ----------------------------------------------------------- compaction
+
+    def oversized(self, max_notes: int = MAX_NOTES, max_chars: int = MAX_CHARS) -> bool:
+        notes = self.notes()
+        return len(notes) > max_notes or sum(len(n) for n in notes) > max_chars
+
+    def compact(self, rewrite, *, max_notes: int = MAX_NOTES) -> dict:
+        """Rewrite the notes into fewer, using `rewrite(text) -> text`.
+
+        Trimming the oldest would be simpler and wrong: the first thing written
+        is usually the API contract, and the fortieth is usually a detail. What
+        has to go is what is *superseded or duplicated*, and only something that
+        can read the notes knows which those are.
+
+        The previous file is archived first. Compaction that silently discards
+        is worse than a long memory — you cannot audit what an agent was told.
+        """
+        before = self.notes()
+        if not before:
+            return {"compacted": False, "reason": "nothing to compact"}
+
+        try:
+            proposed = rewrite("\n".join(before))
+        except Exception as exc:                       # a failed rewrite is not fatal
+            return {"compacted": False, "reason": f"rewrite failed: {exc}"}
+
+        kept = [line.strip() for line in (proposed or "").splitlines()
+                if line.strip().startswith("- ")]
+        # Guards against a model that answers with prose, an apology, or nothing.
+        # Losing the team's shared facts is far worse than a memory that is long.
+        if not kept:
+            return {"compacted": False, "reason": "the rewrite produced no notes"}
+        if len(kept) > len(before):
+            return {"compacted": False, "reason": "the rewrite was not shorter"}
+
+        with self._lock:
+            archive = self.path.with_name("memory.archive.md")
+            with archive.open("a", encoding="utf8") as handle:
+                handle.write(f"\n\n## Compacted from {len(before)} to {len(kept)} notes\n"
+                             + "\n".join(before) + "\n")
+            self.path.write_text(_HEADER + "\n" + "\n".join(kept) + "\n", encoding="utf8")
+        return {"compacted": True, "before": len(before), "after": len(kept),
+                "archive": str(archive), "notes": kept}
 
     # -------------------------------------------------------------- prompt
 

@@ -21,9 +21,10 @@ import traceback
 from pathlib import Path
 
 from .agents.handoff import Handoff, build as build_handoff
-from .agents.memory import ProjectMemory
+from .agents.memory import COMPACT_PROMPT, ProjectMemory
 from .agents.runner import run_agent
 from .config import Config
+from .providers import client_for
 from .curator.walker import CuratorConfig, curate
 from .db import GraphDB
 from .events import EventBus
@@ -138,6 +139,7 @@ class FlowEngine:
                     self._emit("step_failed", agent=step.role, step_id=step.id,
                                payload={"reason": step.summary,
                                         "traceback": traceback.format_exc()})
+                self._compact_memory()
                 self.on_change()
         except Exception as exc:  # noqa: BLE001 - surface everything to the UI
             session.status = "error"
@@ -499,6 +501,26 @@ class FlowEngine:
         if not db_path.exists():
             return None
         return ContextTools(GraphDB(db_path), self.project)
+
+    def _compact_memory(self) -> None:
+        """Keep the shared memory small enough to belong in every prompt.
+
+        Between steps, never during one: an agent whose facts changed mid-turn
+        would be reasoning from two different memories in the same conversation.
+        """
+        if not self.memory.oversized():
+            return
+        model_config = self.config.for_orchestrator()
+
+        def rewrite(text: str) -> str:
+            response = client_for(model_config).complete([
+                {"role": "system", "content": COMPACT_PROMPT},
+                {"role": "user", "content": text},
+            ])
+            return response.text
+
+        result = self.memory.compact(rewrite)
+        self._emit("memory_compacted", agent="orchestrator", payload=result)
 
     def _project_map(self, role, task: str = "") -> str:
         """What is indexed, for a role that can query it."""
