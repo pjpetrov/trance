@@ -12,7 +12,10 @@ const makeEl = (tag = "div") => {
     append: (...c) => el.children.push(...c), prepend: () => {}, remove: () => {},
     appendChild: (c) => el.children.push(c),
     addEventListener: () => {}, removeEventListener: () => {},
-    querySelector: () => makeEl(), querySelectorAll: () => [],
+    // Null, like a real one that finds nothing. Returning an element made every
+    // "is this here?" check pass, which is how a missing .c-head went unseen.
+    querySelector: (sel) => el._found[sel] || null,
+    querySelectorAll: () => [],
     // A real set, not a stub: code that branches on contains() (which screen is
     // active, is a modal open) took the same path every time otherwise.
     classList: (() => {
@@ -23,7 +26,7 @@ const makeEl = (tag = "div") => {
                contains: (c) => set.has(c) };
     })(),
     focus: () => {}, select: () => {}, setAttribute: () => {},
-    scrollTop: 0, scrollHeight: 0, clientHeight: 0,
+    scrollTop: 0, scrollHeight: 0, clientHeight: 0, _found: {},
     get firstChild() { return el.children[0] || makeEl(); },
   };
   return el;

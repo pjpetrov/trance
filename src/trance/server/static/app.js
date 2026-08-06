@@ -205,6 +205,13 @@ $("create-session").onclick = async () => {
 
 async function openSession(id) {
   state.session = await api(`/api/sessions/${id}`);
+  // A question asked before this page existed is still blocking an agent.
+  api(`/api/sessions/${id}/approvals`).then((data) => {
+    (data.pending || []).forEach((request) => consolePush(approvalEntry({
+      type: "approval_requested", agent: request.agent, step_id: request.step_id,
+      payload: { ...request, timeout_s: data.timeout_s },
+    })));
+  }).catch(() => {});
   state.events = [];
   consoleStep = null;
   consoleReset();
@@ -1804,10 +1811,16 @@ function entryReference(event) {
 }
 
 function attachIntercept(entry, event) {
+  // Not every console entry is a collapsible line — a permission prompt is a
+  // form. Assuming one here threw inside the websocket handler, so the card
+  // never rendered and the run looked stuck waiting for a button that was
+  // never drawn.
+  const head = entry.querySelector(".c-head");
+  if (!head) return;
   entry.dataset.ref = "1";
   entry.classList.toggle("interceptable", isPaused());
 
-  entry.querySelector(".c-head").addEventListener("click", (e) => {
+  head.addEventListener("click", (e) => {
     if (!isPaused()) return;                       // normal expand/collapse
     if (entry.querySelector(".intercept")) return; // already open
     e.stopPropagation();
