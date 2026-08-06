@@ -381,6 +381,20 @@ body { overflow-x: hidden; }
 }
 
 
+/* The plan screen is the opposite of the run screen: the flow is the thing you
+   are reading, it is as long as it is, and it reads better as one page than as
+   a column with its own scrollbar. So nothing here scrolls internally except
+   the chat, which is history rather than the subject. */
+.plan-stack { display: flex; flex-direction: column; gap: 16px; }
+#screen-plan .chat-log { max-height: 34vh; }
+#screen-plan .flow-editor { max-height: none; overflow: visible; }
+/* With the page scrolling, Save and Run would otherwise be somewhere above the
+   flow you are editing. The one thing that must stay reachable is the toolbar. */
+#screen-plan .panel-head {
+  position: sticky; top: 52px; z-index: 5; background: var(--panel);
+  padding: 8px 0; margin: -8px 0 0; border-bottom: 1px solid var(--line);
+}
+
 /* The run screen owns the viewport: the console takes whatever is left and
    scrolls internally, instead of growing the page. */
 #screen-run.active { display: flex; flex-direction: column; height: calc(100vh - 116px); }
