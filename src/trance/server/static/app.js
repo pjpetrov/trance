@@ -294,6 +294,47 @@ function renderFlowEditor() {
 //: A step you can no longer be waiting on — safe to fold away.
 const FINISHED = new Set(["done", "failed", "skipped", "blocked"]);
 
+/* A step nobody can hold in their head is where agents drift: the model does
+ * the part it understood and reports success on the whole thing. The estimate
+ * makes that visible before the run, and `split` is what you do about it. */
+
+const POINT_LABEL = {
+  1: "one small edit", 2: "one focused change", 3: "one file end to end",
+  5: "a few files that must agree", 8: "a whole feature — consider splitting",
+  13: "too big for one step",
+};
+
+function pointsBadge(step) {
+  const limit = (state.planning && state.planning.max_step_points) || 0;
+  const points = step.points || 0;
+  const over = limit > 0 && points > limit;
+  const badge = el("span", `badge points${over ? " over" : ""}`,
+                   points ? `${points} pts` : "unrated");
+  badge.title = points
+    ? `${POINT_LABEL[points] || ""}${over ? ` — over the limit of ${limit}` : ""}`
+    : "Not estimated. Split it to have the orchestrator size the pieces.";
+  return badge;
+}
+
+async function splitStep(step, button) {
+  if (!state.session) return toast("Save the flow first.");
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "splitting…";
+  try {
+    const result = await api(
+      `/api/sessions/${state.session.id}/steps/${step.id}/split`, { method: "POST" });
+    if (!result.split) return toast(result.reason || "It was left as one step.");
+    state.session.flow = result.flow;
+    state.draftSteps = result.flow.steps.map((s) => ({ ...s }));
+    redrawEditor();
+    toast(`Split into ${result.into.length} steps.`);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
 function stepCard(step, index) {
   const card = el("div", "step-card");
   // Only a step whose agent is mid-flight is locked; a failed or finished one
@@ -316,6 +357,7 @@ function stepCard(step, index) {
     const badge = el("span", "badge role", step.role);
     if (role) badge.style.background = role.color;
     head.append(badge, el("span", "badge", step.status));
+    if (step.points) head.append(pointsBadge(step));
     head.append(el("span", "step-peek", clip(step.task, 70)));
     const open = el("button", "step-toggle", "▸");
     open.title = "Show this step";
@@ -364,6 +406,15 @@ function stepCard(step, index) {
     if (!editable) tag.title = "This step is running — edit it once it settles";
     head.append(tag);
   }
+
+  head.append(pointsBadge(step));
+
+  // Splitting is the fix for the number being too big, so it belongs next to it.
+  const split = el("button", "small", "split");
+  split.disabled = !editable || !state.session;
+  split.title = "Ask the orchestrator to break this into smaller steps";
+  split.onclick = () => splitStep(step, split);
+  head.append(split);
 
   const remove = el("button", null, "✕");
   remove.disabled = !editable;
@@ -735,6 +786,9 @@ function headline(event) {
       return `${p.message || "fixing"}` +
              (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
     case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
+    case "steps_split":
+      return `${p.split.length} step(s) over ${p.threshold} points broken up — `
+             + `${p.steps} steps now`;
     case "memory_compacted":
       return p.compacted ? `project memory: ${p.before} notes → ${p.after}`
                          : `memory left as it was — ${p.reason}`;
@@ -866,6 +920,7 @@ function clip(text, n) {
   state.roles = info.roles;
   state.providers = info.providers;
   state.presets = info.presets;
+  state.planning = info.planning || { max_step_points: 0, scale: [1, 2, 3, 5, 8, 13] };
   state.orchestrator = info.orchestrator;
   state.kinds = info.kinds;
   await loadWorkspace();
@@ -880,7 +935,32 @@ $("settings").onclick = (e) => { if (e.target.id === "settings") e.currentTarget
 
 async function openSettings() {
   $("settings").classList.add("open");
+  renderStepSize();
   await renderProviders();
+}
+
+function renderStepSize() {
+  const select = $("max-step-points");
+  const planning = state.planning || { max_step_points: 0, scale: [1, 2, 3, 5, 8, 13] };
+  select.innerHTML = "";
+  const off = el("option", null, "never split");
+  off.value = "0";
+  select.append(off);
+  for (const p of planning.scale) {
+    const opt = el("option", null, `${p} points${POINT_LABEL[p] ? ` — ${POINT_LABEL[p]}` : ""}`);
+    opt.value = String(p);
+    select.append(opt);
+  }
+  select.value = String(planning.max_step_points || 0);
+  select.onchange = async () => {
+    const body = await api("/api/config/planning",
+                           { method: "PUT", body: { max_step_points: Number(select.value) } });
+    state.planning = { ...state.planning, ...body };
+    toast(body.max_step_points
+      ? `Steps above ${body.max_step_points} points will be split.`
+      : "Steps will be estimated but never split.");
+    if (state.draftSteps) redrawEditor();
+  };
 }
 
 async function renderPresets() {
@@ -2232,6 +2312,16 @@ function consoleAppend(event) {
           wrap.append(el("pre", null, p.handoff || "(nothing to hand over)"));
           return wrap;
         },
+      }));
+      return;
+
+    case "steps_split":
+      consolePush(consoleEntry({
+        kind: "step", icon: "✂", time, tag: "orchestrator",
+        label: `${p.split.length} step(s) over ${p.threshold} points broken up`,
+        body: () => el("pre", null, (p.split || []).map(
+          (s) => `${s.points} pts: ${s.task}\n` +
+                 s.into.map((t) => `   → ${t}`).join("\n")).join("\n\n")),
       }));
       return;
 

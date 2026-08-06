@@ -16,6 +16,162 @@ from ..providers import client_for
 from .memory import ProjectMemory
 from .roles import BUILTIN_ROLES
 
+#: Fibonacci-ish, because the gaps are the point: the difference between 1 and
+#: 2 is real, between 8 and 9 is noise. Anchored to concrete work so the numbers
+#: mean the same thing across runs and across models.
+POINTS = (1, 2, 3, 5, 8, 13)
+
+POINTS_SCALE = (
+    "How big this step is, on this scale — estimate honestly, not optimistically:\n"
+    "1 = one small edit to one file (change a constant, add a field).\n"
+    "2 = one focused change to one file.\n"
+    "3 = one file written or reworked end to end.\n"
+    "5 = two or three files that have to agree with each other.\n"
+    "8 = a whole feature across several files, or work you cannot fully "
+    "picture yet.\n"
+    "13 = too big to describe as one task; it needs breaking up."
+)
+
+#: Splitting is the orchestrator estimating its own work again, so it can loop.
+#: Two passes is enough to get an 8 down to 2s and 3s; past that it starts
+#: inventing filler steps to satisfy the number.
+MAX_SPLIT_ROUNDS = 2
+
+
+def split_step_tool(roles: list, threshold: int) -> dict:
+    """Schema for breaking one oversized step into smaller ones."""
+    workers = [r.name for r in roles if r.name != "orchestrator"]
+    verifiers = [r.name for r in roles if r.verifier]
+    return {
+        "type": "function",
+        "function": {
+            "name": "split_step",
+            "description": (
+                f"Break one step into smaller steps, each worth {threshold} points or "
+                f"less. Keep the same total scope — do not drop work, do not add work, "
+                f"and do not turn one step into ten trivial ones."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "description": ("The replacement steps, in the order they must "
+                                        "run. Each stands on its own and is worth doing."),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {"type": "string", "enum": workers},
+                                "task": {
+                                    "type": "string",
+                                    "description": ("One concrete piece of work, naming "
+                                                    "the files it touches."),
+                                },
+                                "check": {"type": "string", "enum": verifiers},
+                                "on_fail": {"type": "string", "enum": workers},
+                                "max_loops": {"type": "integer"},
+                                "points": {"type": "integer", "description": POINTS_SCALE,
+                                           "enum": list(POINTS)},
+                            },
+                            "required": ["role", "task", "points"],
+                        },
+                    },
+                },
+                "required": ["steps"],
+            },
+        },
+    }
+
+
+def split_oversized(proposal: dict, *, roles: list, config: ModelConfig, bus: EventBus,
+                    session_id: str, threshold: int, project_dir: Path | None = None) -> dict:
+    """Replace every step over `threshold` with the smaller steps it becomes.
+
+    A step nobody can hold in their head is where agents drift: the model
+    tackles the part it understood and reports success on the whole thing. The
+    estimate is the trigger, but the split is the point — asking for a number
+    only changes anything if something acts on it.
+    """
+    if threshold <= 0:
+        return proposal
+
+    steps = list(proposal.get("steps") or [])
+    split_log: list[dict] = []
+
+    for _ in range(MAX_SPLIT_ROUNDS):
+        oversized = [s for s in steps if (s.get("points") or 0) > threshold]
+        if not oversized:
+            break
+        rebuilt: list[dict] = []
+        for step in steps:
+            if (step.get("points") or 0) <= threshold:
+                rebuilt.append(step)
+                continue
+            pieces = _ask_for_split(step, roles=roles, config=config, bus=bus,
+                                    session_id=session_id, threshold=threshold,
+                                    project_dir=project_dir)
+            if len(pieces) < 2:
+                # A refusal to split is information: the step may genuinely be
+                # atomic. Keep it, flagged, rather than forcing a fake break.
+                rebuilt.append(step)
+                continue
+            split_log.append({"task": step["task"], "points": step.get("points"),
+                              "into": [p["task"] for p in pieces]})
+            rebuilt.extend(pieces)
+        steps = rebuilt
+
+    proposal["steps"] = steps
+    if split_log:
+        proposal["split"] = split_log
+        bus.emit("steps_split", session_id, agent="orchestrator",
+                 payload={"threshold": threshold, "split": split_log,
+                          "steps": len(steps)})
+    return proposal
+
+
+def _ask_for_split(step: dict, *, roles: list, config: ModelConfig, bus: EventBus,
+                   session_id: str, threshold: int, project_dir: Path | None) -> list[dict]:
+    role = next((r for r in roles if r.name == "orchestrator"), BUILTIN_ROLES["orchestrator"])
+    prompt = (
+        f"This step came out at {step.get('points')} points, over the limit of "
+        f"{threshold}. Break it into smaller steps by calling split_step.\n\n"
+        f"Agent: {step['role']}\n"
+        f"Task: {step['task']}\n\n"
+        f"Each piece must be worth doing on its own and leave the project in a state "
+        f"the next step can build on — split by deliverable, not by 'part 1 / part 2'. "
+        f"If it genuinely cannot be broken up, call split_step with the single "
+        f"original step unchanged."
+    )
+    messages = [{"role": "system", "content": role.system_prompt},
+                {"role": "user", "content": prompt}]
+    response = client_for(config).complete(messages,
+                                           tools=[split_step_tool(roles, threshold)])
+    bus.emit("model_call", session_id, agent="orchestrator", payload={
+        "round": 1, "model": config.model, "base_url": config.base_url,
+        "splitting": step["task"], "messages": messages,
+        "response_text": response.text, "reasoning": response.reasoning,
+        "tool_calls": [{"name": c.name, "arguments": c.arguments} for c in response.tool_calls],
+        "finish_reason": response.finish_reason, "usage": response.usage,
+        "summary": summarize_messages(messages),
+    })
+
+    for call in response.tool_calls:
+        if call.name != "split_step" or call.malformed:
+            continue
+        pieces = _normalize({"steps": call.arguments.get("steps") or [],
+                             "team": []}, roles)["steps"]
+        # Inherit what the split forgot: a piece with no check is not a reason
+        # to lose the check the original had.
+        for piece in pieces:
+            piece.setdefault("check", step.get("check"))
+            if not piece.get("check"):
+                piece["check"] = step.get("check")
+            if not piece.get("on_fail") and piece["check"]:
+                piece["on_fail"] = step.get("on_fail")
+        return pieces
+    return []
+
+
 def propose_flow_tool(roles: list) -> dict:
     """Build the proposal schema from the live agent library.
 
@@ -80,8 +236,13 @@ def propose_flow_tool(roles: list) -> dict:
                                     "description": ("How many times this block may loop "
                                                     "before the run is halted (1-4)."),
                                 },
+                                "points": {
+                                    "type": "integer",
+                                    "description": POINTS_SCALE,
+                                    "enum": list(POINTS),
+                                },
                             },
-                            "required": ["role", "task"],
+                            "required": ["role", "task", "points"],
                         },
                     },
                 },
@@ -214,6 +375,7 @@ def _normalize(arguments: dict, roles: list) -> dict:
         steps.append({
             "role": role, "task": task, "check": check, "on_fail": fixer,
             "max_loops": max(1, min(4, int(loops) if loops else 2)),
+            "points": _points(raw.get("points")),
         })
 
     team = [n for n in (arguments.get("team") or []) if n in known and n != "orchestrator"]
@@ -228,6 +390,15 @@ def _normalize(arguments: dict, roles: list) -> dict:
         "summary": arguments.get("summary", ""), "team": team, "steps": steps,
         "dropped_checks": dropped,
     }
+
+
+def _points(raw) -> int:
+    """Snap an estimate to the scale. Off-scale numbers mean nothing to us."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return min(POINTS, key=lambda p: (abs(p - value), p)) if value > 0 else 0
 
 
 def _describe_project(project_dir: Path) -> str:

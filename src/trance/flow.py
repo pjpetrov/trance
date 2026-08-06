@@ -68,6 +68,10 @@ class Step:
     #: How many times the block may run before the flow is halted. The loop can
     #: only be left by succeeding — exhausting it stops the run.
     max_loops: int = 2
+    #: The orchestrator's size estimate (see orchestrator.POINTS). 0 = unrated.
+    #: A step nobody can hold in their head is where agents drift, so this is
+    #: what the splitter acts on.
+    points: int = 0
 
     #: Legacy fields, still read when `check` is unset.
     gates: list[str] = field(default_factory=list)

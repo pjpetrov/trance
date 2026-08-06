@@ -2317,3 +2317,185 @@ def test_compaction_can_be_triggered_from_the_ui(tmp_path, monkeypatch):
     body = client.post(f"/api/sessions/{sid}/memory/compact").json()
     assert body["compacted"] is True and body["after"] == 1
     assert client.get(f"/api/sessions/{sid}/memory").json()["oversized"] is False
+
+
+# ------------------------------------- sizing steps and splitting big ones
+
+def _proposal(*points):
+    return {"summary": "s", "team": ["backend"],
+            "steps": [{"role": "backend", "task": f"task worth {p}", "check": "factchecker",
+                       "on_fail": None, "max_loops": 2, "points": p} for p in points]}
+
+
+def _split_client(monkeypatch, pieces_by_task):
+    """An orchestrator that answers split_step with a scripted breakdown."""
+    from trance.agents import orchestrator
+    from trance.providers.base import ChatResponse, ToolCall
+
+    asked = []
+
+    class FakeClient:
+        def complete(self, messages, tools=None):
+            task = messages[-1]["content"].split("Task: ", 1)[-1].split("\n")[0]
+            asked.append(task)
+            pieces = pieces_by_task.get(task, [])
+            return ChatResponse(text="", tool_calls=[ToolCall(
+                id="c", name="split_step", arguments={"steps": pieces})])
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
+    return asked
+
+
+def test_the_estimate_is_snapped_to_the_scale():
+    from trance.agents.orchestrator import _points
+
+    assert _points(8) == 8
+    assert _points(4) == 3        # 4 is equidistant; the smaller claim is the safer one
+    assert _points(100) == 13
+    assert _points("nonsense") == 0
+    assert _points(0) == 0
+
+
+def test_a_step_over_the_threshold_is_broken_up(tmp_path, monkeypatch):
+    from trance.agents.orchestrator import split_oversized
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    asked = _split_client(monkeypatch, {"task worth 8": [
+        {"role": "backend", "task": "write the model layer", "points": 3},
+        {"role": "backend", "task": "write the routes on top of it", "points": 3},
+    ]})
+    out = split_oversized(_proposal(2, 8), roles=list(R.values()),
+                          config=ModelConfig(), bus=EventBus(), session_id="s", threshold=5)
+
+    assert asked == ["task worth 8"]                 # only the oversized one
+    assert [s["task"] for s in out["steps"]] == [
+        "task worth 2", "write the model layer", "write the routes on top of it"]
+    assert all(s["points"] <= 5 for s in out["steps"])
+
+
+def test_a_split_piece_inherits_the_check_it_was_given(tmp_path, monkeypatch):
+    """Splitting a checked step into unchecked ones would quietly remove the
+    verification the user asked for."""
+    from trance.agents.orchestrator import split_oversized
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    _split_client(monkeypatch, {"task worth 8": [
+        {"role": "backend", "task": "part one", "points": 3},
+        {"role": "backend", "task": "part two", "points": 2},
+    ]})
+    out = split_oversized(_proposal(8), roles=list(R.values()), config=ModelConfig(),
+                          bus=EventBus(), session_id="s", threshold=5)
+
+    assert [s["check"] for s in out["steps"]] == ["factchecker", "factchecker"]
+
+
+def test_a_step_that_cannot_be_split_is_kept(monkeypatch):
+    """A refusal is information — forcing a break would invent filler steps."""
+    from trance.agents.orchestrator import split_oversized
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    _split_client(monkeypatch, {"task worth 13": [
+        {"role": "backend", "task": "task worth 13", "points": 13}]})
+    out = split_oversized(_proposal(13), roles=list(R.values()), config=ModelConfig(),
+                          bus=EventBus(), session_id="s", threshold=5)
+
+    assert len(out["steps"]) == 1
+    assert out["steps"][0]["task"] == "task worth 13"
+
+
+def test_splitting_recurses_but_stops(monkeypatch):
+    """Each pass halves; two passes is enough, and past that models pad."""
+    from trance.agents.orchestrator import split_oversized
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    asked = _split_client(monkeypatch, {
+        "task worth 13": [{"role": "backend", "task": "still big", "points": 8},
+                          {"role": "backend", "task": "small bit", "points": 2}],
+        "still big": [{"role": "backend", "task": "half a", "points": 3},
+                      {"role": "backend", "task": "half b", "points": 3}],
+    })
+    out = split_oversized(_proposal(13), roles=list(R.values()), config=ModelConfig(),
+                          bus=EventBus(), session_id="s", threshold=5)
+
+    assert asked == ["task worth 13", "still big"]
+    assert [s["task"] for s in out["steps"]] == ["half a", "half b", "small bit"]
+
+
+def test_a_zero_threshold_turns_splitting_off(monkeypatch):
+    from trance.agents.orchestrator import split_oversized
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    asked = _split_client(monkeypatch, {})
+    out = split_oversized(_proposal(13, 8), roles=list(R.values()), config=ModelConfig(),
+                          bus=EventBus(), session_id="s", threshold=0)
+    assert asked == [] and len(out["steps"]) == 2      # estimates kept as information
+
+
+def test_the_estimate_survives_into_the_flow():
+    from trance.flow import Step
+
+    step = Step.from_dict({"role": "backend", "task": "t", "points": 5})
+    assert step.points == 5 and step.to_dict()["points"] == 5
+
+
+def test_the_split_threshold_is_configurable_and_can_be_turned_off(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    assert client.get("/api/config").json()["planning"]["max_step_points"] == 5
+
+    assert client.put("/api/config/planning",
+                      json={"max_step_points": 3}).json()["max_step_points"] == 3
+    assert client.put("/api/config/planning",
+                      json={"max_step_points": 0}).json()["max_step_points"] == 0
+    assert client.put("/api/config/planning", json={"max_step_points": 99}).status_code == 400
+
+
+def test_a_step_can_be_split_from_the_flow_editor(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.providers.base import ChatResponse, ToolCall
+    from trance.server import app as app_module
+
+    class FakeClient:
+        def complete(self, messages, tools=None):
+            return ChatResponse(text="", tool_calls=[ToolCall(
+                id="c", name="split_step", arguments={"steps": [
+                    {"role": "backend", "task": "write the model layer", "points": 3},
+                    {"role": "backend", "task": "write the routes", "points": 2}]})])
+
+    monkeypatch.setattr("trance.agents.orchestrator.client_for", lambda config: FakeClient())
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "backend", "task": "build the whole api", "points": 8},
+        {"role": "tester", "task": "test it", "points": 2}]})
+
+    session = client.app.state.store.get(sid)
+    step_id = session.flow.steps[0].id
+    body = client.post(f"/api/sessions/{sid}/steps/{step_id}/split").json()
+
+    assert body["split"] is True
+    assert [s["task"] for s in body["flow"]["steps"]] == [
+        "write the model layer", "write the routes", "test it"]   # in place, order kept

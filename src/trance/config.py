@@ -99,6 +99,9 @@ class Config:
         default_factory=lambda: AgentDefaults(max_tokens=ORCHESTRATOR_MAX_TOKENS))
     curator: CuratorSettings = field(default_factory=CuratorSettings)
     max_recurate_rounds: int = 2
+    #: Steps estimated above this are broken up before the flow is proposed.
+    #: 0 turns splitting off and leaves the estimates as information only.
+    max_step_points: int = 5
     runs_dir: str = "runs"
     #: Root for new projects. Empty means "the directory trance was started in".
     workspace: str = ""
@@ -227,6 +230,7 @@ class Config:
             "orchestrator": asdict(self.orchestrator),
             "curator": asdict(self.curator),
             "max_recurate_rounds": self.max_recurate_rounds,
+            "max_step_points": self.max_step_points,
             "runs_dir": self.runs_dir,
             "workspace": str(self.workspace_root),
         }

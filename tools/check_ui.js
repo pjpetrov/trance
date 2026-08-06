@@ -32,6 +32,7 @@ global.location = { protocol: "http:", host: "x" };
 global.WebSocket = function () { return { onmessage: null, onclose: null, close() {} }; };
 const RESPONSES = {
   "/api/config": { roles: {}, providers: [], presets: [], kinds: {},
+                   planning: { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] },
                    orchestrator: { provider: "p", model: "m", base_url: "u" } },
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
                       suggested_dir: "/w/project", state_dir: "/s" },
@@ -47,7 +48,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -67,10 +68,12 @@ try {
   api.state.session = session;
   api.state.roles = { backend: { name: "backend", color: "#7aa2f7", verifier: false },
                       tester: { name: "tester", color: "#f7768e", verifier: true } };
+  api.state.planning = { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] };
   api.state.draftSteps = ["pending", "running", "done", "failed", "skipped", "blocked"]
     .map((status, i) => ({ id: `s${i}`, role: "backend", task: `task ${i}`, status,
                            check: "tester", on_fail: null, max_loops: 2, checker: "tester",
-                           fixer: "backend", loop_limit: 2, attempts: [] }));
+                           fixer: "backend", loop_limit: 2, attempts: [],
+                           points: [0, 1, 3, 5, 8, 13][i] }));
   api.state.draftSteps.forEach((step, i) => api.stepCard(step, i));   // every status
   api.renderSessionBar(); api.renderChat(); api.renderFlowEditor();
   api.renderFlowView(); api.renderRun(); api.paintPaused();
@@ -155,6 +158,16 @@ try {
                        notes: ["- **backend**: port 3100", "- a note with no author"] };
   api.renderMemory();
   api.paintMemoryCount();
+  api.renderStepSize();
+  // The badge must call out a step that is over the limit — that is its job.
+  if (!api.pointsBadge({ points: 8 }).className.includes("over")) {
+    console.log("BROKEN: an 8-point step is not flagged over a limit of 5");
+    process.exit(1);
+  }
+  if (api.pointsBadge({ points: 3 }).className.includes("over")) {
+    console.log("BROKEN: a 3-point step is flagged over a limit of 5");
+    process.exit(1);
+  }
   api.state.memory.oversized = true;      // the "over budget" branch
   api.renderMemory();
   console.log("context gauge:", text, "·", gauge.className);

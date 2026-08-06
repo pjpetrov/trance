@@ -135,6 +135,15 @@
     <h3>Orchestrator</h3>
     <p class="muted small">The agent you chat with. Set from here, not per-role.</p>
     <div id="orchestrator-settings" class="row"></div>
+
+    <h3>Step size</h3>
+    <p class="muted small">The orchestrator estimates every step in story points
+      (1 = one small edit, 3 = one file end to end, 8 = a whole feature). Anything above
+      this limit is broken into smaller steps before you see the flow — a step too big to
+      picture is where an agent does the part it understood and reports success on all of it.</p>
+    <label class="inline-field">Split steps above
+      <select id="max-step-points" class="compact"></select>
+    </label>
   </div>
 </div>
 

@@ -513,3 +513,11 @@ input.tiny { width: 62px; min-width: 0; }
   background: var(--bg); color: var(--fg);
   border: 1px solid var(--line); border-radius: 8px; padding: 8px;
 }
+
+/* ── step size estimates ───────────────────────────────────────────────
+   The badge is information until it is over the limit, and then it is a
+   prompt to act — so only then does it take a colour. */
+.badge.points { font-variant-numeric: tabular-nums; }
+.badge.points.over {
+  color: var(--warn); border-color: var(--warn); font-weight: 600;
+}

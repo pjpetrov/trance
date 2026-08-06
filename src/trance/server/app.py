@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..agents import orchestrator as orchestrator_agent
+from ..agents.orchestrator import POINTS
 from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
 from ..agents.store import CommandStore, PROTECTED, RoleStore, validate as validate_agent
@@ -97,6 +98,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "providers": [p.to_dict() for p in providers.all(enabled_only=True)],
             "presets": [m.to_dict() for m in providers.presets()],
             "kinds": KIND_DEFAULTS,
+            "planning": {"max_step_points": config.max_step_points, "scale": list(POINTS)},
             "orchestrator": {"preset": config.orchestrator.preset,
                              "provider": orchestrator.provider, "model": orchestrator.model,
                              "base_url": orchestrator.base_url,
@@ -375,6 +377,20 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"preset": config.orchestrator.preset, "provider": resolved.provider,
                 "model": resolved.model, "base_url": resolved.base_url}
 
+    @app.put("/api/config/planning")
+    def set_planning(body: dict):
+        """The size a step may reach before the orchestrator breaks it up."""
+        if "max_step_points" in body:
+            try:
+                value = int(body["max_step_points"] or 0)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "max_step_points must be a number")
+            if value < 0 or value > 13:
+                raise HTTPException(400, "max_step_points must be between 0 and 13 "
+                                         "(0 turns splitting off)")
+            config.max_step_points = value
+        return {"max_step_points": config.max_step_points, "scale": list(POINTS)}
+
     # ----------------------------------------------------------- sessions
 
     @app.get("/api/workspace")
@@ -522,6 +538,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
         if result["proposal"]:
             proposal = result["proposal"]
+            # Break oversized steps before the user ever sees the flow: a step
+            # too big to picture is where an agent does the part it understood
+            # and reports success on the whole thing.
+            proposal = await asyncio.to_thread(
+                orchestrator_agent.split_oversized, proposal,
+                roles=roles.all(), config=config.for_orchestrator(), bus=bus,
+                session_id=session_id, threshold=config.max_step_points,
+                project_dir=Path(session.project_dir),
+            )
             session.team = roles.resolve_team(proposal["team"])
             session.flow = Flow(steps=[Step.from_dict(s) for s in proposal["steps"]])
             session.status = "ready"
@@ -670,6 +695,42 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                  payload={"note": note, "steps": [t.id for t in targets]})
         touch(session)
         return {"steered": [t.id for t in targets]}
+
+    @app.post("/api/sessions/{session_id}/steps/{step_id}/split")
+    async def split_one_step(session_id: str, step_id: str, body: dict | None = None):
+        """Break one step up on demand, whatever it was estimated at."""
+        session = _need(store, session_id)
+        step = session.flow.find(step_id)
+        if step is None:
+            raise HTTPException(404, "no such step")
+        if step.status in Flow.LOCKED:
+            raise HTTPException(409, "that step is running — pause it first")
+
+        threshold = int((body or {}).get("threshold") or config.max_step_points or 3)
+        target = dict(step.to_dict())
+        # Splitting an unrated step still needs a number to argue against.
+        target["points"] = step.points or threshold + 1
+        try:
+            result = await asyncio.to_thread(
+                orchestrator_agent.split_oversized, {"steps": [target], "team": []},
+                roles=roles.all(), config=config.for_orchestrator(), bus=bus,
+                session_id=session_id, threshold=threshold,
+                project_dir=Path(session.project_dir),
+            )
+        except BackendError as exc:
+            raise HTTPException(502, str(exc))
+
+        pieces = [Step.from_dict(s) for s in result["steps"]]
+        if len(pieces) < 2:
+            return {"split": False,
+                    "reason": "the orchestrator did not find a smaller shape for it"}
+
+        index = session.flow.steps.index(step)
+        session.flow.steps[index:index + 1] = pieces
+        bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
+        touch(session)
+        return {"split": True, "into": [s.to_dict() for s in pieces],
+                "flow": session.flow.to_dict()}
 
     @app.post("/api/sessions/{session_id}/steps/{step_id}/rerun")
     def rerun(session_id: str, step_id: str):
