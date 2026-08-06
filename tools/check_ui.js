@@ -46,7 +46,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,contextGauge,renderMemory};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -72,7 +72,7 @@ try {
                            fixer: "backend", loop_limit: 2, attempts: [] }));
   api.state.draftSteps.forEach((step, i) => api.stepCard(step, i));   // every status
   api.renderSessionBar(); api.renderChat(); api.renderFlowEditor();
-  api.renderFlowView(); api.renderRun(); api.paintPaused(); api.renderMemory();
+  api.renderFlowView(); api.renderRun(); api.paintPaused();
   api.consoleReset();
   api.consoleAppend({ type: "step_started", agent: "backend", step_id: "st1",
                       ts: new Date().toISOString(), payload: { task: "t", attempt: 1 } });
@@ -142,6 +142,13 @@ try {
     console.log("BROKEN: gauge level is", gauge.className);
     process.exit(1);
   }
+  // The memory modal: empty, populated, and its count badge.
+  api.renderMemory();
+  api.state.memory = { path: "/p/.trance/memory.md", prompt_view: "- **backend**: port 3100",
+                       raw: "- **backend**: port 3100",
+                       notes: ["- **backend**: port 3100", "- a note with no author"] };
+  api.renderMemory();
+  api.paintMemoryCount();
   console.log("context gauge:", text, "·", gauge.className);
   console.log("all render paths ran without a ReferenceError");
   process.exit(0);

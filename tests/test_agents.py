@@ -2015,3 +2015,80 @@ def test_the_memory_endpoint_shows_and_edits_what_agents_see(tmp_path, monkeypat
     client.put(f"/api/sessions/{sid}/memory",
                json={"raw": "- **user**: the server listens on port 3100\n"})
     assert "3100" in ProjectMemory(project).for_prompt()
+
+
+def test_memory_is_in_every_request_of_a_turn(tmp_path, monkeypatch):
+    """Not just the opening prompt: a long tool loop must not drift away from
+    the team's decisions."""
+    from trance.agents import runner
+    from trance.agents.memory import ProjectMemory
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    ProjectMemory(tmp_path).note("backend", "the API is POST /api/games")
+    seen = []
+
+    class Looper:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None):
+            self.n += 1
+            seen.append("\n".join(str(m.get("content")) for m in messages))
+            if self.n < 4:
+                return ChatResponse(text="", tool_calls=[
+                    ToolCall(id=f"c{self.n}", name="list_files", arguments={})])
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: Looper())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="build the ui", project=tmp_path,
+                     config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
+
+    assert len(seen) == 4
+    assert all("POST /api/games" in prompt for prompt in seen)
+
+
+def test_the_verifier_sees_the_same_memory_as_the_worker(tmp_path, monkeypatch):
+    """A checker judging against different facts than the worker built to is
+    just a second opinion about the wrong thing."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker"])
+    engine.memory.note("backend", "the server listens on port 3100")
+    step = Step(role="backend", task="build it", check="factchecker")
+    prompts = {}
+
+    def fake(**kw):
+        prompts[kw["role"].name] = (kw.get("memory") or engine.memory).for_prompt()
+        return _Turn("PASS", "done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert "3100" in prompts["backend"]
+    assert "3100" in prompts["factchecker"]
+
+
+def test_the_orchestrator_plans_against_the_teams_decisions(tmp_path, monkeypatch):
+    from trance.agents import orchestrator
+    from trance.agents.memory import ProjectMemory
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    ProjectMemory(tmp_path).note("backend", "the server listens on port 3100")
+    captured = {}
+
+    class FakeClient:
+        def complete(self, messages, tools=None):
+            captured["system"] = messages[0]["content"]
+            return ChatResponse(text="ok")
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
+    orchestrator.chat(messages=[{"role": "user", "content": "add a scoreboard"}],
+                      project_dir=tmp_path, config=ModelConfig(), bus=EventBus(),
+                      session_id="s")
+
+    assert "3100" in captured["system"]
+    assert "already decided" in captured["system"]

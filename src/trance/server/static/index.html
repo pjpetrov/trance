@@ -79,6 +79,8 @@
       <div id="run-status"></div>
       <div id="activity-strip" class="activity-strip"></div>
       <div class="row">
+        <button id="open-memory" title="What the team has written down for each other">
+          🧠 Memory <span id="memory-count" class="badge"></span></button>
         <button id="btn-pause">Pause</button>
         <button id="btn-resume">Resume</button>
         <button id="btn-stop" class="danger">Stop</button>
@@ -93,25 +95,6 @@
           <span id="flow-progress" class="muted small"></span>
         </div>
         <div id="flow-view" class="flow-view"></div>
-      </div>
-      <!-- What every agent is told the team already decided. -->
-      <div class="panel memory-panel">
-        <div class="panel-head">
-          <h2>🧠 Project memory</h2>
-          <div class="row small">
-            <span id="memory-count" class="muted small"></span>
-            <button id="memory-edit" class="ghost small">edit</button>
-          </div>
-        </div>
-        <div id="memory-list" class="memory-list"></div>
-        <div id="memory-editor" class="memory-editor" hidden>
-          <textarea id="memory-raw" spellcheck="false"></textarea>
-          <div class="row small">
-            <button id="memory-save" class="primary">Save</button>
-            <button id="memory-cancel" class="ghost">Cancel</button>
-            <span class="muted small">Every agent reads this from now on.</span>
-          </div>
-        </div>
       </div>
       <div class="panel console-panel">
         <div class="panel-head">
@@ -181,6 +164,33 @@
 </div>
 
 <!-- Commands: the global allowlist every agent with the commands toolset uses -->
+<!-- Project memory: the one context every agent shares, so it is editable. -->
+<div id="memory" class="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>🧠 Project memory</h2>
+      <button id="close-memory" class="icon-btn">✕</button>
+    </div>
+    <p class="muted small">Written by agents with <code>remember</code>, read into every
+      agent's prompt from the next step on. Decisions the team must share — a route and its
+      payload, a port, where files live, how to run the tests. Correct or delete anything
+      wrong here: a wrong fact misleads every agent that follows.</p>
+    <p class="muted small">File: <code id="memory-path">…</code></p>
+
+    <div id="memory-list" class="memory-list"></div>
+    <div id="memory-editor" class="memory-editor" hidden>
+      <textarea id="memory-raw" rows="14" spellcheck="false"></textarea>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <button id="memory-edit" class="primary">Edit</button>
+      <button id="memory-save" class="primary" hidden>Save</button>
+      <button id="memory-cancel" hidden>Cancel</button>
+      <span id="memory-budget" class="muted small"></span>
+    </div>
+  </div>
+</div>
+
 <div id="commands" class="modal">
   <div class="modal-card">
     <div class="modal-head">

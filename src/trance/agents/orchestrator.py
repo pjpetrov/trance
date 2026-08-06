@@ -13,6 +13,7 @@ from pathlib import Path
 from ..config import ModelConfig
 from ..events import EventBus, summarize_messages
 from ..providers import client_for
+from .memory import ProjectMemory
 from .roles import BUILTIN_ROLES
 
 def propose_flow_tool(roles: list) -> dict:
@@ -118,6 +119,16 @@ def chat(
           "the run, so set a check on work that must be right."
         f"\n\nProject directory: {project_dir}\n{_describe_project(project_dir)}"
     )
+    # The orchestrator plans against the same facts the team works from. Without
+    # this it can propose a step that contradicts a decision already made and
+    # already being built on.
+    notes = ProjectMemory(project_dir).for_prompt()
+    if notes:
+        system += (
+            "\n\n## Project memory — what the team has already decided\n" + notes
+            + "\n\nPlan around these; they are already built on. If one has to change, "
+              "make that an explicit step rather than quietly planning against it."
+        )
     full = [{"role": "system", "content": system}] + messages
 
     client = client_for(config)

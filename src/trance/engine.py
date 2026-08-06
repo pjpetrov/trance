@@ -417,6 +417,7 @@ class FlowEngine:
                 session_id=self.session.id, step_id=step.id, history=self.session.history,
                 graph_tools=self._graph_tools(gate),
                 should_stop=lambda: self.session.stopping,
+                memory=self.memory, project_map=self._project_map(gate, step.task),
             )
             verdict = turn.verdict or "UNKNOWN"
             result = GateResult(

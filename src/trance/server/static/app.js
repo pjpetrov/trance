@@ -536,28 +536,48 @@ function renderRun() {
 
   renderFlowView();
   paintPaused();
-  renderMemory();
+  loadMemory();      // only the count; the notes load when the modal opens
 }
 
 /* ───────────────── the team's shared memory ───────────────────────── */
 
-async function renderMemory() {
-  const box = $("memory-list");
-  if (!box || !state.session) return;
-  let data;
+/* Behind a button rather than on the run screen: it is a handful of lines that
+ * change a few times a run, and it competes with the console for the space
+ * that matters while an agent is working. The count on the button is what you
+ * need at a glance; the notes themselves are a click away. */
+
+async function loadMemory() {
+  if (!state.session) return null;
   try {
-    data = await api(`/api/sessions/${state.session.id}/memory`);
-  } catch (_) { return; }
-  state.memory = data;
+    state.memory = await api(`/api/sessions/${state.session.id}/memory`);
+  } catch (_) { return null; }
+  paintMemoryCount();
+  return state.memory;
+}
+
+function paintMemoryCount() {
+  const badge = $("memory-count");
+  if (!badge) return;
+  const n = (state.memory && state.memory.notes.length) || 0;
+  badge.textContent = n ? String(n) : "";
+  badge.hidden = !n;
+}
+
+function renderMemory() {
+  const box = $("memory-list");
+  if (!box) return;
+  const data = state.memory || { notes: [], raw: "", prompt_view: "" };
+  $("memory-path").textContent = data.path || "";
+  $("memory-budget").textContent = data.prompt_view
+    ? `~${Math.round(data.prompt_view.length / 4)} tokens added to every agent's prompt`
+    : "";
 
   box.innerHTML = "";
-  $("memory-count").textContent = data.notes.length
-    ? `${data.notes.length} note(s) · in every agent's prompt`
-    : "";
   if (!data.notes.length) {
     box.append(el("p", "muted small",
-      "Nothing yet. Agents write here when they decide something the others "
-      + "must match — a route, a port, how to run the tests."));
+      "Nothing yet. Agents write here when they decide something the others must "
+      + "match — a route and its payload, a port, how to run the tests. You can also "
+      + "write the first notes yourself with Edit."));
     return;
   }
   for (const line of data.notes) {
@@ -572,25 +592,39 @@ async function renderMemory() {
   }
 }
 
+function memoryEditing(on) {
+  $("memory-editor").hidden = !on;
+  $("memory-list").hidden = on;
+  $("memory-edit").hidden = on;
+  $("memory-save").hidden = !on;
+  $("memory-cancel").hidden = !on;
+}
+
+async function openMemory() {
+  await loadMemory();
+  renderMemory();
+  memoryEditing(false);
+  $("memory").classList.add("open");
+}
+
+$("open-memory").onclick = openMemory;
+$("close-memory").onclick = () => $("memory").classList.remove("open");
+
 $("memory-edit").onclick = () => {
   $("memory-raw").value = (state.memory && state.memory.raw) || "";
-  $("memory-editor").hidden = false;
-  $("memory-list").hidden = true;
+  memoryEditing(true);
 };
 
-$("memory-cancel").onclick = () => {
-  $("memory-editor").hidden = true;
-  $("memory-list").hidden = false;
-};
+$("memory-cancel").onclick = () => memoryEditing(false);
 
 $("memory-save").onclick = async () => {
   await api(`/api/sessions/${state.session.id}/memory`, {
     method: "PUT", body: { raw: $("memory-raw").value },
   });
-  $("memory-editor").hidden = true;
-  $("memory-list").hidden = false;
-  await renderMemory();
-  toast("Project memory updated — agents will see this from the next step.");
+  await loadMemory();
+  renderMemory();
+  memoryEditing(false);
+  toast("Project memory updated — agents see this from the next step.");
 };
 
 $("btn-pause").onclick = async () => {
@@ -1812,6 +1846,10 @@ function trackActivity(event) {
         .map((v) => clip(String(v), 20)).join(", ")})`); break;
     case "context_bundle":
       setActivity(event.agent, "receiving curated context"); break;
+    case "tool_call":
+      // Keep the button's count honest while agents are writing notes.
+      if ((p.detail || {}).kind === "memory" && p.detail.stored) loadMemory();
+      break;
     case "fixing":
       activity.context = null;      // the fixer starts its own conversation
       setActivity(event.agent, "fixing what the last pass reported"); break;
