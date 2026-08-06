@@ -356,3 +356,113 @@ def test_output_room_larger_than_half_the_window_is_refused(tmp_path, monkeypatc
         "max_tokens": 64000})
     assert response.status_code == 400
     assert "32000" in response.json()["detail"]
+
+
+# ---------------------------------------------- named command allowlists
+
+def test_lists_are_named_and_an_agent_points_at_one(tmp_path):
+    """One global list was the wrong shape: a tester needs a build toolchain, a
+    reviewer needs almost nothing, and sharing one list gives everyone the union
+    of everything anyone ever needed."""
+    from trance.agents.store import DEFAULT_LIST, CommandStore
+
+    store = CommandStore(tmp_path / "c.json")
+    assert store.names() == [DEFAULT_LIST]
+
+    store.upsert("build-tools", allowed=["npm", "npx", "jest"], shell=True)
+    assert store.get("build-tools").allowed == ["jest", "npm", "npx"]
+    assert store.get("nope") is store.policy          # unknown falls back
+
+    reloaded = CommandStore(tmp_path / "c.json")
+    assert reloaded.names() == [DEFAULT_LIST, "build-tools"]
+    assert reloaded.get("build-tools").allowed == ["jest", "npm", "npx"]
+
+
+def test_an_older_single_list_file_keeps_what_the_user_had(tmp_path):
+    import json
+
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"allowed": ["pytest", "make"], "shell": False}))
+
+    from trance.agents.store import DEFAULT_LIST, CommandStore
+
+    store = CommandStore(path)
+    assert store.get(DEFAULT_LIST).allowed == ["make", "pytest"]
+    assert store.get(DEFAULT_LIST).shell is False
+
+
+def test_the_default_list_cannot_be_deleted(tmp_path):
+    """Something has to be the floor when an agent names nothing."""
+    from trance.agents.store import DEFAULT_LIST, CommandStore
+
+    store = CommandStore(tmp_path / "c.json")
+    store.upsert("throwaway", allowed=["ls"])
+    assert store.delete("throwaway") is True
+    assert store.delete(DEFAULT_LIST) is False
+    assert DEFAULT_LIST in store.names()
+
+
+def test_an_agent_resolves_the_list_it_names(tmp_path):
+    import copy
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.tools import AgentTools, CommandPolicy, set_command_lists
+
+    set_command_lists({"default": CommandPolicy(allowed=["ls"], shell=True),
+                       "build-tools": CommandPolicy(allowed=["npm", "npx"], shell=False)})
+    try:
+        role = copy.deepcopy(BUILTIN_ROLES["tester"])
+        role.command_list = "build-tools"
+        tools = AgentTools(tmp_path, role, None, notify=lambda *a, **k: None)
+
+        assert tools.allowed_commands == {"npm", "npx"}
+        assert tools.shell_enabled is False        # the list's setting, not the default's
+
+        role.commands = ["pytest"]                 # its own list still wins
+        assert AgentTools(tmp_path, role, None,
+                          notify=lambda *a, **k: None).allowed_commands == {"pytest"}
+    finally:
+        set_command_lists({})
+
+
+def test_deleting_a_list_moves_its_agents_to_the_default(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    client.put("/api/commands", json={"name": "build-tools", "allowed": ["npm", "npx"]})
+    client.put("/api/agents/tester", json={"command_list": "build-tools"})
+    assert client.get("/api/commands").json()["usage"]["tester"] == "build-tools"
+
+    body = client.delete("/api/commands/build-tools").json()
+    assert body["moved_to_default"] == ["tester"]
+    assert client.get("/api/commands").json()["usage"]["tester"] == "default"
+    assert client.delete("/api/commands/default").status_code == 400
+
+
+def test_a_partial_agent_update_keeps_everything_else(tmp_path):
+    """Changing one field must not blank the prompt and the remit by omission."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    before = next(a for a in client.get("/api/agents").json()["agents"]
+                  if a["name"] == "backend")
+    client.put("/api/agents/backend", json={"command_list": "build-tools"})
+    after = next(a for a in client.get("/api/agents").json()["agents"]
+                 if a["name"] == "backend")
+
+    assert after["command_list"] == "build-tools"
+    assert after["system_prompt"] == before["system_prompt"]
+    assert after["paths"] == before["paths"]
+    assert after["toolsets"] == before["toolsets"]

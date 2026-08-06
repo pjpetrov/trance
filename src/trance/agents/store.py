@@ -137,41 +137,94 @@ def validate(data: dict) -> str | None:
     return None
 
 
+#: The list every agent uses unless it names another. Kept as a real entry so
+#: "default" is editable like any other rather than being a special case.
+DEFAULT_LIST = "default"
+
+
 class CommandStore:
-    """The global command allowlist, persisted so UI edits survive a restart."""
+    """Named command allowlists, persisted so UI edits survive a restart.
+
+    One global list was the wrong shape: a tester needs npx and jest, devops
+    needs npm and docker, and a reviewer needs neither. Naming the lists lets an
+    agent point at the one that fits instead of everyone sharing the union of
+    everything anyone ever needed.
+    """
 
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self.policy = CommandPolicy()
+        self.lists: dict[str, CommandPolicy] = {}
         if self.path.exists():
-            try:
-                data = json.loads(self.path.read_text(encoding="utf8"))
-                self.policy = CommandPolicy(
-                    allowed=sorted({str(c).strip() for c in data.get("allowed", []) if str(c).strip()})
-                            or sorted(ALLOWED_COMMANDS),
-                    shell=bool(data.get("shell", True)),
-                )
-            except (OSError, json.JSONDecodeError, TypeError):
-                pass
-        else:
-            self._save()
+            self._load()
+        self.lists.setdefault(DEFAULT_LIST, CommandPolicy())
+        self._save()
+
+    # ------------------------------------------------------------------ io
+
+    def _load(self) -> None:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        named = data.get("lists")
+        if isinstance(named, dict):
+            for name, raw in named.items():
+                self.lists[name] = _policy_from(raw)
+            return
+        # Older single-list file: keep what the user had, under "default".
+        if data.get("allowed"):
+            self.lists[DEFAULT_LIST] = _policy_from(data)
 
     def _save(self) -> None:
+        payload = {"lists": {n: p.to_dict() for n, p in self.lists.items()}}
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.policy.to_dict(), indent=2), encoding="utf8")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf8")
         tmp.replace(self.path)
 
-    def update(self, allowed=None, shell=None) -> CommandPolicy:
-        with self._lock:
-            if allowed is not None:
-                cleaned = sorted({str(c).strip() for c in allowed if str(c).strip()})
-                self.policy.allowed = cleaned
-            if shell is not None:
-                self.policy.shell = bool(shell)
-            self._save()
-        return self.policy
+    # ----------------------------------------------------------------- api
 
-    def reset(self) -> CommandPolicy:
-        return self.update(allowed=sorted(ALLOWED_COMMANDS), shell=True)
+    @property
+    def policy(self) -> CommandPolicy:
+        """The default list — what an agent gets when it names none."""
+        return self.lists[DEFAULT_LIST]
+
+    def get(self, name: str | None) -> CommandPolicy:
+        return self.lists.get(name or DEFAULT_LIST) or self.policy
+
+    def names(self) -> list[str]:
+        return sorted(self.lists, key=lambda n: (n != DEFAULT_LIST, n))
+
+    def upsert(self, name: str, allowed=None, shell=None) -> CommandPolicy:
+        with self._lock:
+            policy = self.lists.setdefault(name, CommandPolicy(allowed=[], shell=True))
+            if allowed is not None:
+                policy.allowed = sorted({str(c).strip() for c in allowed if str(c).strip()})
+            if shell is not None:
+                policy.shell = bool(shell)
+            self._save()
+        return policy
+
+    def delete(self, name: str) -> bool:
+        """Remove a list. The default cannot go — something has to be the floor."""
+        if name == DEFAULT_LIST:
+            return False
+        with self._lock:
+            removed = self.lists.pop(name, None) is not None
+            if removed:
+                self._save()
+        return removed
+
+    def update(self, allowed=None, shell=None) -> CommandPolicy:
+        """Edit the default list. Kept for the single-list API and the CLI."""
+        return self.upsert(DEFAULT_LIST, allowed=allowed, shell=shell)
+
+    def reset(self, name: str = DEFAULT_LIST) -> CommandPolicy:
+        return self.upsert(name, allowed=sorted(ALLOWED_COMMANDS), shell=True)
+
+
+def _policy_from(raw: dict) -> CommandPolicy:
+    allowed = sorted({str(c).strip() for c in (raw.get("allowed") or []) if str(c).strip()})
+    return CommandPolicy(allowed=allowed or sorted(ALLOWED_COMMANDS),
+                         shell=bool(raw.get("shell", True)))

@@ -17,8 +17,10 @@ from ..agents.orchestrator import POINTS
 from ..agents.approval import ALWAYS, ApprovalBroker, DECISIONS
 from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
-from ..agents.store import CommandStore, PROTECTED, RoleStore, validate as validate_agent
-from ..agents.tools import ALLOWED_COMMANDS, set_command_policy
+from ..agents.store import (
+    CommandStore, DEFAULT_LIST, PROTECTED, RoleStore, validate as validate_agent,
+)
+from ..agents.tools import ALLOWED_COMMANDS, set_command_lists, set_command_policy
 from ..config import Config
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
@@ -43,6 +45,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     roles = RoleStore(Path(config.runs_dir) / "agents.json")
     commands = CommandStore(Path(config.runs_dir) / "commands.json")
     set_command_policy(commands.policy)
+    set_command_lists(commands.lists)
     config.providers = {p.name: p for p in providers.all()}
     config.presets = {m.name: m for m in providers.all_presets()}
     bus = EventBus()
@@ -114,9 +117,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 refresh_team(other)
                 touch(other)
             return
-        policy = commands.update(allowed=sorted(set(commands.policy.allowed) | set(programs)))
-        set_command_policy(policy)
-        bus.emit("commands_updated", session.id, payload=policy.to_dict())
+        target = getattr(role, "command_list", "") or DEFAULT_LIST
+        policy = commands.upsert(
+            target, allowed=sorted(set(commands.get(target).allowed) | set(programs)))
+        _publish_commands()
+        bus.emit("commands_updated", session.id, payload={"name": target, **policy.to_dict()})
 
     def engine_alive(session) -> bool:
         """Is a flow engine actually executing this session right now?
@@ -212,35 +217,70 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     # ----------------------------------------------------------- commands
 
+    def _publish_commands():
+        set_command_policy(commands.policy)
+        set_command_lists(commands.lists)
+
+    def _check_programs(allowed):
+        if allowed is None:
+            return
+        if not isinstance(allowed, list):
+            raise HTTPException(400, "allowed must be a list of program names")
+        bad = [c for c in allowed if "/" in str(c) or " " in str(c)]
+        if bad:
+            raise HTTPException(400, (
+                f"program names only, no paths or arguments: {', '.join(map(str, bad[:4]))}"))
+
     @app.get("/api/commands")
     def get_commands():
-        """The global allowlist, plus which agents override it."""
-        overrides = {
-            r.name: {"commands": r.commands, "shell": r.shell, "workdir": r.workdir}
-            for r in roles.all()
-            if r.commands or r.shell is not None or r.workdir
-        }
+        """Every named allowlist, plus which agents use which."""
         return {
-            **commands.policy.to_dict(),
+            **commands.policy.to_dict(),              # the default, for older callers
+            "lists": {n: p.to_dict() for n, p in commands.lists.items()},
+            "names": commands.names(),
+            "default": DEFAULT_LIST,
             "defaults": sorted(ALLOWED_COMMANDS),
-            "overrides": overrides,
+            "usage": {r.name: (r.command_list or DEFAULT_LIST)
+                      for r in roles.all() if "commands" in r.toolsets},
+            "overrides": {
+                r.name: {"commands": r.commands, "shell": r.shell, "workdir": r.workdir}
+                for r in roles.all()
+                if r.commands or r.shell is not None or r.workdir
+            },
             "agents_with_commands": [r.name for r in roles.all() if "commands" in r.toolsets],
         }
 
     @app.put("/api/commands")
     def set_commands(body: dict):
+        """Edit one list. Without a name, the default one."""
+        name = (body.get("name") or DEFAULT_LIST).strip()
+        if " " in name:
+            raise HTTPException(400, "a list name cannot contain spaces")
         allowed = body.get("allowed")
-        if allowed is not None and not isinstance(allowed, list):
-            raise HTTPException(400, "allowed must be a list of program names")
-        if allowed is not None:
-            bad = [c for c in allowed if "/" in str(c) or " " in str(c)]
-            if bad:
-                raise HTTPException(400, (
-                    f"program names only, no paths or arguments: {', '.join(map(str, bad[:4]))}"))
-        policy = commands.update(allowed=allowed, shell=body.get("shell"))
-        set_command_policy(policy)
-        bus.emit("commands_updated", "system", payload=policy.to_dict())
-        return policy.to_dict()
+        _check_programs(allowed)
+        if name not in commands.lists and not allowed:
+            raise HTTPException(400, "a new list needs at least one program")
+        policy = commands.upsert(name, allowed=allowed, shell=body.get("shell"))
+        _publish_commands()
+        bus.emit("commands_updated", "system", payload={"name": name, **policy.to_dict()})
+        return {"name": name, **policy.to_dict()}
+
+    @app.delete("/api/commands/{name}")
+    def delete_command_list(name: str):
+        """Delete a list. Agents pointing at it fall back to the default."""
+        if not commands.delete(name):
+            raise HTTPException(400, "the default list cannot be deleted")
+        moved = []
+        for role in roles.all():
+            if role.command_list == name:
+                role.command_list = ""
+                roles.upsert(role)
+                moved.append(role.name)
+        for session in store.all():
+            refresh_team(session)
+            touch(session)
+        _publish_commands()
+        return {"deleted": name, "moved_to_default": moved}
 
     @app.post("/api/commands/cancel/{command_id}")
     def cancel_running_command(command_id: str):
@@ -271,15 +311,17 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 touch(session)
             return {"scope": "agent", "agent": agent.name, "allowed": agent.commands}
 
-        policy = commands.update(allowed=sorted(set(commands.policy.allowed) | set(programs)))
-        set_command_policy(policy)
-        bus.emit("commands_updated", "system", payload=policy.to_dict())
-        return {"scope": "global", "allowed": policy.allowed}
+        target = getattr(agent, "command_list", "") or DEFAULT_LIST
+        policy = commands.upsert(
+            target, allowed=sorted(set(commands.get(target).allowed) | set(programs)))
+        _publish_commands()
+        bus.emit("commands_updated", "system", payload={"name": target, **policy.to_dict()})
+        return {"scope": "list", "list": target, "allowed": policy.allowed}
 
     @app.post("/api/commands/reset")
-    def reset_commands():
-        policy = commands.reset()
-        set_command_policy(policy)
+    def reset_commands(body: dict | None = None):
+        policy = commands.reset((body or {}).get("name") or DEFAULT_LIST)
+        _publish_commands()
         return policy.to_dict()
 
     # ------------------------------------------------------------- agents
@@ -302,7 +344,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.put("/api/agents/{name}")
     def upsert_agent(name: str, body: dict):
-        body = {**body, "name": name.strip()}
+        # Merge onto what is stored: a partial update ("just change the command
+        # list") must not blank the prompt and the remit by omission.
+        existing = roles.get(name.strip())
+        base = existing.to_dict() if existing else {}
+        body = {**base, **body, "name": name.strip()}
         error = validate_agent(body)
         if error:
             raise HTTPException(400, error)

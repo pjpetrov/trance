@@ -1401,6 +1401,10 @@ async function openAgents() {
 }
 
 async function renderAgents() {
+  // The card offers a list picker, so the names have to be here first.
+  if (!state.commands) {
+    try { state.commands = await api("/api/commands"); } catch (_) { /* offline */ }
+  }
   const data = await api("/api/agents");
   state.toolsets = data.toolsets;
   state.agents = data.agents;
@@ -1469,8 +1473,18 @@ function agentCard(agent, isNew) {
   grid.append(wrap("Description", description, "Shown to you, and to the orchestrator when it picks a team"));
 
   // --- permissions -----------------------------------------------------
+  // Folded by default: it is the longest part of the card and the least often
+  // edited, and an unfolded one pushed every other agent off the screen.
+  const permsWrap = el("details", "perm-fold");
+  const permsSummary = el("summary", "muted small");
+  permsSummary.append(el("span", null, "permissions"));
+  permsSummary.append(el("span", "perm-peek",
+    `${(agent.toolsets || []).join(", ") || "no tools"} · `
+    + `${(agent.paths || []).length} path rule(s)`
+    + (agent.verifier ? " · verifier" : "")));
+  permsWrap.append(permsSummary);
   const perms = el("div", "perm-box");
-  perms.append(el("div", "msg-role", "permissions"));
+  permsWrap.append(perms);
   const verifierLabel = el("label", "row small");
   const verifierBox = el("input");
   verifierBox.type = "checkbox";
@@ -1494,10 +1508,21 @@ function agentCard(agent, isNew) {
 
   // Commands + where they run — only meaningful with the commands toolset.
   const cmdRow = el("div", "provider-grid");
+  const listSel = el("select", "compact");
+  const listNames = (state.commands && state.commands.names) || ["default"];
+  listNames.forEach((n) => {
+    const opt = el("option", null, n);
+    opt.value = n === "default" ? "" : n;
+    if ((agent.command_list || "") === opt.value) opt.selected = true;
+    listSel.append(opt);
+  });
+  listSel.title = "Which named allowlist this agent uses. Edit the lists in the $_ modal.";
+
   const commands = el("input", "compact");
   commands.value = (agent.commands || []).join(" ");
-  commands.placeholder = "default allowlist";
-  commands.title = "Space-separated programs this agent may run. Blank = the built-in default.";
+  commands.placeholder = "use the list";
+  commands.title = "Space-separated programs, replacing the named list entirely for "
+                   + "this agent. Blank is the normal case.";
   const workdir = el("input", "compact");
   workdir.value = agent.workdir || "";
   workdir.placeholder = "project root";
@@ -1518,7 +1543,8 @@ function agentCard(agent, isNew) {
     shellSel.append(opt);
   });
   shellSel.title = "Pipes, redirects and && for this agent";
-  cmdRow.append(wrapField("Allowed commands", commands, "blank = global list"),
+  cmdRow.append(wrapField("Command list", listSel, "shared, edited in $_"),
+                wrapField("Own commands", commands, "blank = use the list"),
                 wrapField("Pipes / redirects", shellSel),
                 wrapField("Run commands in", workdir, "blank = project root"));
   perms.append(cmdRow);
@@ -1557,6 +1583,7 @@ function agentCard(agent, isNew) {
       system_prompt: prompt.value,
       paths: paths.value.split("\n").map((p) => p.trim()).filter(Boolean),
       toolsets: Object.keys(boxes).filter((t) => boxes[t].checked),
+      command_list: listSel.value,
       verifier: verifierBox.checked,
       commands: commands.value.split(/[\s,]+/).filter(Boolean),
       shell: shellSel.value === "" ? null : shellSel.value === "yes",
@@ -1606,7 +1633,7 @@ function agentCard(agent, isNew) {
   }
   actions.append(result);
 
-  card.append(head, grid, perms, promptWrap, actions);
+  card.append(head, grid, permsWrap, promptWrap, actions);
   return card;
 }
 
@@ -1875,21 +1902,44 @@ async function openCommands() {
   await renderCommands();
 }
 
-async function renderCommands() {
+async function renderCommands(select) {
   const data = await api("/api/commands");
   state.commands = data;
-  $("cmd-shell").checked = !!data.shell;
-  $("cmd-list").value = (data.allowed || []).join("\n");
+  const names = data.names || [data.default];
+  const current = names.includes(select) ? select
+    : names.includes(state.commandList) ? state.commandList : data.default;
+  state.commandList = current;
+
+  const picker = $("cmd-which");
+  picker.innerHTML = "";
+  names.forEach((name) => {
+    const opt = el("option", null, name === data.default ? `${name} (default)` : name);
+    opt.value = name;
+    if (name === current) opt.selected = true;
+    picker.append(opt);
+  });
+  picker.onchange = () => renderCommands(picker.value);
+  $("cmd-delete").disabled = current === data.default;
+
+  const users = Object.entries(data.usage || {})
+    .filter(([, list]) => list === current).map(([agent]) => agent);
+  $("cmd-used-by").textContent = users.length
+    ? `used by ${users.join(", ")}`
+    : "no agent uses this list yet";
+
+  const policy = (data.lists || {})[current] || data;
+  $("cmd-shell").checked = !!policy.shell;
+  $("cmd-list").value = (policy.allowed || []).join("\n");
 
   const box = $("cmd-overrides");
   box.innerHTML = "";
-  const names = Object.keys(data.overrides || {});
-  if (!names.length) {
+  const overridden = Object.keys(data.overrides || {});
+  if (!overridden.length) {
     box.append(el("p", "muted small",
-      `No overrides — ${(data.agents_with_commands || []).join(", ") || "no agents"} use the list above.`));
+      `No overrides — ${(data.agents_with_commands || []).join(", ") || "no agents"} use a named list.`));
     return;
   }
-  names.forEach((name) => {
+  overridden.forEach((name) => {
     const o = data.overrides[name];
     const card = el("div", "provider-card");
     const head = el("div", "row");
@@ -1903,7 +1953,7 @@ async function renderCommands() {
     }
     card.append(head);
     card.append(el("code", null,
-      (o.commands || []).join("  ") || "(uses the global list)"));
+      (o.commands || []).join("  ") || `(uses the ${data.usage[name] || data.default} list)`));
     box.append(card);
   });
 }
@@ -1913,21 +1963,49 @@ $("cmd-save").onclick = async () => {
   if (!allowed.length) return toast("The allowlist cannot be empty.");
   try {
     await api("/api/commands", {
-      method: "PUT", body: { allowed, shell: $("cmd-shell").checked },
+      method: "PUT",
+      body: { name: state.commandList, allowed, shell: $("cmd-shell").checked },
     });
   } catch (_) { return; }
-  $("cmd-result").textContent = `saved — ${allowed.length} programs`;
+  $("cmd-result").textContent = `saved — ${allowed.length} programs in ${state.commandList}`;
   $("cmd-result").className = "check-result ok";
-  toast("Allowed commands updated.");
-  await renderCommands();
+  toast(`“${state.commandList}” updated.`);
+  await renderCommands(state.commandList);
+};
+
+$("cmd-new").onclick = async () => {
+  const name = (prompt("Name for the new list (no spaces), e.g. build-tools") || "").trim();
+  if (!name) return;
+  if (name.includes(" ")) return toast("A list name cannot contain spaces.");
+  try {
+    // Starts from the built-in defaults rather than empty: a list with no
+    // programs refuses everything, which never reads as intentional.
+    await api("/api/commands", {
+      method: "PUT", body: { name, allowed: state.commands.defaults, shell: true },
+    });
+  } catch (_) { return; }
+  await renderCommands(name);
+  toast(`Created “${name}”. Point an agent at it in 👥 Agents.`);
+};
+
+$("cmd-delete").onclick = async () => {
+  const name = state.commandList;
+  const ok = await confirmDialog(`Delete the “${name}” list?`,
+    "Agents using it fall back to the default list.");
+  if (!ok) return;
+  const result = await api(`/api/commands/${encodeURIComponent(name)}`, { method: "DELETE" });
+  await renderCommands(state.commands.default);
+  toast(result.moved_to_default.length
+    ? `Deleted. ${result.moved_to_default.join(", ")} now use the default list.`
+    : "Deleted.");
 };
 
 $("cmd-reset").onclick = async () => {
   const ok = await confirmDialog("Reset the allowlist to defaults?",
     "Per-agent overrides are not affected.");
   if (!ok) return;
-  await api("/api/commands/reset", { method: "POST" });
-  await renderCommands();
+  await api("/api/commands/reset", { method: "POST", body: { name: state.commandList } });
+  await renderCommands(state.commandList);
   toast("Reset to defaults.");
 };
 

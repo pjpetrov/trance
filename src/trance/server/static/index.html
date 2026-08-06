@@ -12,7 +12,7 @@
   <div id="session-bar"></div>
   <div id="now-working" class="now-working"></div>
   <div class="spacer"></div>
-  <button id="open-commands" class="icon-btn" title="Allowed commands">⌨</button>
+  <button id="open-commands" class="icon-btn" title="Allowed commands">$_</button>
   <button id="open-agents" class="icon-btn" title="Agents &amp; permissions">👥</button>
   <button id="open-settings" class="icon-btn" title="Providers &amp; models">⚙</button>
 </header>
@@ -221,8 +221,18 @@
       <h2>Allowed commands</h2>
       <button id="close-commands" class="icon-btn">✕</button>
     </div>
-    <p class="muted small">Agents with the <b>commands</b> toolset may run these programs, and
-      nothing else. Commands run inside the project directory.</p>
+    <p class="muted small">Agents with the <b>commands</b> toolset may run these programs and
+      nothing else. Keep several lists — a tester needs a build toolchain, a reviewer needs
+      almost nothing — and point each agent at the one that fits, in <b>👥 Agents</b>.</p>
+
+    <div class="row" style="margin-top:12px">
+      <label class="inline-field">List
+        <select id="cmd-which" class="compact"></select>
+      </label>
+      <button id="cmd-new">+ New list</button>
+      <button id="cmd-delete" class="danger">Delete list</button>
+      <span id="cmd-used-by" class="muted small"></span>
+    </div>
 
     <label class="row small" style="margin-top:12px">
       <input type="checkbox" id="cmd-shell">
@@ -242,7 +252,8 @@
     </div>
 
     <h3>Per-agent overrides</h3>
-    <p class="muted small">Set on an agent in <b>👥 Agents</b>; those replace this list entirely.</p>
+    <p class="muted small">An agent may also carry its own list, set in <b>👥 Agents</b>;
+      that replaces the named list entirely.</p>
     <div id="cmd-overrides" class="provider-list"></div>
   </div>
 </div>

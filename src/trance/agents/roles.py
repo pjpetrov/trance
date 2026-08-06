@@ -33,8 +33,10 @@ class AgentRole:
     #: Globs this role may write to. Empty means "no writes" (advisory roles).
     paths: list[str] = field(default_factory=list)
     toolsets: list[str] = field(default_factory=lambda: ["files", "graph"])
-    #: Programs this agent may run. Empty = the built-in default allowlist.
+    #: Programs this agent may run. Empty = whatever `command_list` resolves to.
     commands: list[str] = field(default_factory=list)
+    #: Named allowlist this agent uses. Empty = the default list.
+    command_list: str = ""
     #: Directory (relative to the project) that commands run in. Empty = the
     #: project root. Confined to the project either way.
     workdir: str = ""

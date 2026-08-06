@@ -120,6 +120,10 @@ class CommandPolicy:
 
 
 _POLICY = CommandPolicy()
+#: Every named list, so a role can point at one. The tool layer holds a copy
+#: rather than reaching for the store: it is the enforcement point and must work
+#: in the CLI and the tests, where no store exists.
+_LISTS: dict[str, CommandPolicy] = {}
 
 @dataclass
 class RunningCommand:
@@ -210,6 +214,17 @@ def command_policy() -> CommandPolicy:
     return _POLICY
 
 
+def set_command_lists(lists: dict) -> None:
+    """Install the named allowlists (the server does this at startup)."""
+    global _LISTS
+    _LISTS = dict(lists or {})
+
+
+def command_list(name: str | None) -> CommandPolicy:
+    """The named list, falling back to the default policy."""
+    return _LISTS.get(name or "") or _POLICY
+
+
 def set_command_policy(policy: CommandPolicy) -> CommandPolicy:
     """Install the global policy (the server does this at startup)."""
     global _POLICY
@@ -295,15 +310,20 @@ class AgentTools:
         self.notify = notify or (lambda kind, payload: None)
 
     @property
+    def command_policy(self) -> CommandPolicy:
+        """Which list applies to this agent: the one it names, else the default."""
+        return command_list(getattr(self.role, "command_list", ""))
+
+    @property
     def allowed_commands(self) -> set[str]:
-        """This agent's allowlist — its own if set, otherwise the global one."""
-        return set(getattr(self.role, "commands", None) or command_policy().allowed)
+        """This agent's allowlist — its own programs, else its named list."""
+        return set(getattr(self.role, "commands", None) or self.command_policy.allowed)
 
     @property
     def shell_enabled(self) -> bool:
         """Whether this agent may use pipes, redirects and `&&`."""
         role_setting = getattr(self.role, "shell", None)
-        return command_policy().shell if role_setting is None else bool(role_setting)
+        return self.command_policy.shell if role_setting is None else bool(role_setting)
 
     @property
     def command_cwd(self) -> Path:
@@ -979,10 +999,12 @@ def permissions_brief(role: AgentRole) -> str:
         )
 
     if "commands" in role.toolsets:
-        allowed = sorted(getattr(role, "commands", None) or command_policy().allowed)
+        allowed = sorted(getattr(role, "commands", None)
+                         or command_list(getattr(role, "command_list", "")).allowed)
         where = f"in {role.workdir}" if getattr(role, "workdir", "") else "in the project root"
         role_shell = getattr(role, "shell", None)
-        shell_on = command_policy().shell if role_shell is None else bool(role_shell)
+        listed = command_list(getattr(role, "command_list", ""))
+        shell_on = listed.shell if role_shell is None else bool(role_shell)
         lines.append(
             f"You may run commands {where}, limited to these programs: " + ", ".join(allowed)
             + (". Pipes, redirects and && work, and every program in the line is checked "
