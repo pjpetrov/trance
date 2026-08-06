@@ -76,7 +76,7 @@ def test_fit_context_drops_oldest_tool_results_first():
         {"role": "tool", "content": "x" * 40000},
         {"role": "tool", "content": "y" * 40000},
     ]
-    fitted, dropped = fit_context(messages, budget=11000)
+    fitted, dropped = fit_context(messages, budget=12000)
     assert dropped == 1
     assert fitted[2]["content"] == TRIMMED  # oldest went first
     assert fitted[3]["content"].startswith("y")
@@ -1676,7 +1676,9 @@ def test_context_usage_falls_back_to_an_estimate(monkeypatch):
     usage = context_usage([{"role": "user", "content": "x" * 4000}],
                           ChatResponse(text="", usage={}),
                           ModelConfig(context_window=64000))
-    assert usage["tokens"] == 1000 and usage["estimated"] is True
+    # 3.5 chars/token, not 4: code and JSON are denser than prose, and the
+    # estimate ran low exactly where contexts get big.
+    assert usage["tokens"] == 1142 and usage["estimated"] is True
 
 
 # ------------------------------- handing a failure to the fixing agent
@@ -3289,3 +3291,100 @@ def test_the_tool_description_says_it_matches_names(tmp_path):
     assert "not a text search" in search["function"]["description"]
     assert "no spaces" in (search["function"]["parameters"]["properties"]["pattern"]
                            ["description"])
+
+
+# ------------------------- the biggest thing in the window is your own output
+
+def test_a_file_already_written_stops_costing_context():
+    """An agent that writes three 10KB files has 30KB of its own output pinned
+    in the conversation forever — the assistant messages holding those calls are
+    never trimmed, and the bytes are already on disk."""
+    import json
+
+    from trance.agents.runner import WRITTEN, shrink_written_files
+
+    def write_call(path, size):
+        return {"role": "assistant", "tool_calls": [{
+            "id": "c", "function": {"name": "write_file", "arguments": json.dumps(
+                {"path": path, "content": "x" * size})}}]}
+
+    messages = [
+        {"role": "user", "content": "task"},
+        write_call("a.js", 10000),
+        {"role": "tool", "content": "Created a.js"},
+        write_call("b.js", 10000),
+        {"role": "tool", "content": "Created b.js"},
+        write_call("c.js", 10000),
+    ]
+    before = len(str(messages))
+    shrunk = shrink_written_files(messages)
+
+    assert shrunk == 2                       # the most recent one is left intact
+    assert len(str(messages)) < before - 19000
+    args = json.loads(messages[1]["tool_calls"][0]["function"]["arguments"])
+    assert args["content"] == WRITTEN and args["path"] == "a.js"   # the path stays
+    last = json.loads(messages[5]["tool_calls"][0]["function"]["arguments"])
+    assert last["content"] == "x" * 10000
+
+
+def test_written_files_are_given_up_before_tool_results():
+    """A file on disk can be read back exactly; a command's output cannot."""
+    import json
+
+    from trance.agents.runner import WRITTEN, fit_context
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "tool_calls": [{"id": "c", "function": {
+            "name": "write_file",
+            "arguments": json.dumps({"path": "a.js", "content": "x" * 40000})}}]},
+        {"role": "tool", "content": "the test output that matters"},
+        {"role": "assistant", "tool_calls": [{"id": "d", "function": {
+            "name": "write_file",
+            "arguments": json.dumps({"path": "b.js", "content": "y" * 400})}}]},
+    ]
+    fitted, dropped = fit_context(messages, budget=2000)
+
+    shrunk = json.loads(messages[2]["tool_calls"][0]["function"]["arguments"])
+    assert shrunk["content"] == WRITTEN
+    assert messages[3]["content"] == "the test output that matters"   # kept
+
+
+def test_the_estimate_is_calibrated_against_the_endpoints_own_count(tmp_path, monkeypatch):
+    """Trimming against a guess is how a "55k" prompt arrived as 61k and filled
+    the window it was supposed to stay inside."""
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    sent = []
+
+    class DenseCounter:
+        """An endpoint whose tokenizer runs at 2 chars/token, not 3.5."""
+
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None):
+            chars = sum(len(str(m.get("content") or "")) + len(str(m.get("tool_calls") or ""))
+                        for m in messages)
+            sent.append(chars)
+            self.n += 1
+            usage = {"prompt_tokens": chars // 2}
+            if self.n < 3:
+                return ChatResponse(text="", usage=usage, tool_calls=[ToolCall(
+                    id=f"c{self.n}", name="read_file", arguments={"path": "big.txt"})])
+            return ChatResponse(text="OUTCOME: SUCCESS", usage=usage)
+
+    (tmp_path / "big.txt").write_text("z" * 20000)
+    monkeypatch.setattr(runner, "client_for", lambda config: DenseCounter())
+    runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+                     config=ModelConfig(context_window=20000, max_tokens=4000),
+                     bus=EventBus(), session_id="s", step_id="st")
+
+    # Budget is 20000-4000-1000 = 15000 tokens; at the endpoint's real 2
+    # chars/token that is 30000 chars. The last prompt must respect the real
+    # ratio, not the 3.5 guess (which would have allowed 52500 chars).
+    assert sent[-1] <= 30000 * 1.05

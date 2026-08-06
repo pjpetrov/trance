@@ -7,6 +7,7 @@ shows a summary and expands to the verbatim payload on demand.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -46,13 +47,71 @@ _FAILURE_WORDS = frozenset({
 TRIMMED = "[trimmed to fit the context window — call the tool again if you still need this]"
 
 
-def _tokens(messages: list[dict]) -> int:
+#: Starting guess at characters per token. Prose is about 4; code, JSON and
+#: minified assets are denser, so the estimate runs low exactly where contexts
+#: get big. Calibrated against the server's own count after the first call.
+DEFAULT_CHARS_PER_TOKEN = 3.5
+MIN_CHARS_PER_TOKEN = 2.0
+
+
+def _chars(messages: list[dict]) -> int:
     total = 0
     for message in messages:
-        total += len(str(message.get("content") or "")) // 4
+        total += len(str(message.get("content") or ""))
         if message.get("tool_calls"):
-            total += len(str(message["tool_calls"])) // 4
+            total += len(str(message["tool_calls"]))
     return total
+
+
+def _tokens(messages: list[dict], chars_per_token: float = DEFAULT_CHARS_PER_TOKEN) -> int:
+    return int(_chars(messages) / max(MIN_CHARS_PER_TOKEN, chars_per_token))
+
+
+#: Placeholder left where a file's contents used to sit in the conversation.
+WRITTEN = "[contents omitted — this file was written to disk; read_file it if you need it]"
+
+
+def shrink_written_files(messages: list[dict], keep_last: int = 1) -> int:
+    """Drop the `content` argument of write calls that already succeeded.
+
+    An agent that writes three 10KB files has 30KB of its own output pinned in
+    the conversation forever — the assistant messages holding those calls are
+    never trimmed, and the bytes are already on disk. This is the most
+    recoverable thing in the window and usually the largest.
+    """
+    targets: list[tuple[dict, str]] = []
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:          # OpenAI shape
+            if (call.get("function") or {}).get("name") in ("write_file", "append_file"):
+                targets.append((call, "openai"))
+        content = message.get("content")
+        if isinstance(content, list):                          # Anthropic shape
+            for block in content:
+                if (isinstance(block, dict) and block.get("type") == "tool_use"
+                        and block.get("name") in ("write_file", "append_file")):
+                    targets.append((block, "anthropic"))
+
+    shrunk = 0
+    for call, shape in targets[:max(0, len(targets) - keep_last)]:
+        if shape == "openai":
+            raw = (call.get("function") or {}).get("arguments") or ""
+            try:
+                args = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not args.get("content") or args["content"] == WRITTEN:
+                continue
+            args["content"] = WRITTEN
+            call["function"]["arguments"] = json.dumps(args, ensure_ascii=False)
+        else:
+            args = call.get("input") or {}
+            if not args.get("content") or args["content"] == WRITTEN:
+                continue
+            args["content"] = WRITTEN
+        shrunk += 1
+    return shrunk
 
 
 #: Asked once, at the point the agent believes it is done. The examples matter:
@@ -130,20 +189,23 @@ def context_usage(messages: list[dict], response, config: ModelConfig) -> dict:
     }
 
 
-def fit_context(messages: list[dict], budget: int) -> tuple[list[dict], int]:
-    """Drop the oldest tool results until the prompt fits.
+def fit_context(messages: list[dict], budget: int,
+                chars_per_token: float = DEFAULT_CHARS_PER_TOKEN) -> tuple[list[dict], int]:
+    """Shrink the prompt until it fits, giving up the cheapest things first.
 
-    Without this the loop grows without bound: every round appends an assistant
-    message plus one result per tool call, and a handful of file reads will
-    exceed any window. The system prompt and the original task are never
-    dropped — losing those makes the agent forget what it is doing, which is a
-    worse failure than losing a stale file listing.
+    Order matters. A file the agent already wrote is on disk and can be read
+    back exactly, so its contents go first. Tool results go next — re-callable,
+    but a second call costs a round. The system prompt and the original task are
+    never dropped; losing those makes the agent forget what it is doing, which
+    is worse than losing a stale file listing.
     """
     dropped = 0
-    if _tokens(messages) <= budget:
+    if _tokens(messages, chars_per_token) <= budget:
         return messages, dropped
+
+    dropped += shrink_written_files(messages)
     for message in messages:
-        if _tokens(messages) <= budget:
+        if _tokens(messages, chars_per_token) <= budget:
             break
         if message.get("role") == "tool" and message.get("content") != TRIMMED:
             message["content"] = TRIMMED
@@ -295,13 +357,17 @@ def run_agent(
     turn = AgentTurn(text="")
     totals = {"input_tokens": 0, "output_tokens": 0}
     asked_to_remember = False
+    # Calibrated from the endpoint's own prompt_tokens after the first call.
+    # Trimming against a guess is how a "55k" prompt arrived as 61k and filled
+    # the window it was supposed to stay inside.
+    chars_per_token = DEFAULT_CHARS_PER_TOKEN
 
     for round_n in range(1, max_rounds + 1):
         if should_stop and should_stop():
             turn.stop_reason = "cancelled"
             break
 
-        messages, trimmed = fit_context(messages, model_config.input_budget)
+        messages, trimmed = fit_context(messages, model_config.input_budget, chars_per_token)
         if trimmed:
             bus.emit("context_trimmed", session_id, agent=role.name, step_id=step_id,
                      payload={"dropped_tool_results": trimmed,
@@ -309,8 +375,15 @@ def run_agent(
                               "context_window": model_config.context_window})
 
         started = time.time()
+        sent_chars = _chars(messages)
         response = client.complete(messages, tools=specs or None)
         elapsed_ms = round((time.time() - started) * 1000, 1)
+        reported = int((response.usage or {}).get("prompt_tokens") or 0)
+        if reported > 0 and sent_chars > 0:
+            # Keep the densest ratio seen: the budget has to hold for the worst
+            # message in the window, not the average one.
+            chars_per_token = max(MIN_CHARS_PER_TOKEN,
+                                  min(chars_per_token, sent_chars / reported))
         totals["input_tokens"] += response.usage.get("prompt_tokens", 0)
         totals["output_tokens"] += response.usage.get("completion_tokens", 0)
 
@@ -457,7 +530,7 @@ def run_agent(
             "role": "user",
             "content": "You have used your tool budget. Summarize what you did and what remains, now.",
         })
-        messages, _ = fit_context(messages, model_config.input_budget)
+        messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
         response = client.complete(messages, tools=None)
         totals["input_tokens"] += response.usage.get("prompt_tokens", 0)
         totals["output_tokens"] += response.usage.get("completion_tokens", 0)
@@ -493,7 +566,7 @@ def run_agent(
                 "problem — including one you were not asked to look for. If the work was "
                 "already correct and needed no changes, that is SUCCESS."),
         })
-        messages, _ = fit_context(messages, model_config.input_budget)
+        messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
         follow_up = client.complete(messages, tools=None)
         totals["input_tokens"] += follow_up.usage.get("prompt_tokens", 0)
         totals["output_tokens"] += follow_up.usage.get("completion_tokens", 0)
