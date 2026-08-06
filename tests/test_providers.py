@@ -339,7 +339,7 @@ def _api(tmp_path, monkeypatch):
 def test_a_preset_can_set_its_own_output_room(tmp_path, monkeypatch):
     client = _api(tmp_path, monkeypatch)
     body = client.put("/api/presets/coder", json={
-        "provider": "default", "model": "qwen", "context_window": 64000,
+        "kind": "llamacpp", "model": "qwen", "context_window": 64000,
         "max_tokens": 16384}).json()
     assert body["max_tokens"] == 16384
 
@@ -352,7 +352,7 @@ def test_output_room_larger_than_half_the_window_is_refused(tmp_path, monkeypatc
     more room to talk than to read."""
     client = _api(tmp_path, monkeypatch)
     response = client.put("/api/presets/greedy", json={
-        "provider": "default", "model": "qwen", "context_window": 64000,
+        "kind": "llamacpp", "model": "qwen", "context_window": 64000,
         "max_tokens": 64000})
     assert response.status_code == 400
     assert "32000" in response.json()["detail"]
@@ -554,7 +554,8 @@ def test_saving_a_model_again_does_not_drop_its_key(tmp_path):
     assert app.state.config.presets["claude"].model == "claude-opus-5"
 
 
-def test_a_model_with_neither_a_kind_nor_a_provider_is_refused(tmp_path):
+def test_a_model_must_say_which_api_it_speaks(tmp_path):
+    """There is nowhere else for that to live now — no providers to borrow from."""
     from fastapi.testclient import TestClient
 
     from trance.config import Config
@@ -562,12 +563,80 @@ def test_a_model_with_neither_a_kind_nor_a_provider_is_refused(tmp_path):
 
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
-    config.providers.clear()
-    app = app_module.create_app(config, tmp_path / "sessions")
-    client = TestClient(app)
-    for provider in list(app.state.config.providers):
-        client.delete(f"/api/providers/{provider}")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
 
     response = client.put("/api/presets/orphan", json={"model": "x"})
     assert response.status_code == 400
-    assert "API kind" in response.json()["detail"]
+    assert "which API" in response.json()["detail"] or "API this model speaks" in response.json()["detail"]
+
+    ok = client.put("/api/presets/orphan", json={"kind": "llamacpp", "model": "x"})
+    assert ok.status_code == 200 and ok.json()["self_contained"] is True
+
+
+# --------------------------- providers folded into models and removed
+
+def test_an_old_file_with_providers_becomes_models(tmp_path):
+    """Nothing configured before the change should have to be re-entered."""
+    import json
+
+    from trance.providers import ProviderStore
+
+    path = tmp_path / "p.json"
+    path.write_text(json.dumps({
+        "providers": [
+            {"name": "claude", "kind": "anthropic", "api_key": "sk-x",
+             "model": "claude-opus-5"},
+            {"name": "local", "kind": "llamacpp", "model": "qwen"},
+        ],
+        "presets": [{"name": "smart", "provider": "claude", "model": "claude-opus-5"}],
+    }))
+
+    store = ProviderStore(path)
+    store.seed_presets_from_providers()
+    by_name = {m.name: m for m in store.all_presets()}
+
+    # The preset that borrowed a connection now owns one.
+    assert by_name["smart"].kind == "anthropic"
+    assert by_name["smart"].api_key == "sk-x"
+    assert by_name["smart"].provider == ""
+    # And each provider survives as a model in its own right.
+    assert by_name["local"].kind == "llamacpp" and by_name["local"].model == "qwen"
+
+    # It stays converted across a restart.
+    again = {m.name: m for m in ProviderStore(path).all_presets()}
+    assert again["smart"].kind == "anthropic"
+
+
+def test_the_provider_endpoints_are_gone(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    assert client.get("/api/providers").status_code == 404
+    assert "providers" not in client.get("/api/config").json()
+
+
+def test_a_model_can_be_tested_from_its_own_card(tmp_path, monkeypatch):
+    """The connection check moved with the connection."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.providers.base import ChatResponse
+    from trance.server import app as app_module
+
+    monkeypatch.setattr(app_module, "client_for", lambda config: type(
+        "C", (), {"complete": lambda self, m, tools=None, **kw: ChatResponse(text="OK")})())
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    client.put("/api/presets/local", json={"kind": "llamacpp", "model": "qwen"})
+
+    body = client.post("/api/presets/local/check").json()
+    assert body["ok"] is True and body["reply"] == "OK"
+    assert client.post("/api/presets/nope/check").status_code == 404

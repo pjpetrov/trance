@@ -3,7 +3,6 @@
 const state = {
   session: null,
   roles: {},
-  providers: [],
   presets: [],
   //: Step ids the user has explicitly opened while collapsing is on.
   openSteps: new Set(),
@@ -623,10 +622,6 @@ $("start-run").onclick = async () => {
   renderRun();
 };
 
-function providerDefaultModel(name) {
-  const provider = state.providers.find((p) => p.name === name);
-  return provider ? provider.model : (state.providers[0]?.model || "default");
-}
 
 /* ─────────────────────────────── run ──────────────────────────────── */
 
@@ -1056,7 +1051,6 @@ function clip(text, n) {
 (async function boot() {
   const info = await api("/api/config");
   state.roles = info.roles;
-  state.providers = info.providers;
   state.presets = info.presets;
   state.planning = info.planning || { max_step_points: 0, scale: [1, 2, 3, 5, 8, 13] };
   state.orchestrator = info.orchestrator;
@@ -1074,7 +1068,6 @@ $("settings").onclick = (e) => { if (e.target.id === "settings") e.currentTarget
 async function openSettings() {
   $("settings").classList.add("open");
   renderStepSize();
-  await renderProviders();
 }
 
 function renderStepSize() {
@@ -1164,19 +1157,6 @@ function presetCard(preset, isNew) {
     if (id === preset.kind) opt.selected = true;
     kind.append(opt);
   });
-  const borrowed = el("option", null, "— use a shared provider —");
-  borrowed.value = "";
-  if (!preset.kind) borrowed.selected = true;
-  kind.prepend(borrowed);
-
-  const provider = el("select", "compact");
-  state.providers.forEach((p) => {
-    const opt = el("option", null, `${p.name} (${p.kind})`);
-    opt.value = p.name;
-    if (p.name === preset.provider) opt.selected = true;
-    provider.append(opt);
-  });
-
   const baseUrl = el("input", "compact");
   baseUrl.value = preset.base_url || "";
   baseUrl.placeholder = "default for this API";
@@ -1213,27 +1193,38 @@ function presetCard(preset, isNew) {
               "past it is cut off mid-argument and rejected, so a model that writes " +
               "whole files needs room. It is taken out of the context window.";
 
-  const providerField = wrap("Shared provider", provider);
-  const urlField = wrap("Base URL", baseUrl);
-  const keyField = wrap("API key", key);
-
-  // Either the model brings its own endpoint or it borrows one — showing both
-  // at once is the two-definitions problem all over again.
-  const showConnection = () => {
-    const own = !!kind.value;
-    providerField.hidden = own;
-    urlField.hidden = !own;
-    keyField.hidden = !own;
+  // Changing the API moves the endpoint with it, so a llama.cpp URL is not
+  // left behind on a model switched to Anthropic.
+  kind.onchange = () => {
+    const spec = (state.kinds || {})[kind.value] || {};
+    baseUrl.placeholder = spec.base_url || "default for this API";
+    if (!baseUrl.value || Object.values(state.kinds || {}).some(
+        (k) => k.base_url === baseUrl.value)) {
+      baseUrl.value = "";
+    }
+    ctx.placeholder = spec.context_window ? String(spec.context_window) : "default";
   };
-  kind.onchange = showConnection;
 
   grid.append(wrap("Name (agents pick this)", name), wrap("API", kind),
-              providerField, urlField, keyField,
+              wrap("Base URL", baseUrl), wrap("API key", key),
               wrap("Model id", model), wrap("Context window", ctx),
               wrap("Max output", out));
-  showConnection();
+  kind.onchange();
 
   const actions = el("div", "row small");
+  const probe = el("button", null, "Test");
+  const probeResult = el("span", "check-result");
+  probe.title = "Send a one-token request, so a wrong key or URL surfaces here "
+                + "rather than mid-run";
+  probe.onclick = async () => {
+    probeResult.textContent = "checking…";
+    probeResult.className = "check-result";
+    const body = await api(`/api/presets/${encodeURIComponent(preset.name)}/check`,
+                           { method: "POST" });
+    probeResult.textContent = body.ok ? `ok — ${body.reply || body.model}` : body.error;
+    probeResult.className = `check-result ${body.ok ? "ok" : "bad"}`;
+  };
+
   const save = el("button", "primary", "Save");
   save.onclick = async () => {
     const shortname = name.value.trim();
@@ -1257,10 +1248,9 @@ function presetCard(preset, isNew) {
       method: "PUT",
       body: {
         kind: kind.value,
-        provider: kind.value ? "" : provider.value,
-        base_url: kind.value ? baseUrl.value.trim() : "",
+        base_url: baseUrl.value.trim(),
         // "***" means "keep what is stored"; the server drops it.
-        ...(kind.value && key.value !== "***" ? { api_key: key.value.trim() } : {}),
+        ...(key.value !== "***" ? { api_key: key.value.trim() } : {}),
         model: model.value.trim(),
         context_window: Number(ctx.value) || 0,
         max_tokens: Number(out.value) || 0,
@@ -1288,154 +1278,12 @@ function presetCard(preset, isNew) {
       await renderPresets();
       await refreshConfig();
     };
-    actions.append(del);
+    actions.append(probe, probeResult, del);
   }
 
   card.append(grid, actions);
   return card;
 }
-
-async function renderProviders() {
-  const data = await api("/api/providers");
-  state.kinds = data.kinds;
-  const box = $("provider-list");
-  box.innerHTML = "";
-  if (!data.providers.length) {
-    box.append(el("p", "muted small", "No providers yet — add one below."));
-  }
-  state.providers = data.providers.filter((p) => p.enabled);
-  data.providers.forEach((p) => box.append(providerCard(p, false)));
-  await renderPresets();
-  renderOrchestratorSettings();
-}
-
-function providerCard(provider, isNew) {
-  const card = el("div", `provider-card${provider.enabled ? "" : " disabled"}`);
-  const head = el("div", "row");
-
-  const kind = el("select", "compact");
-  Object.keys(state.kinds).forEach((k) => {
-    const opt = el("option", null, state.kinds[k].label);
-    opt.value = k;
-    if (k === provider.kind) opt.selected = true;
-    kind.append(opt);
-  });
-
-  const badge = el("span", `kind-badge kind-${provider.kind}`, provider.kind);
-  const name = el("input", "compact");
-  name.value = provider.name;
-  name.placeholder = "shortname";
-  name.disabled = !isNew;           // renaming would orphan agent references
-  name.title = isNew ? "The handle you attach to agents" : "Shortname is fixed once created";
-
-  head.append(badge, name, kind);
-
-  const enabled = el("label", "row small");
-  const toggle = el("input");
-  toggle.type = "checkbox";
-  toggle.checked = provider.enabled;
-  enabled.append(toggle, document.createTextNode(" active"));
-  head.append(enabled);
-
-  const grid = el("div", "provider-grid");
-  const fields = {};
-  const add = (key, label, value, type = "text") => {
-    const wrap = el("label", null, label);
-    const input = el("input");
-    input.type = type;
-    input.value = value ?? "";
-    wrap.append(input);
-    grid.append(wrap);
-    fields[key] = input;
-  };
-  add("base_url", "Base URL", provider.base_url);
-  add("model", "Default model", provider.model);
-  add("api_key", "API key", "", "password");
-  fields.api_key.placeholder = provider.has_key ? "•••• stored (blank = keep)" : "not set";
-  add("context_window", "Context window", provider.context_window, "number");
-
-  // Switching kind repopulates the endpoint defaults for that provider type.
-  kind.onchange = () => {
-    const d = state.kinds[kind.value];
-    badge.className = `kind-badge kind-${kind.value}`;
-    badge.textContent = kind.value;
-    if (!fields.base_url.value || Object.values(state.kinds).some((x) => x.base_url === fields.base_url.value)) {
-      fields.base_url.value = d.base_url;
-    }
-    if (!fields.model.value || Object.values(state.kinds).some((x) => x.model === fields.model.value)) {
-      fields.model.value = d.model;
-    }
-    fields.context_window.value = d.context_window;
-    fields.api_key.placeholder = d.needs_key ? "required" : "not needed";
-  };
-
-  const actions = el("div", "row small");
-  const save = el("button", "primary", "Save");
-  const check = el("button", null, "Test");
-  const del = el("button", "danger", "Delete");
-  const result = el("span", "check-result");
-
-  save.onclick = async () => {
-    const shortname = name.value.trim();
-    if (!shortname) return toast("A shortname is required.");
-    const body = {
-      kind: kind.value,
-      base_url: fields.base_url.value.trim(),
-      model: fields.model.value.trim(),
-      context_window: Number(fields.context_window.value) || 0,
-      enabled: toggle.checked,
-      label: provider.label,
-    };
-    if (fields.api_key.value) body.api_key = fields.api_key.value;
-    await api(`/api/providers/${encodeURIComponent(shortname)}`, { method: "PUT", body });
-    toast(`Saved “${shortname}”.`);
-    await renderProviders();
-    await refreshConfig();
-  };
-
-  check.onclick = async () => {
-    result.textContent = "testing…";
-    result.className = "check-result";
-    try {
-      const r = await api(`/api/providers/${encodeURIComponent(provider.name)}/check`, { method: "POST" });
-      result.textContent = r.ok ? `reachable — ${r.reply}` : r.error;
-      result.className = `check-result ${r.ok ? "ok" : "bad"}`;
-    } catch (_) {
-      result.textContent = "check failed";
-      result.className = "check-result bad";
-    }
-  };
-
-  del.onclick = async () => {
-    const ok = await confirmDialog(
-      `Delete provider “${provider.name}”?`,
-      "Agents still pointing at this shortname fall back to the default provider.");
-    if (!ok) return;
-    await api(`/api/providers/${encodeURIComponent(provider.name)}`, { method: "DELETE" });
-    toast(`Deleted “${provider.name}”.`);
-    await renderProviders();
-    await refreshConfig();
-  };
-
-  const cancel = el("button", null, "Cancel");
-  cancel.onclick = () => card.remove();   // discard an unsaved new provider
-
-  actions.append(save);
-  actions.append(isNew ? cancel : check);
-  if (!isNew) actions.append(del);
-  actions.append(result);
-  card.append(head, grid, actions);
-  return card;
-}
-
-$("add-provider").onclick = () => {
-  const kind = "anthropic";
-  const d = state.kinds[kind];
-  $("provider-list").append(providerCard({
-    name: "", kind, base_url: d.base_url, model: d.model,
-    context_window: d.context_window, enabled: true, has_key: false, label: "",
-  }, true));
-};
 
 function renderOrchestratorSettings() {
   const box = $("orchestrator-settings");
@@ -1460,7 +1308,6 @@ function renderOrchestratorSettings() {
 
 async function refreshConfig() {
   const info = await api("/api/config");
-  state.providers = info.providers;
   state.presets = info.presets;
   state.orchestrator = info.orchestrator;
   state.kinds = info.kinds;

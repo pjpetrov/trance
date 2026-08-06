@@ -169,16 +169,42 @@ class ProviderStore:
         return removed
 
     def seed_presets_from_providers(self) -> None:
-        """Give every provider a starter preset so the picker is never empty."""
-        if self._presets:
-            return
+        """Fold providers into models, and keep folding them.
+
+        Providers were a second place to define the same thing: an endpoint, a
+        key, a default model. Every model now carries its own, so a configured
+        provider is only a source to copy from — once at startup for anything
+        that predates the change, and again for anything trance.toml still
+        defines.
+        """
+        changed = False
         for provider in self.all():
-            if provider.model:
+            if provider.model and provider.name not in self._presets:
                 self._presets[provider.name] = ModelPreset(
-                    name=provider.name, provider=provider.name, model=provider.model,
-                    description=f"default model for {provider.name}",
+                    name=provider.name, kind=provider.kind, base_url=provider.base_url,
+                    api_key=provider.api_key, model=provider.model,
+                    context_window=provider.context_window,
+                    description=f"from the {provider.name} provider",
                 )
-        if self._presets:
+                changed = True
+
+        # A model that still points at a provider takes that connection for its
+        # own, so nothing is left depending on a provider existing.
+        for preset in self._presets.values():
+            if preset.kind:
+                continue
+            source = self._providers.get(preset.provider)
+            if source is None:
+                continue
+            preset.kind = source.kind
+            preset.base_url = preset.base_url or source.base_url
+            preset.api_key = preset.api_key or source.api_key
+            preset.context_window = preset.context_window or source.context_window
+            preset.model = preset.model or source.model
+            preset.provider = ""
+            changed = True
+
+        if changed:
             self._save()
 
     def rename(self, old: str, new: str) -> bool:

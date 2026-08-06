@@ -204,7 +204,6 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {
             "config": config.to_dict(),
             "roles": {r.name: r.to_dict() for r in roles.all()},
-            "providers": [p.to_dict() for p in providers.all(enabled_only=True)],
             "presets": [m.to_dict() for m in providers.presets()],
             "kinds": KIND_DEFAULTS,
             "planning": {"max_step_points": config.max_step_points, "scale": list(POINTS),
@@ -411,21 +410,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         body.pop("self_contained", None)
 
         kind = (body.get("kind") or "").strip()
-        if kind and kind not in KIND_DEFAULTS:
+        if kind not in KIND_DEFAULTS:
             raise HTTPException(400, (
-                f"unknown API kind {kind!r}. Choose one of: {', '.join(KIND_DEFAULTS)}"))
-        provider = None
-        if not kind:
-            # No endpoint of its own: it must borrow a defined one.
-            provider = providers.get(body.get("provider"))
-            if provider is None:
-                raise HTTPException(400, (
-                    "choose an API kind for this model, or name a provider it belongs to"))
-        candidate = ModelPreset.from_dict({**body, "name": name})
-        model = (candidate.model or "").strip() or (provider.model if provider else "")
+                f"choose the API this model speaks: {', '.join(KIND_DEFAULTS)}"))
+        candidate = ModelPreset.from_dict({**body, "kind": kind, "name": name})
+        model = (candidate.model or "").strip()
         if not model:
             raise HTTPException(400, "a model id is required")
-        window = candidate.context_window or (provider.context_window if provider else 0)
+        window = candidate.context_window
         reserved = int(body.get("max_tokens") or 0)
         # Output room is taken *out of* the window. Past half of it the agent has
         # less context than reply space, which is the opposite of the point.
@@ -483,49 +475,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         _sync()
         return {"deleted": name}
 
-    @app.get("/api/providers")
-    def list_providers():
-        """Every provider, including disabled ones (the settings view)."""
-        return {"providers": [p.to_dict() for p in providers.all()], "kinds": KIND_DEFAULTS}
-
-    @app.put("/api/providers/{name}")
-    def upsert_provider(name: str, body: dict):
-        body = {**body, "name": name}
-        if body.get("kind") not in KIND_DEFAULTS:
-            raise HTTPException(400, f"kind must be one of {', '.join(KIND_DEFAULTS)}")
-        if not name.strip() or " " in name:
-            raise HTTPException(400, "shortname must be non-empty and contain no spaces")
-        saved = providers.upsert(ProviderConfig.from_dict(body))
-        _sync()
-        bus.emit("providers_updated", "system", payload={"name": saved.name})
-        return saved.to_dict()
-
-    @app.delete("/api/providers/{name}")
-    def delete_provider(name: str):
-        by_preset = [m.name for m in providers.all_presets() if m.provider == name]
-        if by_preset:
-            raise HTTPException(
-                409, f"provider {name!r} backs these models: {', '.join(by_preset[:6])}. "
-                     "Delete or repoint them first.")
-        in_use = [
-            f"{s.name}:{r.name}" for s in store.all() for r in s.team if r.provider == name
-        ]
-        if in_use:
-            raise HTTPException(409, f"provider {name!r} is attached to: {', '.join(in_use[:6])}")
-        if not providers.delete(name):
-            raise HTTPException(404, "no such provider")
-        _sync()
-        return {"deleted": name}
-
-    @app.post("/api/providers/{name}/check")
-    def check_provider(name: str):
+    @app.post("/api/presets/{name}/check")
+    def check_preset(name: str):
         """Send a one-token probe so a key or URL error surfaces here."""
-        from ..providers import client_for
-
-        provider = providers.get(name)
-        if provider is None:
-            raise HTTPException(404, "no such provider")
-        resolved = config.resolve(config.worker, provider=name)
+        if providers.preset(name) is None:
+            raise HTTPException(404, "no such model")
+        resolved = config.resolve(config.worker, preset=name)
         resolved.max_tokens = 16
         try:
             reply = client_for(resolved).complete([{"role": "user", "content": "Reply with OK."}])
