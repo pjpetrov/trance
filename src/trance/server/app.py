@@ -695,6 +695,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 bus=bus,
                 session_id=session_id,
                 roles=roles.all(),
+                loops=loops,
             )
         except BackendError as exc:
             bus.emit("error", session_id, payload={"message": str(exc)})
@@ -720,6 +721,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "team": [r.to_dict() for r in session.team],
                 "dropped_checks": proposal.get("dropped_checks") or [],
             })
+            if proposal.get("added_final_check"):
+                bus.emit("warning", session_id, agent="orchestrator", payload={
+                    "message": (f"The plan did not end by verifying itself, so a final "
+                                f"{proposal['added_final_check']} step was added. Remove "
+                                f"it if you really do not want one."),
+                })
             if proposal.get("dropped_checks"):
                 bus.emit("warning", session_id, agent="orchestrator", payload={
                     "message": ("Dropped checks that cannot verify: "

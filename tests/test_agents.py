@@ -3885,3 +3885,118 @@ def test_a_flow_saved_with_an_old_fixer_still_runs(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
     assert calls == ["backend", "reviewer", "backend"]
+
+
+# ------------------------ the plan always ends by verifying itself
+
+def test_a_plan_that_forgets_to_test_gets_a_final_loop(tmp_path):
+    """A model that has just written a convincing ten-step plan is exactly the
+    one that stops at the last feature."""
+    from trance.agents.orchestrator import ensure_final_check
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.agents.store import LoopStore
+
+    loops = LoopStore(tmp_path / "loops.json")
+    proposal = {"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "loop": "", "task": "build the API", "check": None,
+         "on_fail": None, "max_loops": 2, "points": 3}]}
+
+    out = ensure_final_check(proposal, loops=loops, roles=list(R.values()))
+
+    assert len(out["steps"]) == 2
+    assert out["steps"][-1]["loop"] == "test-and-fix"
+    assert out["added_final_check"] == "test-and-fix"
+    assert "run the tests" in out["steps"][-1]["task"]
+    assert {"tester", "backend"} <= set(out["team"])      # the loop's agents come too
+
+
+def test_a_plan_that_already_ends_in_verification_is_left_alone(tmp_path):
+    from trance.agents.orchestrator import ensure_final_check
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.agents.store import LoopStore
+
+    loops = LoopStore(tmp_path / "loops.json")
+    roles = list(R.values())
+
+    ends_with_loop = {"summary": "s", "team": [], "steps": [
+        {"role": "backend", "loop": "", "task": "build"},
+        {"role": "", "loop": "test-and-fix", "task": "test"}]}
+    assert "added_final_check" not in ensure_final_check(
+        ends_with_loop, loops=loops, roles=roles)
+
+    ends_with_tester = {"summary": "s", "team": [], "steps": [
+        {"role": "backend", "loop": "", "task": "build"},
+        {"role": "tester", "loop": "", "task": "test it"}]}
+    assert "added_final_check" not in ensure_final_check(
+        ends_with_tester, loops=loops, roles=roles)
+
+    ends_checked = {"summary": "s", "team": [], "steps": [
+        {"role": "backend", "loop": "", "task": "build", "check": "factchecker"}]}
+    assert "added_final_check" not in ensure_final_check(
+        ends_checked, loops=loops, roles=roles)
+
+
+def test_a_loop_is_preferred_over_a_bare_tester_step(tmp_path):
+    """A tester step reports the bug and stops; a loop gets it fixed and
+    tested again."""
+    from trance.agents.orchestrator import ensure_final_check
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.agents.store import LoopStore
+
+    with_loops = LoopStore(tmp_path / "a.json")
+    without = LoopStore(tmp_path / "b.json", seed=False)
+    proposal = lambda: {"summary": "s", "team": [], "steps": [
+        {"role": "backend", "loop": "", "task": "build"}]}
+
+    assert ensure_final_check(proposal(), loops=with_loops,
+                              roles=list(R.values()))["steps"][-1]["loop"] == "test-and-fix"
+    fallback = ensure_final_check(proposal(), loops=without, roles=list(R.values()))
+    assert fallback["steps"][-1]["role"] == "tester" and not fallback["steps"][-1]["loop"]
+
+
+def test_nothing_is_invented_when_no_agent_can_verify(tmp_path):
+    from trance.agents.orchestrator import ensure_final_check
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.agents.store import LoopStore
+
+    unable = [r for r in R.values() if not r.verifier]
+    proposal = {"summary": "s", "team": [], "steps": [
+        {"role": "backend", "loop": "", "task": "build"}]}
+    out = ensure_final_check(proposal, loops=LoopStore(tmp_path / "x.json", seed=False),
+                             roles=unable)
+    assert len(out["steps"]) == 1 and "added_final_check" not in out
+
+
+def test_the_orchestrator_can_put_a_loop_on_a_step(tmp_path, monkeypatch):
+    from trance.agents import orchestrator
+    from trance.agents.store import LoopStore
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    loops = LoopStore(tmp_path / "loops.json")
+    captured = {}
+
+    class FakeClient:
+        def complete(self, messages, tools=None, **kw):
+            captured["system"] = messages[0]["content"]
+            captured["schema"] = tools[0]["function"]["parameters"]
+            return ChatResponse(text="", tool_calls=[ToolCall(
+                id="c", name="propose_flow", arguments={
+                    "summary": "s", "team": ["backend"], "steps": [
+                        {"role": "backend", "task": "build it", "points": 3},
+                        {"loop": "test-and-fix", "task": "make it pass", "points": 3}]})])
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
+    result = orchestrator.chat(messages=[{"role": "user", "content": "build a thing"}],
+                               project_dir=tmp_path, config=ModelConfig(), bus=EventBus(),
+                               session_id="s", loops=loops)
+
+    step_props = captured["schema"]["properties"]["steps"]["items"]["properties"]
+    assert step_props["loop"]["enum"] == ["test-and-fix"]
+    assert "END THE PLAN BY VERIFYING IT" in captured["system"]
+    assert "test-and-fix" in captured["system"]
+
+    steps = result["proposal"]["steps"]
+    assert steps[-1]["loop"] == "test-and-fix" and steps[-1]["role"] == ""
+    assert "added_final_check" not in result["proposal"]   # it did not forget

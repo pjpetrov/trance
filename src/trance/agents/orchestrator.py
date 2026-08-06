@@ -172,7 +172,7 @@ def _ask_for_split(step: dict, *, roles: list, config: ModelConfig, bus: EventBu
     return []
 
 
-def propose_flow_tool(roles: list) -> dict:
+def propose_flow_tool(roles: list, loop_names: list | None = None) -> dict:
     """Build the proposal schema from the live agent library.
 
     Built dynamically, not from a hardcoded list, for two reasons: custom agent
@@ -182,6 +182,7 @@ def propose_flow_tool(roles: list) -> dict:
     """
     workers = [r.name for r in roles if r.name != "orchestrator"]
     verifiers = [r.name for r in roles if r.verifier]
+    loop_names = list(loop_names or [])
     return {
         "type": "function",
         "function": {
@@ -208,6 +209,17 @@ def propose_flow_tool(roles: list) -> dict:
                             "type": "object",
                             "properties": {
                                 "role": {"type": "string", "enum": workers},
+                                "loop": {
+                                    "type": "string",
+                                    "description": (
+                                        "Run a named loop for this step instead of a single "
+                                        "agent. Use one when the work needs two agents "
+                                        "handing back and forth until it is right — a "
+                                        "tester finding bugs for a developer to fix. Leave "
+                                        "`role` out when you set this."
+                                    ),
+                                    "enum": loop_names,
+                                } if loop_names else {"type": "string", "enum": []},
                                 "task": {
                                     "type": "string",
                                     "description": ("One concrete, verifiable piece of work, "
@@ -233,7 +245,7 @@ def propose_flow_tool(roles: list) -> dict:
                                     "enum": list(POINTS),
                                 },
                             },
-                            "required": ["role", "task", "points"],
+                            "required": ["task", "points"],
                         },
                     },
                 },
@@ -251,6 +263,7 @@ def chat(
     bus: EventBus,
     session_id: str,
     roles: list | None = None,
+    loops=None,
 ) -> dict:
     """One orchestrator turn. Returns {'text', 'proposal'|None}."""
     roles = list(roles or BUILTIN_ROLES.values())
@@ -278,9 +291,10 @@ def chat(
           "halts the run — so set a check on work that must be right.\n\n"
           "A step is one agent trying something. When the work needs two agents "
           "handing back and forth — a tester that finds a bug for a developer to fix, "
-          "then tests again — that is a LOOP, not a step, and loops are configured "
-          "outside this conversation. Propose the plain steps; the user wires a loop in "
-          "where they want one."
+          "then tests again — set `loop` on the step instead of `role`.\n\n"
+          "END THE PLAN BY VERIFYING IT. The last step must run the tests against "
+          "what was built, and a loop is the right shape for it: a plain tester step "
+          "reports the bug and stops, where a loop gets it fixed and tested again."
         f"\n\nProject directory: {project_dir}\n{_describe_project(project_dir)}"
     )
     # The orchestrator plans against the same facts the team works from. Without
@@ -293,10 +307,17 @@ def chat(
             + "\n\nPlan around these; they are already built on. If one has to change, "
               "make that an explicit step rather than quietly planning against it."
         )
+    loop_names = [l.name for l in (loops.all() if loops else [])]
+    if loop_names:
+        system += ("\n\nLoops you can put on a step instead of an agent:\n"
+                   + "\n".join(f"- {l.name}: {l.description or '(no description)'} "
+                                f"[{' → '.join(l.roles())}]"
+                                for l in loops.all()))
+
     full = [{"role": "system", "content": system}] + messages
 
     client = client_for(config)
-    response = client.complete(full, tools=[propose_flow_tool(roles)])
+    response = client.complete(full, tools=[propose_flow_tool(roles, loop_names)])
 
     bus.emit(
         "model_call", session_id, agent="orchestrator",
@@ -317,7 +338,8 @@ def chat(
         if call.malformed:
             truncated_call = True
             continue
-        proposal = _normalize(call.arguments, roles)
+        proposal = ensure_final_check(_normalize(call.arguments, roles),
+                                      loops=loops, roles=roles)
 
     text = response.text.strip()
     cut_off = response.finish_reason == "length"
@@ -358,8 +380,13 @@ def _normalize(arguments: dict, roles: list) -> dict:
 
     for raw in arguments.get("steps") or []:
         role = raw.get("role")
+        loop = (raw.get("loop") or "").strip()
         task = (raw.get("task") or "").strip()
-        if role not in known or role == "orchestrator" or not task:
+        if not task:
+            continue
+        if loop:
+            role = ""
+        elif role not in known or role == "orchestrator":
             continue
 
         proposed = raw.get("check") or raw.get("verify_with")
@@ -376,14 +403,14 @@ def _normalize(arguments: dict, roles: list) -> dict:
 
         loops = raw.get("max_loops") or raw.get("max_attempts")
         steps.append({
-            "role": role, "task": task, "check": check, "on_fail": fixer,
+            "role": role, "loop": loop, "task": task, "check": check, "on_fail": fixer,
             "max_loops": max(1, min(4, int(loops) if loops else 2)),
             "points": _points(raw.get("points")),
         })
 
     team = [n for n in (arguments.get("team") or []) if n in known and n != "orchestrator"]
     for step in steps:
-        for name in [step["role"], step.get("check"), step.get("on_fail")]:
+        for name in [step.get("role"), step.get("check"), step.get("on_fail")]:
             if not name:
                 continue
             if name not in team:
@@ -393,6 +420,59 @@ def _normalize(arguments: dict, roles: list) -> dict:
         "summary": arguments.get("summary", ""), "team": team, "steps": steps,
         "dropped_checks": dropped,
     }
+
+
+def ensure_final_check(proposal: dict, *, loops=None, roles=None) -> dict:
+    """Guarantee the plan ends by verifying what it built.
+
+    Asking for it in the prompt is not enough: a model that has just written a
+    convincing ten-step plan is exactly the one that stops at the last feature.
+    A run that ends with nobody having run the tests is the failure this whole
+    system exists to prevent, so it is added rather than requested.
+    """
+    steps = list(proposal.get("steps") or [])
+    if not steps:
+        return proposal
+
+    available = {l.name: l for l in (loops.all() if loops else [])}
+    verifiers = {r.name for r in (roles or []) if r.verifier}
+
+    def verifies(step: dict) -> bool:
+        loop = available.get(step.get("loop") or "")
+        if loop is not None:
+            return any(node.role in verifiers or node.check for node in loop.nodes)
+        return step.get("role") in verifiers or bool(step.get("check"))
+
+    if verifies(steps[-1]):
+        return proposal
+
+    # Prefer a loop that ends by testing: a plain tester step reports the bug
+    # and stops, where a loop gets it fixed and tested again.
+    loop_name = next((name for name, loop in available.items()
+                      if any(n.role in verifiers for n in loop.nodes)
+                      and any(n.role not in verifiers for n in loop.nodes)), "")
+    tail = {
+        "role": "" if loop_name else next(iter(verifiers & {"tester"}), ""),
+        "loop": loop_name,
+        "task": ("Verify the whole thing works end to end: run the tests, and if there "
+                 "is no test for what was just built, write one. Report exactly what "
+                 "you observed."),
+        "check": None, "on_fail": None, "max_loops": 2, "points": 3,
+    }
+    if not tail["loop"] and not tail["role"]:
+        return proposal            # nothing here can verify; do not invent one
+
+    steps.append(tail)
+    proposal["steps"] = steps
+    proposal["added_final_check"] = tail["loop"] or tail["role"]
+
+    team = list(proposal.get("team") or [])
+    wanted = (available[loop_name].roles() if loop_name else [tail["role"]])
+    for name in wanted:
+        if name and name not in team:
+            team.append(name)
+    proposal["team"] = team
+    return proposal
 
 
 def _describe_agent(role) -> str:
