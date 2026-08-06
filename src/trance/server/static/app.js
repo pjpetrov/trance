@@ -291,11 +291,18 @@ function renderFlowEditor() {
   state.draftSteps.forEach((step, index) => box.append(stepCard(step, index)));
 }
 
+//: A step you can no longer be waiting on — safe to fold away.
+const FINISHED = new Set(["done", "failed", "skipped", "blocked"]);
+
 function stepCard(step, index) {
   const card = el("div", "step-card");
   // Only a step whose agent is mid-flight is locked; a failed or finished one
   // is a plan you may correct, and correcting it re-queues it.
   const editable = !["running", "verifying"].includes(step.status);
+  const finished = FINISHED.has(step.status);
+  const collapsed = finished && $("collapse-editor").checked
+                    && !state.openSteps.has(step.id);
+  if (collapsed) card.classList.add("collapsed");
   card.draggable = editable;
   card.dataset.index = index;
   const role = state.roles[step.role];

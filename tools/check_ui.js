@@ -42,7 +42,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -57,6 +57,16 @@ const session = {
 global.state = undefined;
 try {
   // state lives inside the module scope; exercise the renderers that read it
+  // Render a real session with steps in every status — an empty flow used to
+  // skip stepCard entirely, which is how a ReferenceError in it went unnoticed.
+  api.state.session = session;
+  api.state.roles = { backend: { name: "backend", color: "#7aa2f7", verifier: false },
+                      tester: { name: "tester", color: "#f7768e", verifier: true } };
+  api.state.draftSteps = ["pending", "running", "done", "failed", "skipped", "blocked"]
+    .map((status, i) => ({ id: `s${i}`, role: "backend", task: `task ${i}`, status,
+                           check: "tester", on_fail: null, max_loops: 2, checker: "tester",
+                           fixer: "backend", loop_limit: 2, attempts: [] }));
+  api.state.draftSteps.forEach((step, i) => api.stepCard(step, i));   // every status
   api.renderSessionBar(); api.renderChat(); api.renderFlowEditor();
   api.renderFlowView(); api.renderRun(); api.paintPaused();
   api.consoleReset();
