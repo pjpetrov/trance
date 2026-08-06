@@ -2137,8 +2137,9 @@ def test_an_agent_that_did_work_is_asked_what_to_remember(tmp_path, monkeypatch)
     ]
     turn, prompts = _turn_with(monkeypatch, replies, project=tmp_path)
 
-    assert any("does anything you just did change what the OTHER agents" in p
-               for p in prompts)
+    nudge = next(p for p in prompts if "is there a fact the next agent must match" in p)
+    assert "server/app.py" in nudge          # names what it actually wrote
+    assert "holds 0 note(s)" in nudge        # and closes the "already covered" excuse
     assert turn.notes_written == 1
     assert turn.outcome[0] == "SUCCESS"          # the outcome survives the nudge
 
@@ -2158,7 +2159,7 @@ def test_the_nudge_happens_once_and_takes_no_for_an_answer(tmp_path, monkeypatch
     ]
     turn, prompts = _turn_with(monkeypatch, replies, project=tmp_path)
 
-    asked = sum("OTHER agents" in p for p in prompts)
+    asked = sum("is there a fact the next agent must match" in p for p in prompts)
     assert asked == 1                            # not once per round
     assert turn.notes_written == 0
     assert turn.outcome[0] == "SUCCESS"
@@ -2174,7 +2175,7 @@ def test_an_agent_that_already_remembered_is_not_asked(tmp_path, monkeypatch):
     ]
     turn, prompts = _turn_with(monkeypatch, replies, project=tmp_path)
 
-    assert not any("OTHER agents" in p for p in prompts)
+    assert not any("is there a fact the next agent must match" in p for p in prompts)
     assert turn.notes_written == 1
 
 
@@ -2184,7 +2185,7 @@ def test_an_agent_that_did_nothing_is_not_asked(tmp_path, monkeypatch):
 
     turn, prompts = _turn_with(monkeypatch, [ChatResponse(text="OUTCOME: FAILED — blocked")],
                                project=tmp_path)
-    assert not any("OTHER agents" in p for p in prompts)
+    assert not any("is there a fact the next agent must match" in p for p in prompts)
     assert turn.rounds == 1
 
 
@@ -2761,3 +2762,52 @@ def test_a_manifest_has_exactly_one_owner():
     and overwritten by the other."""
     owners = [name for name, role in BUILTIN_ROLES.items() if role.may_write("package.json")]
     assert owners == ["devops"]
+
+
+def test_an_empty_memory_says_so_rather_than_being_hidden(tmp_path, monkeypatch):
+    """Regression: the section was omitted when empty, so an agent could not
+    tell 'nothing recorded' from 'not shown' — one declined to write a note
+    because 'the existing memory notes already cover' it, with none existing."""
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    captured = {}
+
+    class FakeClient:
+        def complete(self, messages, tools=None):
+            captured["prompt"] = messages[-1]["content"]
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
+    runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+                     config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
+
+    assert "## Project memory" in captured["prompt"]
+    assert "empty — nothing has been written down yet" in captured["prompt"]
+
+
+def test_memory_is_shown_before_the_toolset(tmp_path, monkeypatch):
+    """The decisions constrain the work; the toolset only constrains how."""
+    from trance.agents import runner
+    from trance.agents.memory import ProjectMemory
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    ProjectMemory(tmp_path).note("backend", "the port is 3100")
+    captured = {}
+
+    class FakeClient:
+        def complete(self, messages, tools=None):
+            captured["prompt"] = messages[-1]["content"]
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
+    runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+                     config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
+
+    prompt = captured["prompt"]
+    assert prompt.index("## Project memory") < prompt.index("## Your permissions")
+    assert prompt.index("## Your task") < prompt.index("## Project memory")

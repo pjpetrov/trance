@@ -44,14 +44,28 @@ def _tokens(messages: list[dict]) -> int:
 #: Asked once, at the point the agent believes it is done. The examples matter:
 #: without them models answer "I remembered to write the tests", which is a
 #: progress report and costs every later agent for nothing.
-_REMEMBER_PROMPT = (
-    "Before you finish: does anything you just did change what the OTHER agents "
-    "must do? A route and its payload shape, a port, where files live, the command "
-    "that runs the tests, a library or format everyone has to match.\n\n"
-    "If yes, call remember now — one short, specific sentence per fact. If there is "
-    "genuinely nothing the others need, say so in one line and do not call it.\n\n"
-    "Either way, end your reply with your OUTCOME line again."
-)
+def _remember_prompt(turn, memory) -> str:
+    """Ask about the work actually done, not in the abstract.
+
+    "Is there anything to remember?" is a yes/no question, and a model's default
+    answer to a yes/no question at the end of a long turn is no — one declined
+    on the grounds that "the existing memory notes already cover" it, with the
+    memory empty. Naming the files it just wrote, and how many notes there
+    really are, removes both escapes.
+    """
+    written = ", ".join(dict.fromkeys(turn.files_written))
+    stored = len(memory.notes()) if memory is not None else 0
+    return (
+        (f"You wrote: {written}.\n\n" if written else "")
+        + f"Project memory currently holds {stored} note(s) — that is all of it. "
+        f"Do not assume a fact is already recorded.\n\n"
+        "For what you just did, is there a fact the next agent must match? A route "
+        "and its payload shape, a port, a script name, where files go, a version or "
+        "format they have to agree with. Call remember once per fact, one specific "
+        "sentence each.\n\n"
+        "If there is genuinely nothing the others need, say so in one line and do "
+        "not call it. Either way, end your reply with your OUTCOME line again."
+    )
 
 
 def _should_ask_to_remember(turn, role, already_asked: bool) -> bool:
@@ -213,14 +227,21 @@ def run_agent(
     user_parts.append(f"## Your task — this and nothing else\n{task}")
     if placement:
         user_parts.append("## Where your step sits\n" + placement)
+    # What the team already settled comes before what this agent may do: the
+    # decisions constrain the work, the toolset only constrains how.
+    notes = memory.for_prompt()
+    user_parts.append(
+        "## Project memory (decisions the team has already made — follow them)\n"
+        + (notes if notes else
+           # Stated rather than omitted. An agent that cannot tell "empty" from
+           # "not shown" will assume a fact is already recorded and skip writing
+           # it — one was seen declining to record anything because "the
+           # existing memory notes already cover" what it had just decided.
+           "(empty — nothing has been written down yet. Anything you decide "
+           "that others must match is yours to record.)"))
     # Derived from the tool layer, so what the agent is told always matches what
     # the tool layer will actually allow.
     user_parts.append("## Your permissions (enforced by the system)\n" + permissions_brief(role))
-    notes = memory.for_prompt()
-    if notes:
-        user_parts.append(
-            "## Project memory (decisions the team has already made — follow them)\n"
-            + notes)
     if project_map:
         # An agent that cannot see what is indexed has no reason to guess a
         # symbol name, so it falls back to reading whole files. Showing the map
@@ -347,7 +368,8 @@ def run_agent(
                                   "tool_calls": [], "usage": {}, "summary": {}})
                 messages.append(response.raw_message or
                                 {"role": "assistant", "content": response.text})
-                messages.append({"role": "user", "content": _REMEMBER_PROMPT})
+                messages.append({"role": "user",
+                                 "content": _remember_prompt(turn, memory)})
                 continue
             turn.stop_reason = response.finish_reason
             break
