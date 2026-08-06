@@ -107,6 +107,18 @@ try {
                         payload: { model: "m", tool_calls: [], messages: [], summary: {},
                                    context: ctx } });
   }
+  for (const ev of [
+    { type: "fixing", agent: "backend", step_id: "st1",
+      payload: { message: "Backend will fix it", loop: 1, of: 2,
+                 handoff: "$ npm test → exit 1", handoff_chars: 240 } },
+    { type: "fixed", agent: "backend", step_id: "st1",
+      payload: { summary: "inverted the collision", files: ["server/game.js"] } },
+    { type: "step_retry", agent: "tester", step_id: "st1",
+      payload: { message: "tester will try again", feedback: "bug" } },
+  ]) {
+    api.consoleAppend({ ...ev, ts: new Date().toISOString() });
+    api.trackActivity(ev);
+  }
   api.trackActivity({ type: "context_trimmed", agent: "backend",
                       ts: new Date().toISOString(),
                       payload: { dropped_tool_results: 2, budget: 59000,

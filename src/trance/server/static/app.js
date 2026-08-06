@@ -618,6 +618,10 @@ function headline(event) {
     case "step_retry": return `retrying — ${clip(p.feedback, 80)}`;
     case "verdict": return `${p.verdict} — ${clip(p.detail, 70)}`;
     case "supervision": return p.message;
+    case "fixing":
+      return `${p.message || "fixing"}` +
+             (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
+    case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
     case "context_bundle":
       return `${p.stats?.symbols ?? 0} symbols · ~${p.stats?.est_tokens ?? 0} tok (${p.entry || ""})`;
     case "chat": return clip(p.content, 100);
@@ -1753,6 +1757,9 @@ function trackActivity(event) {
         .map((v) => clip(String(v), 20)).join(", ")})`); break;
     case "context_bundle":
       setActivity(event.agent, "receiving curated context"); break;
+    case "fixing":
+      activity.context = null;      // the fixer starts its own conversation
+      setActivity(event.agent, "fixing what the last pass reported"); break;
     case "index":
       setActivity("orchestrator", "indexing the project"); break;
     case "step_finished": case "step_failed": case "run_finished":
@@ -2072,6 +2079,39 @@ function consoleAppend(event) {
       consolePush(consoleEntry({
         kind: "step", icon: "↺", time, tag: event.agent, label: p.message || "retrying",
         body: () => el("pre", null, p.feedback || ""), open: false,
+      }));
+      return;
+
+    case "fixing":
+      // The handoff is the fixer's whole picture of what went wrong, so make it
+      // readable here rather than only in the raw event.
+      consolePush(consoleEntry({
+        kind: "step", icon: "🛠", time, tag: event.agent,
+        label: labelWith([
+          [p.message || "fixing", ""],
+          [p.handoff_chars ? `  handed ${Math.round(p.handoff_chars / 4)} tok of context` : "",
+           "c-exit-0"],
+        ]),
+        body: () => {
+          const wrap = el("div");
+          if (p.handoff) {
+            wrap.append(copyButton(() => p.handoff, "copy handoff"));
+            wrap.append(el("div", "msg-role", `what ${event.agent} was handed`));
+          }
+          wrap.append(el("pre", null, p.handoff || "(nothing to hand over)"));
+          return wrap;
+        },
+      }));
+      return;
+
+    case "fixed":
+      consolePush(consoleEntry({
+        kind: "write", icon: "🛠", time, tag: event.agent,
+        label: labelWith([
+          ["fix applied", ""],
+          [(p.files || []).length ? `  ${p.files.join(", ")}` : "  no files changed", "c-path"],
+        ]),
+        body: () => el("pre", null, p.summary || ""),
       }));
       return;
 

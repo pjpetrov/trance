@@ -737,8 +737,9 @@ def _engine(tmp_path, team, bus=None):
 class _Turn:
     """Stands in for agents.runner.AgentTurn."""
 
-    def __init__(self, verdict, text="", outcome=("SUCCESS", "")):
+    def __init__(self, verdict, text="", outcome=("SUCCESS", ""), transcript=None):
         self.verdict = verdict
+        self.transcript = transcript or []
         self.outcome = outcome
         self.reported_outcome = True
         self.text = text or f"VERDICT: {verdict}"
@@ -750,6 +751,7 @@ class _Turn:
         self.rounds = 1
         self.stop_reason = "stop"
         self.salvaged_calls = 0
+        self.truncated_calls = 0
 
 
 def test_a_passing_check_lets_the_flow_move_on(tmp_path, monkeypatch):
@@ -1673,3 +1675,120 @@ def test_context_usage_falls_back_to_an_estimate(monkeypatch):
                           ChatResponse(text="", usage={}),
                           ModelConfig(context_window=64000))
     assert usage["tokens"] == 1000 and usage["estimated"] is True
+
+
+# ------------------------------- handing a failure to the fixing agent
+
+def _tester_transcript():
+    """What a tester's turn looks like: it reads, writes a test, runs it."""
+    return [
+        {"tool": "read_file", "arguments": {"path": "server/game.js"}, "ok": True,
+         "text": "export function step(){...}" * 200, "detail": {"kind": "read",
+                                                                 "path": "server/game.js"}},
+        {"tool": "write_file", "arguments": {}, "ok": True, "text": "written",
+         "detail": {"kind": "write", "path": "tests/ball.test.js", "created": True,
+                    "added": 42, "removed": 0,
+                    "diff": "+expect(ball.vx).toBe(-3)"}},
+        {"tool": "run_command", "arguments": {}, "ok": False, "text": "",
+         "detail": {"kind": "command", "command": "npm test", "exit_code": 1, "seconds": 4,
+                    "output": "● ball bounces\n\nExpected: -3\nReceived: 3\n"}},
+    ]
+
+
+def test_the_handoff_keeps_the_failure_and_drops_the_reading():
+    from trance.agents.handoff import digest
+
+    text = digest(_tester_transcript(), "OUTCOME: FAILED — the ball passes through the paddle")
+
+    assert "Expected: -3" in text          # the actual evidence
+    assert "npm test" in text
+    assert "+expect(ball.vx).toBe(-3)" in text
+    assert "OUTCOME: FAILED" in text
+    # The file it read is named, but its contents are not reprinted — the fixer
+    # can pull those itself, and they are most of the transcript.
+    assert "looked at server/game.js" in text
+    assert "export function step" not in text
+
+
+def test_the_handoff_gives_up_routine_output_before_the_failure():
+    from trance.agents.handoff import digest
+
+    noisy = [{"tool": "run_command", "arguments": {}, "ok": True, "text": "",
+              "detail": {"kind": "command", "command": f"npm run lint{i}", "exit_code": 0,
+                         "seconds": 1, "output": "clean\n" * 500}}
+             for i in range(6)]
+    text = digest(noisy + _tester_transcript(), "OUTCOME: FAILED — bug", budget_chars=3000)
+
+    assert len(text) <= 3600                       # roughly inside the budget
+    assert "Expected: -3" in text                  # the failure survives
+    assert "npm run lint5" in text                 # the routine runs are still named
+    assert text.count("clean") < 100               # but not quoted at length
+
+
+def test_the_closing_report_is_never_trimmed_away():
+    from trance.agents.handoff import digest
+
+    report = "OUTCOME: FAILED — " + "the paddle collision is inverted. " * 30
+    text = digest(_tester_transcript(), report, budget_chars=200)
+    assert report.strip() in text
+
+
+def test_an_empty_turn_hands_over_nothing():
+    from trance.agents.handoff import digest
+
+    assert digest([], "") == ""
+
+
+def test_the_fixer_is_shown_what_the_failing_agent_did(tmp_path, monkeypatch):
+    """Regression: the fixer was told only that the step failed and why, so its
+    first move was always to re-run the suite it had just been told about."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["tester", "backend"])
+    step = Step(role="tester", task="test the paddle", on_fail="backend", max_loops=2)
+    prompts = {}
+
+    def fake(**kw):
+        name = kw["role"].name
+        prompts.setdefault(name, kw["task"])
+        if name == "tester":
+            passed = "backend" in prompts
+            return _Turn(None, "OUTCOME: FAILED — the ball passes through",
+                         outcome=("SUCCESS", "") if passed
+                         else ("FAILED", "the ball passes through"),
+                         transcript=_tester_transcript())
+        return _Turn(None, "fixed the collision", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    brief = prompts["backend"]
+    assert "npm test" in brief and "Expected: -3" in brief
+    assert "tests/ball.test.js" in brief
+    assert "do not repeat it" in brief          # told not to re-derive it
+
+
+def test_a_rerunning_agent_is_reminded_of_its_own_previous_pass(tmp_path, monkeypatch):
+    """With no fixer the same role runs again — in a fresh conversation, so it
+    has forgotten the pass that just failed."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["tester"])
+    step = Step(role="tester", task="test the paddle", max_loops=2)
+    steering = []
+
+    def fake(**kw):
+        steering.append(kw.get("steering") or [])
+        failed = len(steering) == 1
+        return _Turn(None, "report",
+                     outcome=("FAILED", "the ball passes through") if failed
+                     else ("SUCCESS", ""),
+                     transcript=_tester_transcript())
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert steering[0] == []
+    second = "\n".join(steering[1])
+    assert "the ball passes through" in second
+    assert "Expected: -3" in second

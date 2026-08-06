@@ -20,6 +20,7 @@ import threading
 import traceback
 from pathlib import Path
 
+from .agents.handoff import Handoff, build as build_handoff
 from .agents.runner import run_agent
 from .config import Config
 from .curator.walker import CuratorConfig, curate
@@ -158,6 +159,8 @@ class FlowEngine:
 
         limit = step.loop_limit
         feedback = ""
+        #: What the previous pass did, carried into the next one.
+        carry: Handoff | None = None
 
         for loop in range(1, limit + 1):
             session.wait_if_paused()
@@ -181,9 +184,13 @@ class FlowEngine:
             steering = list(step.steering)
             step.steering.clear()
             if feedback:
+                # A re-run starts a fresh conversation, so this agent has no
+                # memory of its own previous pass either. Hand it back.
+                replay = (f"\n\nWhat was done on that pass:\n{carry.body}"
+                          if carry and carry.body else "")
                 steering.append(
-                    f"This block did not pass its check on the previous pass. What the "
-                    f"check reported:\n{feedback}"
+                    f"This step did not succeed on the previous pass. What was "
+                    f"reported:\n{feedback}{replay}"
                 )
 
             turn = run_agent(
@@ -255,7 +262,8 @@ class FlowEngine:
 
             # The loop: an agent tries to fix what the check found, then the
             # block runs again.
-            self._run_fixer(step, attempt, feedback, loop, limit)
+            carry = build_handoff(turn.transcript, turn.text)
+            self._run_fixer(step, attempt, feedback, loop, limit, carry)
 
         step.status = "failed"
         last = step.attempts[-1] if step.attempts else None
@@ -268,7 +276,7 @@ class FlowEngine:
         self._halt(step)
 
     def _run_fixer(self, step: Step, attempt: Attempt, feedback: str,
-                   loop: int, limit: int) -> None:
+                   loop: int, limit: int, handoff: Handoff | None = None) -> None:
         """Hand the failure to the fixing agent before the block runs again."""
         fixer = self.session.role(step.fixer)
         if fixer is None or fixer.name == step.role:
@@ -286,11 +294,19 @@ class FlowEngine:
             "message": (f"{fixer.title} will try to fix what {step.role} reported, "
                         f"then {step.role} runs again (loop {loop + 1} of {limit})."),
             "loop": loop, "of": limit,
+            # Shown in the step detail: exactly what the fixer was told, so a
+            # fixer that flails is diagnosable without guessing.
+            "handoff": handoff.body if handoff else "",
+            "handoff_chars": handoff.chars if handoff else 0,
         })
         self.on_change()
 
-        # The fixer's whole context is this prompt: the goal, what was produced,
-        # and exactly what the check objected to.
+        # The fixer starts cold, so what the failing agent learned has to travel
+        # with the request. Without the commands it ran and their output, the
+        # fixer's first move is always to reproduce a failure that was already
+        # reproduced a minute ago.
+        replay = (f"\n\n## What {step.role} actually did, in order\n{handoff.body}"
+                  if handoff and handoff.body else "")
         turn = run_agent(
             role=fixer,
             task=(
@@ -298,9 +314,12 @@ class FlowEngine:
                 f"## What the step was asked to do\n{step.task}\n\n"
                 f"## What {step.role} reported\n{step.summary}\n\n"
                 f"## Files it changed\n{', '.join(attempt.files_written) or 'none'}\n\n"
-                f"## What went wrong\n{feedback}\n\n"
-                f"Fix the cause of that objection. Change only what is needed — "
-                f"{step.role} will run again afterwards and the check will be repeated."
+                f"## What went wrong\n{feedback}"
+                f"{replay}\n\n"
+                f"The replay above is what already happened — do not repeat it to "
+                f"find out what is broken. Read the files you need, fix the cause of "
+                f"that objection, and change only what is needed; {step.role} will run "
+                f"again afterwards and the check will be repeated."
             ),
             project=self.project, config=self.config.for_role(fixer), bus=self.bus,
             session_id=self.session.id, step_id=step.id, history=self.session.history,

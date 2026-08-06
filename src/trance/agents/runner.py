@@ -40,6 +40,21 @@ def _tokens(messages: list[dict]) -> int:
     return total
 
 
+#: Per-entry cap on what the transcript keeps. The full text is in the event
+#: trace either way; this copy exists only to be handed to another agent.
+MAX_RECORDED_CHARS = 6000
+
+
+def _record(turn, name: str, arguments: dict, text: str, ok: bool, detail: dict | None) -> None:
+    turn.transcript.append({
+        "tool": name,
+        "arguments": arguments,
+        "ok": ok,
+        "text": (text or "")[:MAX_RECORDED_CHARS],
+        "detail": detail or {},
+    })
+
+
 def context_usage(messages: list[dict], response, config: ModelConfig) -> dict:
     """How full the window is for this call — the number the UI puts on screen.
 
@@ -97,6 +112,10 @@ class AgentTurn:
     salvaged_calls: int = 0
     truncated_calls: int = 0
     model_event_ids: list[str] = field(default_factory=list)
+    #: Everything this agent did, in order — the raw material for the handoff
+    #: to a fixer. Never fed back to this agent; the conversation already holds
+    #: it, and it is trimmed there.
+    transcript: list[dict] = field(default_factory=list)
 
     @property
     def verdict(self) -> str | None:
@@ -283,6 +302,8 @@ def run_agent(
                                "truncated": truncated},
                 })
                 turn.tool_calls += 1
+                _record(turn, call.name, {}, outcome.text, False,
+                        {"kind": "malformed", "truncated": truncated})
                 messages.append({"role": "tool", "tool_call_id": call.id,
                                  "name": call.name, "content": outcome.text})
                 continue
@@ -306,6 +327,7 @@ def run_agent(
                     "detail": outcome.detail,
                 },
             )
+            _record(turn, call.name, call.arguments, outcome.text, outcome.ok, outcome.detail)
             messages.append({
                 "role": "tool", "tool_call_id": call.id, "name": call.name, "content": outcome.text,
             })
