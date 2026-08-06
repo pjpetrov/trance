@@ -488,3 +488,22 @@ input.tiny { width: 62px; min-width: 0; }
 .step-card.collapsed .step-head { cursor: pointer; }
 .step-card.collapsed:hover .step-toggle { color: var(--accent); }
 .loop-note.check-note { color: var(--accent); }
+
+/* ── project memory ────────────────────────────────────────────────────
+   Short by design: it is read into every agent's prompt, so the panel
+   showing it should make an overlong list feel wrong. */
+.memory-panel { max-height: 30vh; display: flex; flex-direction: column; }
+.memory-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.memory-note {
+  display: flex; gap: 8px; align-items: baseline; font-size: 12.5px;
+  padding: 5px 7px; border-radius: 7px; background: var(--panel-2);
+  border-left: 2px solid var(--purple);
+}
+.memory-note .badge { flex: 0 0 auto; }
+.memory-editor { display: flex; flex-direction: column; gap: 8px; }
+.memory-editor textarea {
+  width: 100%; min-height: 160px; resize: vertical;
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+}

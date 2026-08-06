@@ -36,6 +36,9 @@ const RESPONSES = {
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
                       suggested_dir: "/w/project", state_dir: "/s" },
   "/api/sessions": [],
+  "/api/sessions/s1/memory": { path: "/p/.trance/memory.md", raw: "- **backend**: port 3100",
+                               notes: ["- **backend**: port 3100", "- plain note"],
+                               prompt_view: "- **backend**: port 3100" },
 };
 global.fetch = async (path) => ({
   ok: true, status: 200,
@@ -43,7 +46,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,contextGauge};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,contextGauge,renderMemory};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -69,7 +72,7 @@ try {
                            fixer: "backend", loop_limit: 2, attempts: [] }));
   api.state.draftSteps.forEach((step, i) => api.stepCard(step, i));   // every status
   api.renderSessionBar(); api.renderChat(); api.renderFlowEditor();
-  api.renderFlowView(); api.renderRun(); api.paintPaused();
+  api.renderFlowView(); api.renderRun(); api.paintPaused(); api.renderMemory();
   api.consoleReset();
   api.consoleAppend({ type: "step_started", agent: "backend", step_id: "st1",
                       ts: new Date().toISOString(), payload: { task: "t", attempt: 1 } });
@@ -85,6 +88,8 @@ try {
                         { kind: "background", command: "node s.js" },
                         { kind: "command_stopped", command_id: "c1" },
                         { kind: "truncated", limit: 4096, attempt: 1 },
+                        { kind: "memory", note: "port 3100", stored: true, agent: "backend" },
+                        { kind: "memory", note: "port 3100", stored: false, agent: "frontend" },
                         { kind: "read", path: "a.py" },
                         { kind: "refused_program", program: "npx", command: "npx vite" },
                         null]) {

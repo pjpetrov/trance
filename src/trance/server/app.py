@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..agents import orchestrator as orchestrator_agent
+from ..agents.memory import ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
 from ..agents.store import CommandStore, PROTECTED, RoleStore, validate as validate_agent
 from ..agents.tools import ALLOWED_COMMANDS, set_command_policy
@@ -444,6 +445,23 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     def get_events(session_id: str):
         _need(store, session_id)
         return [e.to_dict() for e in bus.history(session_id)]
+
+    @app.get("/api/sessions/{session_id}/memory")
+    def get_memory(session_id: str):
+        """What the team has written down — the same text every agent is given."""
+        session = _need(store, session_id)
+        memory = ProjectMemory(Path(session.project_dir).expanduser())
+        return {"path": str(memory.path), "notes": memory.notes(),
+                "raw": memory.raw(), "prompt_view": memory.for_prompt()}
+
+    @app.put("/api/sessions/{session_id}/memory")
+    def put_memory(session_id: str, body: dict):
+        """Let the user correct it. A wrong shared fact misleads every agent."""
+        session = _need(store, session_id)
+        memory = ProjectMemory(Path(session.project_dir).expanduser())
+        memory.path.parent.mkdir(parents=True, exist_ok=True)
+        memory.path.write_text(body.get("raw") or "", encoding="utf8")
+        return {"notes": memory.notes(), "raw": memory.raw()}
 
     # --------------------------------------------------------------- chat
 

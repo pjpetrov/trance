@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..model import estimate_tokens
+from .memory import ProjectMemory
 from .roles import AgentRole
 
 #: Deliberately small. A single 100KB read is ~25k tokens and will blow a 64k
@@ -232,10 +233,14 @@ class ToolOutcome:
 
 
 class AgentTools:
-    def __init__(self, project: Path, role: AgentRole, graph_tools=None, notify=None):
+    def __init__(self, project: Path, role: AgentRole, graph_tools=None, notify=None,
+                 memory=None):
         self.project = Path(project).resolve()
         self.role = role
         self.graph = graph_tools
+        #: The team's shared notebook. Every agent may write to it, including
+        #: ones with no file access — it is how they talk to each other at all.
+        self.memory = memory if memory is not None else ProjectMemory(self.project)
         #: Called with (event_type, payload) so a long command is visible while
         #: it runs instead of only when it finishes.
         self.notify = notify or (lambda kind, payload: None)
@@ -321,6 +326,20 @@ class AgentTools:
                                      "with stop_command. Without this the call blocks until "
                                      "the command exits or times out.")}},
                 ["command"]))
+        # Any agent that does work gets this: it is the only way one step's
+        # decision reaches the next step's agent. An inspect-only agent does not
+        # — it was created precisely so a verifier cannot write anything, and
+        # shared memory is something the next agent has to act on.
+        if {"files", "commands", "graph"} & set(self.role.toolsets):
+            out.append(_fn(
+                "remember",
+                "Write one line to the project's shared memory, which every agent on this "
+                "project sees from now on. Use it for a decision others must follow: a route "
+                "and its payload, a port, a file layout, the command that runs the tests. "
+                "Not for progress reports, and not for anything already obvious from the code.",
+                {"note": {"type": "string",
+                          "description": "One specific, self-contained sentence."}},
+                ["note"]))
         if "graph" in self.role.toolsets and self.graph is not None:
             out += self.graph_specs()
         return out
@@ -342,6 +361,7 @@ class AgentTools:
             "stop_command": self.stop_command,
             "check_file": self.check_file,
             "check_files": self.check_files,
+            "remember": self.remember,
         }
         # A tool the role was not granted must be refused even if the model
         # invents the name — specs() omitting it is not enough on its own.
@@ -486,6 +506,14 @@ class AgentTools:
                 "diff": "\n".join(diff_lines[:MAX_DIFF_LINES]),
                 "truncated": truncated,
             },
+        )
+
+    def remember(self, note: str) -> ToolOutcome:
+        stored, message = self.memory.note(self.role.name, note)
+        return ToolOutcome(
+            message,
+            detail={"kind": "memory", "note": note, "stored": stored,
+                    "agent": self.role.name},
         )
 
     def list_files(self, subdir: str = "") -> ToolOutcome:
@@ -793,7 +821,15 @@ def permissions_brief(role: AgentRole) -> str:
     if "graph" in role.toolsets:
         lines.append(
             "You may query the indexed code graph (get_definition, get_callers, get_callees, "
-            "search_symbols) across the whole project."
+            "search_symbols) across the whole project — including files outside your write "
+            "remit. Prefer it over reading a whole file to find one symbol."
+        )
+
+    if {"files", "commands", "graph"} & set(role.toolsets):
+        lines.append(
+            "You may write to the project's shared memory with remember. Every agent on this "
+            "project reads it from now on, so put decisions there that others must match — "
+            "and nothing else."
         )
 
     if "commands" in role.toolsets:

@@ -21,6 +21,7 @@ import traceback
 from pathlib import Path
 
 from .agents.handoff import Handoff, build as build_handoff
+from .agents.memory import ProjectMemory
 from .agents.runner import run_agent
 from .config import Config
 from .curator.walker import CuratorConfig, curate
@@ -30,7 +31,7 @@ from .flow import Attempt, GateResult, Step
 from .indexer.service import default_db_path, index_repo
 from .session import Session
 from .agents.tools import stop_background
-from .worker.tools import ContextTools
+from .worker.tools import ContextTools, project_map
 
 
 def check_project_dir(raw: str) -> tuple[str | None, str]:
@@ -87,6 +88,8 @@ class FlowEngine:
         self.bus = bus
         self.on_change = on_change or (lambda: None)
         self.project = Path(session.project_dir).expanduser().resolve()
+        #: The team's shared notebook, in the project so the user can read it.
+        self.memory = ProjectMemory(self.project)
 
     # ----------------------------------------------------------------- run
 
@@ -108,6 +111,10 @@ class FlowEngine:
             if problem:
                 raise RuntimeError(problem)
             self.project.mkdir(parents=True, exist_ok=True)
+            # Index up front. Indexing only *after* each step meant the first
+            # agent of a run never had a graph to query, and on a fresh project
+            # was not even given the graph tools.
+            self._reindex()
             while True:
                 session.wait_if_paused()
                 if session.stopping:
@@ -200,6 +207,7 @@ class FlowEngine:
                 steering=steering, history=session.history,
                 graph_tools=self._graph_tools(role),
                 should_stop=lambda: session.stopping,
+                memory=self.memory, project_map=self._project_map(role, step.task),
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
@@ -325,6 +333,7 @@ class FlowEngine:
             session_id=self.session.id, step_id=step.id, history=self.session.history,
             graph_tools=self._graph_tools(fixer),
             should_stop=lambda: self.session.stopping,
+            memory=self.memory, project_map=self._project_map(fixer, step.task),
         )
         attempt.fix_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
         attempt.fix_summary = _summarize(turn.text)
@@ -489,6 +498,19 @@ class FlowEngine:
         if not db_path.exists():
             return None
         return ContextTools(GraphDB(db_path), self.project)
+
+    def _project_map(self, role, task: str = "") -> str:
+        """What is indexed, for a role that can query it."""
+        if "graph" not in role.toolsets:
+            return ""
+        db_path = default_db_path(self.project)
+        if not db_path.exists():
+            return ""
+        db = GraphDB(db_path)
+        try:
+            return project_map(db, focus=task)
+        finally:
+            db.close()
 
     def _curate(self, step: Step, role) -> tuple[str, dict | None]:
         """Curated context for steps that name an entry point in existing code."""

@@ -185,3 +185,48 @@ def _miss(symbol: str) -> str:
         f"No symbol named {symbol!r} is indexed. It may be from a third-party library "
         f"(not in this repo), or the name may differ — try search_symbols with a partial name."
     )
+
+
+#: The map is a *pointer*, not content: it goes into every agent's prompt, so
+#: it has to stay well under the cost of just reading a couple of files.
+MAP_BUDGET_CHARS = 2500
+#: Names only past this many per file; a 90-symbol file would otherwise crowd
+#: out every other file in the project.
+MAP_SYMBOLS_PER_FILE = 14
+
+
+def project_map(db: GraphDB, *, budget_chars: int = MAP_BUDGET_CHARS,
+                focus: str = "") -> str:
+    """A one-screen index of what has been parsed: files and their symbols.
+
+    Agents were ignoring the graph tools and reading whole files instead, and
+    the reason is simple — nothing told them what was in the graph. Guessing a
+    symbol name that may not exist loses to `read_file`, which always works. Seen
+    against a list of real names, get_definition becomes the cheaper move.
+    """
+    paths = db.file_paths()
+    if not paths:
+        return ""
+
+    # Files the task mentions come first; the budget bites the tail.
+    hint = (focus or "").lower()
+    ordered = sorted(paths, key=lambda p: (0 if p.lower() in hint else 1, p))
+
+    lines: list[str] = []
+    used = 0
+    shown = 0
+    for path in ordered:
+        symbols = [s for s in db.symbols_in_file(path) if s.kind != "variable"]
+        names = [s.qualname.split("::", 1)[-1] for s in symbols[:MAP_SYMBOLS_PER_FILE]]
+        if len(symbols) > MAP_SYMBOLS_PER_FILE:
+            names.append(f"+{len(symbols) - MAP_SYMBOLS_PER_FILE} more")
+        line = f"{path}: {', '.join(names)}" if names else f"{path}: (no functions or classes)"
+        if used + len(line) > budget_chars:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        shown += 1
+
+    if shown < len(ordered):
+        lines.append(f"…and {len(ordered) - shown} more file(s) — use search_symbols to find them.")
+    return "\n".join(lines)

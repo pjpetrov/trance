@@ -94,6 +94,25 @@
         </div>
         <div id="flow-view" class="flow-view"></div>
       </div>
+      <!-- What every agent is told the team already decided. -->
+      <div class="panel memory-panel">
+        <div class="panel-head">
+          <h2>🧠 Project memory</h2>
+          <div class="row small">
+            <span id="memory-count" class="muted small"></span>
+            <button id="memory-edit" class="ghost small">edit</button>
+          </div>
+        </div>
+        <div id="memory-list" class="memory-list"></div>
+        <div id="memory-editor" class="memory-editor" hidden>
+          <textarea id="memory-raw" spellcheck="false"></textarea>
+          <div class="row small">
+            <button id="memory-save" class="primary">Save</button>
+            <button id="memory-cancel" class="ghost">Cancel</button>
+            <span class="muted small">Every agent reads this from now on.</span>
+          </div>
+        </div>
+      </div>
       <div class="panel console-panel">
         <div class="panel-head">
           <h2>Console</h2>

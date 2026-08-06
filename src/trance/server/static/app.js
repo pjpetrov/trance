@@ -536,7 +536,62 @@ function renderRun() {
 
   renderFlowView();
   paintPaused();
+  renderMemory();
 }
+
+/* ───────────────── the team's shared memory ───────────────────────── */
+
+async function renderMemory() {
+  const box = $("memory-list");
+  if (!box || !state.session) return;
+  let data;
+  try {
+    data = await api(`/api/sessions/${state.session.id}/memory`);
+  } catch (_) { return; }
+  state.memory = data;
+
+  box.innerHTML = "";
+  $("memory-count").textContent = data.notes.length
+    ? `${data.notes.length} note(s) · in every agent's prompt`
+    : "";
+  if (!data.notes.length) {
+    box.append(el("p", "muted small",
+      "Nothing yet. Agents write here when they decide something the others "
+      + "must match — a route, a port, how to run the tests."));
+    return;
+  }
+  for (const line of data.notes) {
+    // "- **backend**: the API is POST /api/games"
+    const match = line.match(/^-\s*\*\*(.+?)\*\*:\s*(.*)$/);
+    const row = el("div", "memory-note");
+    const who = el("span", "badge role", match ? match[1] : "team");
+    const role = state.roles[match ? match[1] : ""];
+    if (role) who.style.background = role.color;
+    row.append(who, el("span", null, match ? match[2] : line.replace(/^-\s*/, "")));
+    box.append(row);
+  }
+}
+
+$("memory-edit").onclick = () => {
+  $("memory-raw").value = (state.memory && state.memory.raw) || "";
+  $("memory-editor").hidden = false;
+  $("memory-list").hidden = true;
+};
+
+$("memory-cancel").onclick = () => {
+  $("memory-editor").hidden = true;
+  $("memory-list").hidden = false;
+};
+
+$("memory-save").onclick = async () => {
+  await api(`/api/sessions/${state.session.id}/memory`, {
+    method: "PUT", body: { raw: $("memory-raw").value },
+  });
+  $("memory-editor").hidden = true;
+  $("memory-list").hidden = false;
+  await renderMemory();
+  toast("Project memory updated — agents will see this from the next step.");
+};
 
 $("btn-pause").onclick = async () => {
   await api(`/api/sessions/${state.session.id}/pause`, { method: "POST" });
@@ -1915,6 +1970,17 @@ function consoleAppend(event) {
         consolePush(consoleEntry({
           kind: "cmd", icon: "⇥", time, tag: event.agent,
           label: labelWith([[d.command, ""], ["  running in background", "c-exit-0"]]),
+          body: () => el("pre", null, p.result || ""),
+        }));
+        return;
+      }
+      if (d.kind === "memory") {
+        consolePush(consoleEntry({
+          kind: "write", icon: "🧠", time, tag: event.agent,
+          label: labelWith([
+            [d.stored ? "remembered " : "already known ", ""],
+            [clip(d.note, 80), "c-path"],
+          ]),
           body: () => el("pre", null, p.result || ""),
         }));
         return;

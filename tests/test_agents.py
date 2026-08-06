@@ -1843,3 +1843,175 @@ def test_agents_are_told_how_to_write_a_file_too_long_for_one_reply():
 
     brief = permissions_brief(BUILTIN_ROLES["backend"])
     assert "append_file" in brief and "cut off" in brief
+
+
+# ------------------------------------------ shared memory across agents
+
+def test_a_note_reaches_the_next_agents_prompt(tmp_path):
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    stored, message = memory.note("backend", "the API is POST /api/games returning {id, state}")
+    assert stored and "every agent after you" in message
+    assert "POST /api/games" in memory.for_prompt()
+    assert "**backend**" in memory.for_prompt()      # who decided it, not just what
+
+
+def test_memory_survives_a_new_process(tmp_path):
+    from trance.agents.memory import ProjectMemory
+
+    ProjectMemory(tmp_path).note("backend", "the server listens on port 3100")
+    assert "3100" in ProjectMemory(tmp_path).for_prompt()
+    assert (tmp_path / ".trance" / "memory.md").exists()   # editable by hand
+
+
+def test_the_same_fact_is_not_stored_twice(tmp_path):
+    """Every note is paid for by every later agent, so duplicates matter."""
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    memory.note("backend", "the server listens on port 3100")
+    stored, message = memory.note("frontend", "The server listens on port 3100.")
+
+    assert stored is False and "Already in project memory" in message
+    assert len(memory.notes()) == 1
+
+
+def test_the_prompt_view_is_bounded_and_keeps_the_newest(tmp_path):
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    for i in range(60):
+        memory.note("backend", f"decision number {i} " + "x" * 80)
+
+    view = memory.for_prompt(budget=1000)
+    assert len(view) <= 1100
+    assert "decision number 59" in view          # newest survives
+    assert "decision number 0 " not in view
+    assert "older note(s) omitted" in view       # and says so
+
+
+def test_remember_is_offered_to_working_agents_but_not_to_the_factchecker(tmp_path):
+    tools = _tools(tmp_path, "backend")
+    assert "remember" in {s["function"]["name"] for s in tools.specs()}
+
+    checker = _tools(tmp_path, "factchecker")
+    assert "remember" not in {s["function"]["name"] for s in checker.specs()}
+    assert checker.call("remember", {"note": "x"}).ok is False
+
+
+def test_an_agent_starts_with_what_the_team_already_decided(tmp_path, monkeypatch):
+    from trance.agents import runner
+    from trance.agents.memory import ProjectMemory
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    ProjectMemory(tmp_path).note("backend", "the API is POST /api/games")
+    captured = {}
+
+    class FakeClient:
+        def complete(self, messages, tools=None):
+            captured["prompt"] = messages[-1]["content"]
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="call the API", project=tmp_path,
+                     config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
+
+    assert "POST /api/games" in captured["prompt"]
+    assert "Project memory" in captured["prompt"]
+
+
+# ----------------------------------------------- making the graph usable
+
+def test_the_project_map_lists_what_is_indexed(tmp_path):
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import project_map
+
+    (tmp_path / "app.py").write_text("def charge(order):\n    return 1\n\nclass Cart:\n    pass\n")
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+
+    text = project_map(db)
+    assert "app.py" in text and "charge" in text and "Cart" in text
+
+
+def test_the_map_is_bounded_and_says_what_it_left_out(tmp_path):
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import project_map
+
+    for i in range(40):
+        (tmp_path / f"mod{i}.py").write_text(f"def f{i}():\n    return {i}\n")
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+
+    text = project_map(db, budget_chars=300)
+    assert len(text) < 500
+    assert "more file(s)" in text and "search_symbols" in text
+
+
+def test_the_map_puts_the_files_the_task_names_first(tmp_path):
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import project_map
+
+    (tmp_path / "aaa.py").write_text("def first():\n    pass\n")
+    (tmp_path / "zzz.py").write_text("def last():\n    pass\n")
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+
+    text = project_map(db, focus="fix the bounce logic in zzz.py please")
+    assert text.splitlines()[0].startswith("zzz.py")
+
+
+def test_an_agent_is_shown_the_map_before_it_starts_reading(tmp_path, monkeypatch):
+    """Regression: agents ignored the graph tools entirely and read whole files,
+    because nothing told them which symbols existed to ask for."""
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    captured = {}
+
+    class FakeClient:
+        def complete(self, messages, tools=None):
+            captured["prompt"] = messages[-1]["content"]
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
+    runner.run_agent(role=BUILTIN_ROLES["backend"], task="add an endpoint", project=tmp_path,
+                     config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st",
+                     project_map="server/app.py: create_app, register_routes")
+
+    assert "create_app" in captured["prompt"]
+    assert "get_definition" in captured["prompt"]     # and what to do with it
+
+
+def test_the_memory_endpoint_shows_and_edits_what_agents_see(tmp_path, monkeypatch):
+    """A wrong shared fact misleads every later agent, so it must be fixable."""
+    from fastapi.testclient import TestClient
+
+    from trance.agents.memory import ProjectMemory
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    ProjectMemory(project).note("backend", "the server listens on port 9999")
+
+    body = client.get(f"/api/sessions/{sid}/memory").json()
+    assert "9999" in body["raw"] and len(body["notes"]) == 1
+
+    client.put(f"/api/sessions/{sid}/memory",
+               json={"raw": "- **user**: the server listens on port 3100\n"})
+    assert "3100" in ProjectMemory(project).for_prompt()

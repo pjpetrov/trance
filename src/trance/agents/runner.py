@@ -15,6 +15,7 @@ from ..config import ModelConfig
 from ..events import EventBus, summarize_messages
 from ..providers import client_for
 from ..worker.client import salvage_tool_calls
+from .memory import ProjectMemory
 from .roles import AgentRole
 from .tools import AgentTools, permissions_brief
 
@@ -166,19 +167,34 @@ def run_agent(
     graph_tools=None,
     max_rounds: int = 12,
     should_stop=None,
+    memory=None,
+    project_map: str = "",
 ) -> AgentTurn:
     model_config = config
     client = client_for(model_config)
     def notify(kind: str, payload: dict) -> None:
         bus.emit(kind, session_id, agent=role.name, step_id=step_id, payload=payload)
 
-    tools = AgentTools(project, role, graph_tools, notify=notify)
+    memory = memory if memory is not None else ProjectMemory(project)
+    tools = AgentTools(project, role, graph_tools, notify=notify, memory=memory)
     specs = tools.specs()
 
     user_parts = [f"## Task\n{task}"]
     # Derived from the tool layer, so what the agent is told always matches what
     # the tool layer will actually allow.
     user_parts.append("## Your permissions (enforced by the system)\n" + permissions_brief(role))
+    notes = memory.for_prompt()
+    if notes:
+        user_parts.append(
+            "## Project memory (decisions the team has already made — follow them)\n"
+            + notes)
+    if project_map:
+        # An agent that cannot see what is indexed has no reason to guess a
+        # symbol name, so it falls back to reading whole files. Showing the map
+        # is what makes the graph tools usable at all.
+        user_parts.append(
+            "## Project map (already indexed — fetch any of these with "
+            "get_definition, no need to read the whole file)\n" + project_map)
     if context_bundle:
         user_parts.append("## Curated context\n" + context_bundle)
     if history:
