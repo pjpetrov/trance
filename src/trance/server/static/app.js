@@ -521,30 +521,28 @@ function stepCard(step, index) {
                   "the loop — a false report stops the flow outright.";
     check.onchange = () => { step.check = check.value || null; drawGates(); };
 
-    const fixer = el("select", "compact");
-    const self = el("option", null, `${step.role} retries`);
-    self.value = "";
-    fixer.append(self);
-    Object.values(state.roles).filter((r) => r.name !== "orchestrator").forEach((r) => {
-      const opt = el("option", null, r.name);
-      opt.value = r.name;
-      if (r.name === (step.on_fail || "")) opt.selected = true;
-      fixer.append(opt);
-    });
-    fixer.disabled = !editable;
-    fixer.title = "Who tries to fix the problem when this step reports anything " +
-                  "other than SUCCESS, before it runs again";
-    fixer.onchange = () => { step.on_fail = fixer.value || null; drawGates(); };
-
+    // No "on fail" agent here any more. Handing a failure to a *different*
+    // agent is what a loop is, and having two ways to say it left the step
+    // editor pretending to a power it could only half express.
     const loops = el("input", "compact tiny");
     loops.type = "number";
     loops.min = 1;
     loops.value = step.max_loops ?? 2;
     loops.disabled = !editable;
-    loops.title = "How many times this step may run before the flow is halted";
+    loops.title = `How many times ${step.role || "this agent"} may try before the flow `
+                  + "is halted. To bring in another agent on failure, use a loop.";
     loops.onchange = () => { step.max_loops = Number(loops.value) || 1; drawGates(); };
 
-    row.append(field("check", check), field("on fail", fixer), field("loops", loops));
+    row.append(field("check", check), field("tries", loops));
+    if (step.on_fail) {
+      // A flow built before loops existed. Say what it will do, and let it go.
+      const legacy = el("span", "badge", `on fail → ${step.on_fail}`);
+      legacy.title = "Set before loops existed. Clear it to have this agent simply retry.";
+      const clear = el("button", "small", "clear");
+      clear.disabled = !editable;
+      clear.onclick = () => { step.on_fail = null; drawGates(); };
+      row.append(legacy, clear);
+    }
     gatesBox.append(row);
 
     const who = step.on_fail || step.role;
@@ -1632,8 +1630,11 @@ function renderFlowView() {
           `↳ fact-checked by ${step.checker} · a false report halts the run`));
       }
       meta.append(el("div", "flow-chain",
-        `↻ not success → ${step.fixer} fixes → ${step.role} again ` +
-        `(${step.loop_limit} loop${step.loop_limit > 1 ? "s" : ""})`));
+        step.on_fail
+          ? `↻ not success → ${step.on_fail} fixes → ${step.role} again `
+            + `(${step.loop_limit} tries)`
+          : `↻ not success → ${step.role} tries again `
+            + `(${step.loop_limit} tr${step.loop_limit > 1 ? "ies" : "y"} in all)`));
     }
     const attempts = step.attempts || [];
     if (attempts.length) {

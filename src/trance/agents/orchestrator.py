@@ -222,18 +222,9 @@ def propose_flow_tool(roles: list) -> dict:
                                     ),
                                     "enum": verifiers,
                                 },
-                                "on_fail": {
-                                    "type": "string",
-                                    "description": (
-                                        "Optional agent that tries to fix a failed check "
-                                        "before this step runs again. Omit to let this "
-                                        "step's own role have another go."
-                                    ),
-                                    "enum": workers,
-                                },
                                 "max_loops": {
                                     "type": "integer",
-                                    "description": ("How many times this block may loop "
+                                    "description": ("How many times this agent may try "
                                                     "before the run is halted (1-4)."),
                                 },
                                 "points": {
@@ -282,10 +273,14 @@ def chat(
         + ("\n".join(f"- {r.name}: {r.description}" for r in verifiers) or "- (none)")
         + "\n\nNever name any other agent as a check — an agent that cannot inspect a "
           "result can only guess at a verdict.\n\n"
-          "Each step may have ONE check. If it passes, the flow moves on. If it fails, "
-          "the step's `on_fail` agent tries to fix the problem and then the step runs "
-          "again — that is the loop, bounded by max_loops. Exhausting the loop halts "
-          "the run, so set a check on work that must be right."
+          "Each step may have ONE check. If it passes, the flow moves on. If it does "
+          "not, the same agent tries again, bounded by max_loops, and exhausting that "
+          "halts the run — so set a check on work that must be right.\n\n"
+          "A step is one agent trying something. When the work needs two agents "
+          "handing back and forth — a tester that finds a bug for a developer to fix, "
+          "then tests again — that is a LOOP, not a step, and loops are configured "
+          "outside this conversation. Propose the plain steps; the user wires a loop in "
+          "where they want one."
         f"\n\nProject directory: {project_dir}\n{_describe_project(project_dir)}"
     )
     # The orchestrator plans against the same facts the team works from. Without
@@ -374,9 +369,9 @@ def _normalize(arguments: dict, roles: list) -> dict:
         if proposed and not check:
             dropped.append(f"{proposed} (as the check on the {role} step)")
 
+        # Older proposals (and older saved flows) may still carry one.
         fixer = raw.get("on_fail")
         if fixer and (fixer not in known or fixer == "orchestrator" or not check):
-            dropped.append(f"{fixer} (as the fixer on the {role} step)")
             fixer = None
 
         loops = raw.get("max_loops") or raw.get("max_attempts")

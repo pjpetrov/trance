@@ -956,7 +956,9 @@ def test_the_proposal_schema_only_offers_real_verifiers():
              ["properties"]["steps"]["items"]["properties"])
     assert set(props["check"]["enum"]) == {"tester", "reviewer", "factchecker"}
     assert "orchestrator" not in props["role"]["enum"]     # it assigns work, not does it
-    assert "orchestrator" not in props["on_fail"]["enum"]
+    # No fixer here any more: bringing in a second agent on failure is what a
+    # loop is, and offering both invited a plan the step editor cannot show.
+    assert "on_fail" not in props
 
 
 def test_the_schema_follows_the_live_library():
@@ -971,7 +973,7 @@ def test_the_schema_follows_the_live_library():
     assert "auditor" in props["check"]["enum"]        # custom verifier offered
     assert "dba" not in props["check"]["enum"]        # cannot verify
     assert "dba" in props["role"]["enum"]             # but can be assigned work
-    assert "dba" in props["on_fail"]["enum"]          # and can be a fixer
+    assert "on_fail" not in props                     # fixers live in loops now
 
 
 def test_a_proposal_naming_a_non_verifier_as_the_check_drops_it():
@@ -3845,3 +3847,41 @@ def test_an_invalid_loop_is_refused_by_the_api(tmp_path):
         {"id": "a", "role": "tester", "on": {"SUCCESS": {"target": "a"}}}]})
     assert response.status_code == 400
     assert "exits successfully" in response.json()["detail"]
+
+
+def test_a_single_step_retries_itself_with_no_fixer_offered(tmp_path, monkeypatch):
+    """The step editor no longer offers another agent, so the engine must do
+    the obvious thing with what it is given."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])
+    step = Step(role="backend", task="t", max_loops=3)
+    assert step.fixer == "backend"           # itself, not a second agent
+    calls = []
+
+    def fake(**kw):
+        calls.append(kw["role"].name)
+        return _Turn(None, "no", outcome=("FAILED", "still broken"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert calls == ["backend", "backend", "backend"]
+    assert step.status == "failed"
+
+
+def test_a_flow_saved_with_an_old_fixer_still_runs(tmp_path, monkeypatch):
+    """Sessions built before loops existed keep working."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "reviewer"])
+    step = Step(role="backend", task="t", on_fail="reviewer", max_loops=2)
+    calls = []
+
+    def fake(**kw):
+        calls.append(kw["role"].name)
+        return _Turn(None, "no", outcome=("FAILED", "nope"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert calls == ["backend", "reviewer", "backend"]
