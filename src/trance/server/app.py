@@ -743,6 +743,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "team": [r.to_dict() for r in session.team],
                 "dropped_checks": proposal.get("dropped_checks") or [],
             })
+            if proposal.get("added_checks"):
+                bus.emit("warning", session_id, agent="orchestrator", payload={
+                    "message": (f"Added a factchecker to {proposal['added_checks']} step(s) "
+                                f"that write files — it only confirms the files exist. "
+                                f"Clear it on a step if you do not want one."),
+                })
             if proposal.get("added_final_check"):
                 bus.emit("warning", session_id, agent="orchestrator", payload={
                     "message": (f"The plan did not end by verifying itself, so a final "

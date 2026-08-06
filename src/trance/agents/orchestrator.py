@@ -286,9 +286,14 @@ def chat(
         + ("\n".join(f"- {r.name}: {r.description}" for r in verifiers) or "- (none)")
         + "\n\nNever name any other agent as a check — an agent that cannot inspect a "
           "result can only guess at a verdict.\n\n"
-          "Each step may have ONE check. If it passes, the flow moves on. If it does "
-          "not, the same agent tries again, bounded by max_loops, and exhausting that "
-          "halts the run — so set a check on work that must be right.\n\n"
+          "PUT A CHECK ON EVERY STEP THAT WRITES FILES — `factchecker` unless you have "
+          "a reason to choose another. It only asks whether the files the agent claimed "
+          "to write exist and have content, which is cheap and catches the commonest "
+          "failure there is: an agent reporting SUCCESS for work it did not do. A step "
+          "with no check is taken at its word.\n\n"
+          "If the check passes, the flow moves on. If the step itself does not succeed, "
+          "the same agent tries again, bounded by max_loops, and exhausting that halts "
+          "the run.\n\n"
           "A step is one agent trying something. When the work needs two agents "
           "handing back and forth — a tester that finds a bug for a developer to fix, "
           "then tests again — set `loop` on the step instead of `role`.\n\n"
@@ -338,8 +343,8 @@ def chat(
         if call.malformed:
             truncated_call = True
             continue
-        proposal = ensure_final_check(_normalize(call.arguments, roles),
-                                      loops=loops, roles=roles)
+        proposal = ensure_checks(_normalize(call.arguments, roles), roles=roles)
+        proposal = ensure_final_check(proposal, loops=loops, roles=roles)
 
     text = response.text.strip()
     cut_off = response.finish_reason == "length"
@@ -422,6 +427,45 @@ def _normalize(arguments: dict, roles: list) -> dict:
     }
 
 
+#: The cheapest check there is: it only asks whether the files an agent claimed
+#: to write exist and have content. It cannot judge quality and does not try.
+DEFAULT_CHECK = "factchecker"
+
+
+def ensure_checks(proposal: dict, *, roles=None) -> dict:
+    """Put a fact check on every step that produces files.
+
+    An agent reporting SUCCESS is the one thing in this system with no
+    independent evidence behind it, and the commonest way a run goes wrong is a
+    step that claimed to write a file and did not. The check costs one small
+    call and catches exactly that, so it is the default rather than a choice
+    the orchestrator has to remember.
+    """
+    by_name = {r.name: r for r in (roles or [])}
+    checker = by_name.get(DEFAULT_CHECK)
+    if checker is None or not checker.verifier:
+        return proposal
+
+    added = []
+    for step in proposal.get("steps") or []:
+        if step.get("loop") or step.get("check"):
+            continue                     # a loop carries its own wiring
+        role = by_name.get(step.get("role") or "")
+        # Nothing to fact-check where nothing is written.
+        if role is None or "files" not in role.toolsets:
+            continue
+        step["check"] = DEFAULT_CHECK
+        added.append(step.get("task", ""))
+
+    if added:
+        proposal["added_checks"] = len(added)
+        team = list(proposal.get("team") or [])
+        if DEFAULT_CHECK not in team:
+            team.append(DEFAULT_CHECK)
+        proposal["team"] = team
+    return proposal
+
+
 def ensure_final_check(proposal: dict, *, loops=None, roles=None) -> dict:
     """Guarantee the plan ends by verifying what it built.
 
@@ -438,10 +482,20 @@ def ensure_final_check(proposal: dict, *, loops=None, roles=None) -> dict:
     verifiers = {r.name for r in (roles or []) if r.verifier}
 
     def verifies(step: dict) -> bool:
+        """Whether this step actually exercises what was built.
+
+        A fact check does not count. It confirms the files exist, which is
+        worth having on every step and is not the same as anyone having run
+        the thing — and now that it is added by default, counting it would
+        mean no plan ever gets a final test.
+        """
         loop = available.get(step.get("loop") or "")
         if loop is not None:
-            return any(node.role in verifiers or node.check for node in loop.nodes)
-        return step.get("role") in verifiers or bool(step.get("check"))
+            return any(node.role in verifiers for node in loop.nodes)
+        if step.get("role") in verifiers:
+            return True
+        check = step.get("check")
+        return bool(check) and check != DEFAULT_CHECK
 
     if verifies(steps[-1]):
         return proposal

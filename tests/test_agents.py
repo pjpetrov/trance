@@ -3930,10 +3930,18 @@ def test_a_plan_that_already_ends_in_verification_is_left_alone(tmp_path):
     assert "added_final_check" not in ensure_final_check(
         ends_with_tester, loops=loops, roles=roles)
 
-    ends_checked = {"summary": "s", "team": [], "steps": [
+    # A fact check is not end-to-end verification: it confirms the files exist,
+    # not that anyone ran them. Now that it is added to every writing step,
+    # counting it would mean no plan ever got a final test.
+    fact_checked = {"summary": "s", "team": [], "steps": [
         {"role": "backend", "loop": "", "task": "build", "check": "factchecker"}]}
+    assert ensure_final_check(fact_checked, loops=loops,
+                              roles=roles)["added_final_check"] == "test-and-fix"
+
+    really_checked = {"summary": "s", "team": [], "steps": [
+        {"role": "backend", "loop": "", "task": "build", "check": "tester"}]}
     assert "added_final_check" not in ensure_final_check(
-        ends_checked, loops=loops, roles=roles)
+        really_checked, loops=loops, roles=roles)
 
 
 def test_a_loop_is_preferred_over_a_bare_tester_step(tmp_path):
@@ -4082,3 +4090,96 @@ def test_the_step_being_split_is_named_in_the_event(tmp_path, monkeypatch):
         session = app.state.store.get(sid)
         assert notice.payload["step_ids"] == [session.flow.steps[1].id]   # the 8, not the 2
         assert notice.payload["tasks"] == ["huge"]
+
+
+# --------------------- every file-writing step is fact-checked by default
+
+def test_a_step_that_writes_files_gets_a_fact_check(tmp_path):
+    """An agent reporting SUCCESS is the one thing here with no independent
+    evidence behind it."""
+    from trance.agents.orchestrator import ensure_checks
+    from trance.agents.roles import BUILTIN_ROLES as R
+
+    proposal = {"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "loop": "", "task": "build the API", "check": None},
+        {"role": "frontend", "loop": "", "task": "build the UI", "check": None}]}
+    out = ensure_checks(proposal, roles=list(R.values()))
+
+    assert [s["check"] for s in out["steps"]] == ["factchecker", "factchecker"]
+    assert out["added_checks"] == 2
+    assert "factchecker" in out["team"]          # and it joins the team
+
+
+def test_a_check_the_orchestrator_chose_is_left_alone(tmp_path):
+    from trance.agents.orchestrator import ensure_checks
+    from trance.agents.roles import BUILTIN_ROLES as R
+
+    proposal = {"summary": "s", "team": [], "steps": [
+        {"role": "backend", "loop": "", "task": "t", "check": "tester"}]}
+    out = ensure_checks(proposal, roles=list(R.values()))
+    assert out["steps"][0]["check"] == "tester"
+    assert "added_checks" not in out
+
+
+def test_nothing_is_checked_where_nothing_is_written(tmp_path):
+    """A loop carries its own wiring, and an agent with no file access has
+    nothing for a fact check to look at."""
+    from trance.agents.orchestrator import ensure_checks
+    from trance.agents.roles import BUILTIN_ROLES as R
+
+    proposal = {"summary": "s", "team": [], "steps": [
+        {"role": "", "loop": "test-and-fix", "task": "test it", "check": None},
+        {"role": "planner", "loop": "", "task": "plan it", "check": None}]}
+    out = ensure_checks(proposal, roles=list(R.values()))
+
+    assert [s["check"] for s in out["steps"]] == [None, None]
+    assert "added_checks" not in out
+
+
+def test_the_orchestrator_is_told_to_check_every_writing_step(tmp_path, monkeypatch):
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    captured = {}
+
+    class FakeClient:
+        def complete(self, messages, tools=None, **kw):
+            captured["system"] = messages[0]["content"]
+            return ChatResponse(text="ok")
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
+    orchestrator.chat(messages=[{"role": "user", "content": "hi"}], project_dir=tmp_path,
+                      config=ModelConfig(), bus=EventBus(), session_id="s")
+
+    assert "PUT A CHECK ON EVERY STEP THAT WRITES FILES" in captured["system"]
+    assert "taken at its word" in captured["system"]
+
+
+def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
+    """The two guarantees compose: every writing step checked, and the plan
+    ends by testing itself."""
+    from trance.agents import orchestrator
+    from trance.agents.store import LoopStore
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    class FakeClient:
+        def complete(self, messages, tools=None, **kw):
+            return ChatResponse(text="", tool_calls=[ToolCall(
+                id="c", name="propose_flow", arguments={
+                    "summary": "s", "team": ["devops", "backend"], "steps": [
+                        {"role": "devops", "task": "scaffold", "points": 2},
+                        {"role": "backend", "task": "build the API", "points": 3}]})])
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
+    result = orchestrator.chat(messages=[{"role": "user", "content": "build"}],
+                               project_dir=tmp_path, config=ModelConfig(), bus=EventBus(),
+                               session_id="s", loops=LoopStore(tmp_path / "l.json"))
+
+    steps = result["proposal"]["steps"]
+    assert [s["check"] for s in steps[:2]] == ["factchecker", "factchecker"]
+    assert steps[-1]["loop"] == "test-and-fix"
+    assert {"devops", "backend", "factchecker", "tester"} <= set(result["proposal"]["team"])
