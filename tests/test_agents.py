@@ -2811,3 +2811,77 @@ def test_memory_is_shown_before_the_toolset(tmp_path, monkeypatch):
     prompt = captured["prompt"]
     assert prompt.index("## Project memory") < prompt.index("## Your permissions")
     assert prompt.index("## Your task") < prompt.index("## Project memory")
+
+
+# -------------------------- an outcome line that states neither verdict
+
+def test_a_success_worded_without_the_keyword_is_not_read_as_failure():
+    """Regression: "OUTCOME: Verified index.html is complete and correct — no
+    changes needed" was filed as FAILED with itself as the reason, so a step
+    that went fine looped and eventually halted the run."""
+    from trance.agents.runner import AgentTurn
+
+    turn = AgentTurn(text="OUTCOME: Verified `server/public/index.html` is complete "
+                          "and correct — no changes needed.")
+    state, detail = turn.outcome
+    assert state == "UNCLEAR"          # not FAILED, and not silently SUCCESS
+    assert turn.needs_outcome is True
+
+
+def test_common_synonyms_are_accepted_without_another_round():
+    from trance.agents.runner import AgentTurn
+
+    for line in ["OUTCOME: SUCCESS", "OUTCOME: DONE", "OUTCOME: Complete",
+                 "OUTCOME: ok", "OUTCOME: PASSED", "OUTCOME: SUCCESS — with a note"]:
+        assert AgentTurn(text=line).outcome[0] == "SUCCESS", line
+
+    for line in ["OUTCOME: FAILED — port taken", "OUTCOME: ERROR", "OUTCOME: blocked",
+                 "OUTCOME: incomplete — ran out of time"]:
+        assert AgentTurn(text=line).outcome[0] == "FAILED", line
+
+
+def test_a_verdict_word_only_counts_as_the_first_word():
+    """"the feature is not complete" contains "complete"; reading that as
+    success is the one mistake this mechanism exists to prevent."""
+    from trance.agents.runner import AgentTurn
+
+    assert AgentTurn(text="OUTCOME: the feature is not complete").outcome[0] == "UNCLEAR"
+    assert AgentTurn(text="OUTCOME: nothing was done successfully").outcome[0] == "UNCLEAR"
+
+
+def test_an_unreadable_outcome_is_asked_again_and_then_accepted(tmp_path, monkeypatch):
+    from trance.providers.base import ChatResponse
+
+    replies = [
+        ChatResponse(text="Verified the file.\n\nOUTCOME: Verified index.html is "
+                          "complete and correct — no changes needed."),
+        ChatResponse(text="OUTCOME: SUCCESS"),
+    ]
+    turn, prompts = _turn_with(monkeypatch, replies, project=tmp_path)
+
+    assert any("did not say SUCCESS or FAILED" in p for p in prompts)
+    assert turn.outcome[0] == "SUCCESS"
+
+
+def test_an_outcome_that_stays_unreadable_fails_with_that_as_the_reason(tmp_path, monkeypatch):
+    """Fail closed — a result nobody can read is not evidence of success — but
+    do not present the agent's prose as if it were a failure reason."""
+    from trance.providers.base import ChatResponse
+
+    replies = [ChatResponse(text="OUTCOME: Verified and looking good"),
+               ChatResponse(text="It all looks fine to me, honestly.")]
+    turn, prompts = _turn_with(monkeypatch, replies, project=tmp_path)
+
+    state, reason = turn.outcome
+    assert state == "FAILED"
+    assert "asked twice" in reason and "no readable result" in reason
+    assert "looking good" not in reason
+
+
+def test_the_re_ask_says_that_no_changes_needed_is_success(tmp_path, monkeypatch):
+    """The observed case: the agent found the work already correct and had no
+    word for it."""
+    from trance.providers.base import ChatResponse
+
+    _turn_with(monkeypatch, [ChatResponse(text="OUTCOME: already fine"),
+                             ChatResponse(text="OUTCOME: SUCCESS")], project=tmp_path)

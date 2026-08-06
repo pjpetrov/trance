@@ -7,6 +7,7 @@ shows a summary and expands to the verbatim payload on demand.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,19 @@ VERDICT_FAIL = "FAIL"
 #: perfectly and the *step* still failed — those are different things.
 OUTCOME_MARKER = "OUTCOME:"
 OUTCOME_SUCCESS = "SUCCESS"
+
+#: Words that stand in for SUCCESS / FAILED when a model does not use the exact
+#: keyword. Matched against the FIRST word only, never anywhere in the line:
+#: "the feature is not complete" contains "complete", and reading that as
+#: success is the one mistake this whole mechanism exists to prevent.
+_SUCCESS_WORDS = frozenset({
+    "SUCCESS", "SUCCEEDED", "SUCCESSFUL", "DONE", "COMPLETE", "COMPLETED",
+    "OK", "PASS", "PASSED", "YES",
+})
+_FAILURE_WORDS = frozenset({
+    "FAILED", "FAIL", "FAILURE", "ERROR", "BLOCKED", "INCOMPLETE", "PARTIAL",
+    "UNABLE", "NO", "NOT",
+})
 
 #: Marker left in place of a tool result we dropped to stay inside the window.
 TRIMMED = "[trimmed to fit the context window — call the tool again if you still need this]"
@@ -178,9 +192,19 @@ class AgentTurn:
             if not stripped.upper().startswith(OUTCOME_MARKER):
                 continue
             body = stripped[len(OUTCOME_MARKER):].strip()
-            if body.upper().startswith(OUTCOME_SUCCESS):
+            if not body:
+                return "UNCLEAR", "the agent wrote an outcome line with nothing after it"
+
+            first = re.split(r"[^A-Za-z]+", body.upper(), maxsplit=1)[0]
+            if first in _SUCCESS_WORDS:
                 return OUTCOME_SUCCESS, ""
-            return "FAILED", body or "no reason given"
+            if first in _FAILURE_WORDS:
+                return "FAILED", body or "no reason given"
+            # Neither. Reading the prose either way is guessing: "Verified the
+            # file is complete and correct" was being filed as a failure with
+            # itself as the reason, which is how a step that went fine burned
+            # its loop limit.
+            return "UNCLEAR", body
         return "UNSTATED", ("the agent finished without stating an outcome, so there is "
                             "nothing to say the work succeeded")
 
@@ -188,6 +212,11 @@ class AgentTurn:
     def reported_outcome(self) -> bool:
         return any(l.strip().upper().startswith(OUTCOME_MARKER)
                    for l in self.text.splitlines())
+
+    @property
+    def needs_outcome(self) -> bool:
+        """No line at all, or one whose verdict cannot be read."""
+        return self.outcome[0] in ("UNSTATED", "UNCLEAR")
 
 
 def run_agent(
@@ -442,18 +471,25 @@ def run_agent(
         turn.text = response.text
         turn.stop_reason = "max_rounds"
 
-    # A missing OUTCOME line is usually a slip, not a failure. One short
-    # question resolves it without spending a whole loop of the block.
-    if turn.stop_reason not in ("cancelled",) and not turn.reported_outcome:
+    # A missing or unreadable OUTCOME line is usually a slip, not a failure.
+    # One short question resolves it without spending a whole loop of the block
+    # — and without anyone guessing at what the agent meant.
+    if turn.stop_reason not in ("cancelled",) and turn.needs_outcome:
+        state, detail = turn.outcome
+        opening = ("You did not end with an outcome line."
+                   if state == "UNSTATED" else
+                   f"Your outcome line did not say SUCCESS or FAILED — it said: "
+                   f"{detail!r}. That cannot be read as either, and nobody will "
+                   f"guess on your behalf.")
         messages.append({
             "role": "user",
             "content": (
-                "You did not end with an outcome line. Reply with exactly one line and "
-                "nothing else:\n"
+                opening + " Reply with exactly one line and nothing else:\n"
                 "  OUTCOME: SUCCESS          — the task is done and you believe it works\n"
                 "  OUTCOME: FAILED — <what is wrong>\n"
                 "Report FAILED if you did not finish, could not run something, or found a "
-                "problem — including one you were not asked to look for."),
+                "problem — including one you were not asked to look for. If the work was "
+                "already correct and needed no changes, that is SUCCESS."),
         })
         messages, _ = fit_context(messages, model_config.input_budget)
         follow_up = client.complete(messages, tools=None)
@@ -469,6 +505,13 @@ def run_agent(
         })
         if follow_up.text.strip():
             turn.text = f"{turn.text}\n\n{follow_up.text.strip()}"
+        if turn.needs_outcome:
+            # Asked twice and still unreadable. Fail closed — a result nobody
+            # can read is not evidence of success — but say that is why, rather
+            # than presenting the agent's prose as a failure reason.
+            turn.text += (
+                "\n\nOUTCOME: FAILED — the agent was asked twice and never stated "
+                "SUCCESS or FAILED, so there is no readable result for this step.")
 
     turn.usage = totals
     return turn

@@ -120,11 +120,17 @@ Then end your reply with exactly one line saying how the step went:
   OUTCOME: SUCCESS
   OUTCOME: FAILED — <what is wrong, specifically>
 
-SUCCESS means the task is done and you believe it works. Report FAILED if you
-could not finish, if something you needed was missing, or if you found a real
-problem — including one you were not asked to look for. Reporting FAILED is not
-a mark against you; claiming SUCCESS for work that is not done is, and it stops
-the run.
+Use those exact words. "OUTCOME: verified and correct" says neither, so nobody
+can read it and you will simply be asked again.
+
+SUCCESS means the task is done and you believe it works. Work that was already
+correct and needed no changes from you is SUCCESS — finding nothing to do is a
+result, not a failure.
+
+Report FAILED if you could not finish, if something you needed was missing, or
+if you found a real problem — including one you were not asked to look for.
+Reporting FAILED is not a mark against you; claiming SUCCESS for work that is
+not done is, and it stops the run.
 """.strip()
 
 

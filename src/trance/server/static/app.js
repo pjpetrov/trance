@@ -2296,6 +2296,8 @@ function consoleAppend(event) {
       const bad = p.outcome !== "SUCCESS";
       const label = p.outcome === "SUCCESS" ? "outcome: SUCCESS"
         : p.outcome === "UNSTATED" ? "outcome: not stated — treated as unfinished"
+        : p.outcome === "UNCLEAR"
+          ? `outcome unreadable — said neither SUCCESS nor FAILED: ${clip(p.reason, 60)}`
         : `outcome: FAILED — ${clip(p.reason, 80)}`;
       consolePush(consoleEntry({
         kind: bad ? "cmd" : "write", icon: bad ? "!" : ICON.verdict, time,
