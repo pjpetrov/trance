@@ -445,9 +445,16 @@ input.tiny { width: 62px; min-width: 0; }
   white-space: nowrap; font-size: 12px; color: var(--muted);
 }
 .step-toggle {
-  border: none; background: none; color: var(--muted); cursor: pointer;
-  padding: 0 4px; font-size: 12px; flex: 0 0 auto;
+  border: 1px solid transparent; background: none; color: var(--muted);
+  cursor: pointer; flex: 0 0 auto;
+  /* A comfortable target: the arrow itself is small, the button is not. */
+  width: 34px; height: 30px; padding: 0; font-size: 17px; line-height: 1;
+  border-radius: 7px; display: inline-flex; align-items: center; justify-content: center;
 }
-.step-toggle:hover { color: var(--accent); }
+.step-toggle:hover { color: var(--accent); border-color: var(--accent); background: var(--panel); }
 .step-head { align-items: center; gap: 8px; flex-wrap: nowrap; }
 .step-card.collapsed { cursor: pointer; }
+
+/* The whole folded row opens it — the arrow is a hint, not the only target. */
+.step-card.collapsed .step-head { cursor: pointer; }
+.step-card.collapsed:hover .step-toggle { color: var(--accent); }

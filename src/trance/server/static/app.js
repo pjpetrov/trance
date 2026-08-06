@@ -325,6 +325,11 @@ function stepCard(step, index) {
       redrawEditor();
     };
     head.append(open);
+    // Clicking anywhere on the folded row opens it; the arrow is just a hint.
+    head.onclick = () => {
+      state.openSteps.add(step.id);
+      redrawEditor();
+    };
     card.append(head);
     card.addEventListener("dragstart", (e) => {
       card.classList.add("dragging");
