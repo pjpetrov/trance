@@ -13,7 +13,15 @@ const makeEl = (tag = "div") => {
     appendChild: (c) => el.children.push(c),
     addEventListener: () => {}, removeEventListener: () => {},
     querySelector: () => makeEl(), querySelectorAll: () => [],
-    classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
+    // A real set, not a stub: code that branches on contains() (which screen is
+    // active, is a modal open) took the same path every time otherwise.
+    classList: (() => {
+      const set = new Set();
+      return { add: (...c) => c.forEach((x) => set.add(x)),
+               remove: (...c) => c.forEach((x) => set.delete(x)),
+               toggle: (c, on) => (on ?? !set.has(c)) ? set.add(c) : set.delete(c),
+               contains: (c) => set.has(c) };
+    })(),
     focus: () => {}, select: () => {}, setAttribute: () => {},
     scrollTop: 0, scrollHeight: 0, clientHeight: 0,
     get firstChild() { return el.children[0] || makeEl(); },
@@ -48,7 +56,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge,applyRefinedFlow,draftFingerprint};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -159,6 +167,37 @@ try {
   api.renderMemory();
   api.paintMemoryCount();
   api.renderStepSize();
+  // The plan is shown before splitting finishes, so both states must render.
+  document.getElementById("screen-plan").classList.add("active");
+  api.state.splitting = { count: 2, threshold: 5 };
+  api.renderFlowEditor();
+  api.state.draftSteps = [];
+  api.renderFlowEditor();                    // the empty + splitting message
+  api.state.splitting = null;
+
+  // A refined flow must replace an untouched draft and spare an edited one.
+  api.state.session.flow = { steps: [{ id: "a", role: "backend", task: "one", status: "pending",
+                                       check: null, on_fail: null, max_loops: 2, attempts: [] }] };
+  api.renderFlowEditor();
+  const untouched = api.draftFingerprint();
+  api.applyRefinedFlow({ flow: { steps: [
+    { id: "b", role: "backend", task: "half one", status: "pending", check: null,
+      on_fail: null, max_loops: 2, attempts: [] },
+    { id: "c", role: "backend", task: "half two", status: "pending", check: null,
+      on_fail: null, max_loops: 2, attempts: [] }] }, message: "Split into 2 steps." });
+  if (api.state.draftSteps.length !== 2) {
+    console.log("BROKEN: an untouched draft was not replaced by the split");
+    process.exit(1);
+  }
+  api.state.draftSteps[0].task = "edited by hand";
+  api.applyRefinedFlow({ flow: { steps: [{ id: "d", role: "backend", task: "other",
+                                           status: "pending", check: null, on_fail: null,
+                                           max_loops: 2, attempts: [] }] } });
+  if (api.state.draftSteps[0].task !== "edited by hand") {
+    console.log("BROKEN: a hand-edited draft was clobbered by a background split");
+    process.exit(1);
+  }
+  void untouched;
   // The badge must call out a step that is over the limit — that is its job.
   if (!api.pointsBadge({ points: 8 }).className.includes("over")) {
     console.log("BROKEN: an 8-point step is not flagged over a limit of 5");

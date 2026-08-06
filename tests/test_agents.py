@@ -2499,3 +2499,80 @@ def test_a_step_can_be_split_from_the_flow_editor(tmp_path, monkeypatch):
     assert body["split"] is True
     assert [s["task"] for s in body["flow"]["steps"]] == [
         "write the model layer", "write the routes", "test it"]   # in place, order kept
+
+
+def test_the_plan_is_returned_before_the_splitting_finishes(tmp_path, monkeypatch):
+    """Regression: splitting ran inside the chat request, so a proposal that
+    needed two 40-second split calls left the flow panel saying 'no steps yet'
+    with no explanation."""
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.providers.base import ChatResponse, ToolCall
+    from trance.server import app as app_module
+
+    splitting = threading.Event()
+    proposal = {"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "task": "build the whole api", "points": 8},
+        {"role": "backend", "task": "add a health check", "points": 1}]}
+
+    def fake_chat(**kw):
+        return {"text": "here is the plan", "proposal": proposal, "truncated": False}
+
+    def slow_split(*args, **kwargs):
+        splitting.wait(5)                     # still working when we assert
+        return {**proposal, "split": []}
+
+    monkeypatch.setattr(app_module.orchestrator_agent, "chat", fake_chat)
+    monkeypatch.setattr(app_module.orchestrator_agent, "split_oversized", slow_split)
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    try:
+        sid = client.post("/api/sessions",
+                          json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+        body = client.post(f"/api/sessions/{sid}/chat", json={"message": "build it"}).json()
+
+        # The plan is there straight away, unsplit, rather than after the wait.
+        assert [s["task"] for s in body["flow"]["steps"]] == [
+            "build the whole api", "add a health check"]
+        assert body["status"] == "ready"
+    finally:
+        splitting.set()
+
+
+def test_the_user_is_told_splitting_is_still_running(tmp_path, monkeypatch):
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    done = threading.Event()
+    proposal = {"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "task": "build the whole api", "points": 8}]}
+
+    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
+                        lambda **kw: {"text": "plan", "proposal": proposal})
+    monkeypatch.setattr(app_module.orchestrator_agent, "split_oversized",
+                        lambda *a, **k: done.wait(5) or {**proposal, "split": []})
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    try:
+        sid = client.post("/api/sessions",
+                          json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+        client.post(f"/api/sessions/{sid}/chat", json={"message": "build it"})
+
+        kinds = [e.type for e in app.state.bus.history(sid)]
+        assert "splitting_steps" in kinds        # so the UI can say what it is waiting for
+        notice = next(e for e in app.state.bus.history(sid) if e.type == "splitting_steps")
+        assert notice.payload["count"] == 1 and notice.payload["threshold"] == 5
+    finally:
+        done.set()

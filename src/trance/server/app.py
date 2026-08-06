@@ -538,15 +538,6 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
         if result["proposal"]:
             proposal = result["proposal"]
-            # Break oversized steps before the user ever sees the flow: a step
-            # too big to picture is where an agent does the part it understood
-            # and reports success on the whole thing.
-            proposal = await asyncio.to_thread(
-                orchestrator_agent.split_oversized, proposal,
-                roles=roles.all(), config=config.for_orchestrator(), bus=bus,
-                session_id=session_id, threshold=config.max_step_points,
-                project_dir=Path(session.project_dir),
-            )
             session.team = roles.resolve_team(proposal["team"])
             session.flow = Flow(steps=[Step.from_dict(s) for s in proposal["steps"]])
             session.status = "ready"
@@ -560,8 +551,45 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                     "message": ("Dropped checks that cannot verify: "
                                 + ", ".join(proposal["dropped_checks"])),
                 })
+            # Splitting is one model call per oversized step and can run for a
+            # minute on a local model. Showing the plan first and refining it
+            # after beats an empty flow panel and no explanation.
+            oversized = [s for s in proposal["steps"]
+                         if (s.get("points") or 0) > config.max_step_points > 0]
+            if oversized:
+                bus.emit("splitting_steps", session_id, agent="orchestrator", payload={
+                    "count": len(oversized), "threshold": config.max_step_points,
+                    "tasks": [s["task"] for s in oversized],
+                    "message": (f"{len(oversized)} step(s) are over "
+                                f"{config.max_step_points} points — breaking them up."),
+                })
+                asyncio.create_task(_split_in_background(session, proposal))
         touch(session)
         return session.to_dict()
+
+    async def _split_in_background(session, proposal: dict) -> None:
+        """Refine an already-visible plan. Never leaves the user with nothing."""
+        try:
+            refined = await asyncio.to_thread(
+                orchestrator_agent.split_oversized, dict(proposal),
+                roles=roles.all(), config=config.for_orchestrator(), bus=bus,
+                session_id=session.id, threshold=config.max_step_points,
+                project_dir=Path(session.project_dir),
+            )
+        except Exception as exc:  # noqa: BLE001 — the plan stands either way
+            bus.emit("warning", session.id, agent="orchestrator", payload={
+                "message": f"Could not split the oversized steps: {exc}"})
+            return
+        if not refined.get("split"):
+            bus.emit("flow_updated", session.id, payload={
+                "flow": session.flow.to_dict(), "split": []})
+            return
+        session.team = roles.resolve_team(refined["team"] or [s.name for s in session.team])
+        session.flow = Flow(steps=[Step.from_dict(s) for s in refined["steps"]])
+        touch(session)
+        bus.emit("flow_updated", session.id, payload={
+            "flow": session.flow.to_dict(), "split": refined["split"],
+            "message": f"Split into {len(refined['steps'])} steps."})
 
     # --------------------------------------------------------------- flow
 

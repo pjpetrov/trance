@@ -283,12 +283,31 @@ async function sendChat() {
 
 function renderFlowEditor() {
   state.draftSteps = JSON.parse(JSON.stringify(state.session?.flow?.steps || []));
+  state.draftBase = draftFingerprint();   // what the server last gave us
   const box = $("flow-editor");
   box.innerHTML = "";
   if (!state.draftSteps.length) {
-    box.append(el("p", "muted small", "No steps yet — describe the project to the orchestrator, or add one manually."));
+    box.append(el("p", "muted small", state.splitting
+      ? "Waiting for the orchestrator to break the oversized steps up…"
+      : "No steps yet — describe the project to the orchestrator, or add one manually."));
   }
+  if (state.splitting) box.append(splittingNote());
   state.draftSteps.forEach((step, index) => box.append(stepCard(step, index)));
+}
+
+//: Only the parts a user edits — status and attempts change under them.
+function draftFingerprint() {
+  return JSON.stringify((state.draftSteps || []).map(
+    (s) => [s.role, s.task, s.check, s.on_fail, s.max_loops]));
+}
+
+function splittingNote() {
+  const note = el("div", "splitting-note");
+  note.append(el("span", "spin", "◐"));
+  note.append(el("span", null,
+    `The orchestrator is breaking up ${state.splitting.count} step(s) over `
+    + `${state.splitting.threshold} points. The plan below updates when it is done.`));
+  return note;
 }
 
 //: A step you can no longer be waiting on — safe to fold away.
@@ -720,6 +739,28 @@ $("btn-back-plan").onclick = () => { renderFlowEditor(); show("plan"); };
 
 /* ───────────────────────────── websocket ──────────────────────────── */
 
+function isPlanning() {
+  return $("screen-plan").classList.contains("active");
+}
+
+/* The plan arrives before splitting finishes, so a refined flow lands while the
+ * user is already looking at it. Replacing their edits would be worse than a
+ * stale plan, so an edited draft is left alone and told about instead. */
+function applyRefinedFlow(payload) {
+  state.splitting = null;
+  if (!state.session) return;
+  const edited = state.draftBase && draftFingerprint() !== state.draftBase;
+  state.session.flow = payload.flow;
+  if (!isPlanning()) { renderFlowView(); return; }
+  if (edited) {
+    toast("The orchestrator split some steps, but you have unsaved edits — "
+          + "reload the flow to take them.");
+    return;
+  }
+  renderFlowEditor();
+  if (payload.message) toast(payload.message);
+}
+
 function connect(sessionId) {
   if (state.ws) { state.ws.onclose = null; state.ws.close(); }
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -734,6 +775,13 @@ function connect(sessionId) {
       renderRun();
       renderSessionBar();
       return;
+    }
+    if (event.type === "splitting_steps") {
+      state.splitting = event.payload;
+      if (isPlanning()) renderFlowEditor();
+    }
+    if (event.type === "flow_updated" && event.payload.flow) {
+      applyRefinedFlow(event.payload);
     }
     state.events.push(event);
     trackActivity(event);
@@ -786,6 +834,7 @@ function headline(event) {
       return `${p.message || "fixing"}` +
              (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
     case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
+    case "splitting_steps": return p.message;
     case "steps_split":
       return `${p.split.length} step(s) over ${p.threshold} points broken up — `
              + `${p.steps} steps now`;
@@ -2312,6 +2361,14 @@ function consoleAppend(event) {
           wrap.append(el("pre", null, p.handoff || "(nothing to hand over)"));
           return wrap;
         },
+      }));
+      return;
+
+    case "splitting_steps":
+      consolePush(consoleEntry({
+        kind: "step", icon: "✂", time, tag: "orchestrator",
+        label: p.message || "breaking up oversized steps",
+        body: () => el("pre", null, (p.tasks || []).join("\n")),
       }));
       return;
 

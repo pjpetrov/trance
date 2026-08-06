@@ -528,6 +528,12 @@ input.tiny { width: 62px; min-width: 0; }
   border: 1px solid var(--line); border-radius: 8px; padding: 8px;
 }
 
+.splitting-note {
+  display: flex; gap: 9px; align-items: center; font-size: 12.5px;
+  padding: 9px 11px; border-radius: 8px; background: var(--panel-2);
+  border: 1px dashed var(--warn); color: var(--muted); margin-bottom: 8px;
+}
+
 /* ── step size estimates ───────────────────────────────────────────────
    The badge is information until it is over the limit, and then it is a
    prompt to act — so only then does it take a colour. */
