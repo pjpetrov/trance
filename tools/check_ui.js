@@ -125,6 +125,34 @@ try {
   api.consoleReset();
   api.consoleAppend({ type: "step_started", agent: "backend", step_id: "st1",
                       ts: new Date().toISOString(), payload: { task: "t", attempt: 1 } });
+  // A loop step rescopes the console; without it the loop's events were all
+  // dropped because they belong to a different step than the last step_started.
+  api.consoleAppend({ type: "loop_node", agent: "tester", step_id: "st9",
+                      ts: new Date().toISOString(),
+                      payload: { loop: "test-and-fix", visit: 1, role: "tester",
+                                 message: "test-and-fix: tester" } });
+  api.consoleAppend({ type: "tool_call", agent: "tester", step_id: "st9",
+                      ts: new Date().toISOString(),
+                      payload: { name: "run_command", ok: true, arguments: {}, result: "",
+                                 detail: { kind: "command", command: "npm test",
+                                           exit_code: 0, seconds: 1, output: "ok" } } });
+  // And a permission prompt for some other step still has to be answerable.
+  api.consoleAppend({ type: "approval_requested", agent: "backend", step_id: "elsewhere",
+                      ts: new Date().toISOString(),
+                      payload: { id: "ap_9", kind: "command", agent: "backend",
+                                 subject: "npx jest", detail: { programs: ["npx"] },
+                                 timeout_s: 300, message: "backend wants to run npx" } });
+  {
+    const shown = flat(document.getElementById("console")).replace(/\s+/g, " ");
+    if (!shown.includes("npm test")) {
+      console.log("BROKEN: a loop block's events were dropped by the console scope");
+      process.exit(1);
+    }
+    if (!shown.includes("wants to run npx")) {
+      console.log("BROKEN: a permission prompt was filtered out by the console scope");
+      process.exit(1);
+    }
+  }
   api.consoleAppend({ type: "tool_call", agent: "backend", step_id: "st1",
                       ts: new Date().toISOString(),
                       payload: { name: "write_file", ok: true, arguments: {}, result: "",

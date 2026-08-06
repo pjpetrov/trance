@@ -558,7 +558,17 @@ function stepCard(step, index) {
                   + "is halted. To bring in another agent on failure, use a loop.";
     loops.onchange = () => { step.max_loops = Number(loops.value) || 1; drawGates(); };
 
-    row.append(field("check", check), field("tries", loops));
+    const revert = el("input");
+    revert.type = "checkbox";
+    revert.checked = !!step.revert_on_fail;
+    revert.disabled = !editable;
+    revert.onchange = () => { step.revert_on_fail = revert.checked; drawGates(); };
+    const revertLabel = el("label", "row small");
+    revertLabel.append(revert, document.createTextNode(" revert on failure"));
+    revertLabel.title = "Put the project back to where it was before this step ran, "
+                        + "if the step does not succeed. The work stays in git history.";
+
+    row.append(field("check", check), field("tries", loops), revertLabel);
     if (step.on_fail) {
       // A flow built before loops existed. Say what it will do, and let it go.
       const legacy = el("span", "badge", `on fail → ${step.on_fail}`);
@@ -575,6 +585,12 @@ function stepCard(step, index) {
       `${step.role} reports SUCCESS → next step. Anything else → ${step.role} tries `
       + `again (${limit} tr${limit > 1 ? "ies" : "y"} in all, then the flow halts). `
       + "To bring another agent in on failure, run a loop instead."));
+    if (step.revert_on_fail) {
+      gatesBox.append(el("div", "loop-note",
+        `↩ If ${step.role} does not succeed, its changes are rolled back to the `
+        + "checkpoint taken before it ran. The attempt is still committed first, "
+        + "so nothing is lost — it is undone, not destroyed."));
+    }
     gatesBox.append(el("div", step.check ? "loop-note check-note" : "loop-note muted",
       step.check
         ? `${step.check} separately checks that the report is true. It never sends work `
@@ -949,6 +965,7 @@ function headline(event) {
       return `${p.message || "fixing"}` +
              (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
     case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
+    case "git": return `${p.message || p.action}${p.sha ? ` (${p.sha.slice(0, 8)})` : ""}`;
     case "loop_node": return p.message || "";
     case "loop_exhausted": return p.message || "";
     case "splitting_steps": return p.message;
@@ -1155,6 +1172,22 @@ function renderStepSize() {
     who.append(opt);
   });
   who.value = planning.escalation_role || "";
+
+  const git = $("git-commits");
+  const autoInit = $("git-auto-init");
+  git.checked = planning.git_commits !== false;
+  autoInit.checked = planning.git_auto_init !== false;
+  const saveGit = async () => {
+    const body = await api("/api/config/planning", {
+      method: "PUT",
+      body: { git_commits: git.checked, git_auto_init: autoInit.checked },
+    });
+    state.planning = { ...state.planning, ...body };
+    toast(body.git_commits ? "Committing after every step."
+                           : "Not committing — steps cannot be reverted.");
+  };
+  git.onchange = saveGit;
+  autoInit.onchange = saveGit;
 
   const saveEscalation = async () => {
     const body = await api("/api/config/planning", {
@@ -2352,18 +2385,28 @@ function consoleAppend(event) {
   const showReads = $("show-reads").checked;
 
   // Scope the console to the step being worked on — the full history for a
-  // finished step stays available by clicking it in the pipeline.
-  if (event.type === "step_started") {
+  // finished step stays available by clicking it in the pipeline. A loop step
+  // never emits step_started, so scoping on that alone left the console showing
+  // the previous step while the loop ran, and silently dropped everything the
+  // loop did, up to and including a permission prompt the run was blocked on.
+  if (event.type === "step_started" || event.type === "loop_node") {
+    const fresh = event.step_id !== consoleStep;
     consoleStep = event.step_id;
-    box.innerHTML = "";
-    $("console-scope").textContent = `${event.agent} · attempt ${p.attempt || 1}`;
+    if (fresh) box.innerHTML = "";
+    $("console-scope").textContent = event.type === "loop_node"
+      ? `${event.agent} · ${p.loop} block ${p.visit || 1}`
+      : `${event.agent} · attempt ${p.attempt || 1}`;
     consolePush(consoleEntry({
-      kind: "step", icon: ICON.step, time, tag: event.agent,
-      label: labelWith([[clip(p.task, 90), ""]]),
+      kind: "step", icon: event.type === "loop_node" ? "↻" : ICON.step, time,
+      tag: event.agent,
+      label: labelWith([[clip(p.message || p.task, 90), ""]]),
     }));
     return;
   }
-  if (event.step_id && consoleStep && event.step_id !== consoleStep) return;
+  // A question the run is blocked on is never out of scope: dropping it leaves
+  // an agent waiting for a button that was filtered away.
+  const blocking = event.type === "approval_requested" || event.type === "approval_resolved";
+  if (!blocking && event.step_id && consoleStep && event.step_id !== consoleStep) return;
 
   switch (event.type) {
     case "tool_call": {
@@ -2690,6 +2733,21 @@ function consoleAppend(event) {
         label: p.message || "the loop is not converging",
       }));
       return;
+
+    case "git": {
+      const icon = p.action === "revert" ? "↩" : p.action === "init" ? "⎇" : "⌥";
+      consolePush(consoleEntry({
+        kind: p.action === "revert" ? "cmd" : "write", icon, time,
+        tag: event.agent || "git", failed: p.ok === false,
+        label: labelWith([
+          [p.message || p.action, ""],
+          [p.sha ? `  ${p.sha.slice(0, 8)}` : "", "c-path"],
+        ]),
+        body: () => el("pre", null, (p.files || []).join("\n") || p.detail || ""),
+        open: p.action === "revert",
+      }));
+      return;
+    }
 
     case "splitting_steps":
       consolePush(consoleEntry({
@@ -3037,6 +3095,16 @@ function blockCard(loop, node, index, redraw) {
     makeStart.onclick = () => { loop.start = node.id; redraw(); };
     head.append(makeStart);
   }
+
+  const revert = el("input");
+  revert.type = "checkbox";
+  revert.checked = !!node.revert_on_fail;
+  revert.onchange = () => { node.revert_on_fail = revert.checked; };
+  const revertLabel = el("label", "row small");
+  revertLabel.append(revert, document.createTextNode(" revert on failure"));
+  revertLabel.title = "Undo this block's changes when it does not succeed, so a fixer "
+                      + "that made things worse does not hand its mess to the next agent.";
+  head.append(revertLabel);
 
   const remove = el("button", "small", "✕");
   remove.onclick = () => {

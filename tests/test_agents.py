@@ -4362,3 +4362,164 @@ def test_search_symbols_finds_what_was_just_written(tmp_path):
     # And the ones after it, from the same re-index rather than another.
     second = tools.call("search_symbols", {"pattern": "eatGhost"})
     assert second.detail["hit"] is True
+
+
+# ================================ git checkpoints around every step
+
+def _git_engine(tmp_path, team=("backend",)):
+    """An engine over a real repository."""
+    from trance import vcs
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "existing.py").write_text("# the user's own work\n")
+    engine = _engine(project, list(team))
+    engine.session.project_dir = str(project)
+    engine.project = project
+    vcs.ensure_repo(project)
+    return engine, project
+
+
+def test_each_step_is_committed(tmp_path, monkeypatch):
+    """`git log` becomes the list of what each agent did."""
+    from trance import vcs
+    from trance.flow import Step
+
+    engine, project = _git_engine(tmp_path)
+    engine._prepare_git()
+
+    def fake(**kw):
+        (project / "server.py").write_text("def app():\n    return 1\n")
+        turn = _Turn(None, "wrote it", outcome=("SUCCESS", ""))
+        turn.files_written = ["server.py"]
+        return turn
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    step = Step(role="backend", task="build the API")
+    engine._execute(step)
+
+    subjects = [c["subject"] for c in vcs.log(project)]
+    assert any("backend: build the API [SUCCESS]" in s for s in subjects)
+    assert not vcs.dirty(project)                     # nothing left uncommitted
+    assert step.attempts[0].commit                     # and the step knows its sha
+
+
+def test_a_failed_step_can_put_the_project_back(tmp_path, monkeypatch):
+    """The point of the checkpoint: an agent that made things worse is undone."""
+    from trance import vcs
+    from trance.flow import Step
+
+    engine, project = _git_engine(tmp_path)
+    engine._prepare_git()
+
+    def fake(**kw):
+        (project / "existing.py").write_text("# the agent broke this\n")
+        (project / "junk.py").write_text("# and left this behind\n")
+        return _Turn(None, "made a mess", outcome=("FAILED", "could not finish"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(Step(role="backend", task="build it", max_loops=1,
+                         revert_on_fail=True))
+
+    assert (project / "existing.py").read_text() == "# the user's own work\n"
+    assert not (project / "junk.py").exists()          # created files go too
+    # Undone, not destroyed: the attempt is in history and can be read back.
+    assert any("[FAILED]" in c["subject"] for c in vcs.log(project))
+
+
+def test_without_the_option_a_failure_is_left_in_place(tmp_path, monkeypatch):
+    """Half-finished work is often still worth reading, so this is opt-in."""
+    from trance.flow import Step
+
+    engine, project = _git_engine(tmp_path)
+    engine._prepare_git()
+
+    def fake(**kw):
+        (project / "half.py").write_text("# partly done\n")
+        return _Turn(None, "x", outcome=("FAILED", "ran out of ideas"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(Step(role="backend", task="t", max_loops=1))
+    assert (project / "half.py").exists()
+
+
+def test_a_users_uncommitted_work_is_never_reverted_away(tmp_path, monkeypatch):
+    """The checkpoint is taken after committing whatever was already there, so
+    a revert can only ever take back the step's own changes."""
+    from trance.flow import Step
+
+    engine, project = _git_engine(tmp_path)
+    (project / "notes.md").write_text("# my own notes, never committed\n")
+    engine._prepare_git()                    # commits them before anything runs
+
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn(None, "x", outcome=("FAILED", "no")))
+    engine._execute(Step(role="backend", task="t", max_loops=1, revert_on_fail=True))
+
+    assert (project / "notes.md").read_text() == "# my own notes, never committed\n"
+
+
+def test_a_loop_block_can_revert_itself(tmp_path, monkeypatch):
+    """A fixer that made things worse should not hand its mess to the next agent."""
+    from trance.agents.store import LoopStore
+    from trance.flow import Step
+    from trance.loops import EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS, Edge, Loop, LoopNode
+
+    engine, project = _git_engine(tmp_path, team=("backend", "tester"))
+    loop = Loop(name="fixit", start="n1", nodes=[
+        LoopNode(id="n1", role="backend", revert_on_fail=True,
+                 on={SUCCESS: Edge(EXIT_LOOP), FAILED: Edge(FAIL_LOOP)})])
+    store = LoopStore(tmp_path / "loops.json", seed=False)
+    store.upsert(loop)
+    engine.loops = store
+    engine._prepare_git()
+
+    def fake(**kw):
+        (project / "broken.py").write_text("# this made it worse\n")
+        return _Turn(None, "x", outcome=("FAILED", "worse than before"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(Step(role="", loop="fixit", task="fix it"))
+
+    assert not (project / "broken.py").exists()
+
+
+def test_a_project_that_is_not_a_repository_becomes_one(tmp_path):
+    from trance import vcs
+
+    project = tmp_path / "fresh"
+    project.mkdir()
+    engine = _engine(project, ["backend"])
+    engine.project = project
+    assert not vcs.is_repo(project)
+
+    engine._prepare_git()
+    assert vcs.is_repo(project) and engine._git is True
+
+
+def test_git_can_be_turned_off_entirely(tmp_path, monkeypatch):
+    from trance import vcs
+    from trance.flow import Step
+
+    engine, project = _git_engine(tmp_path)
+    engine.config.git_commits = False
+    engine._prepare_git()
+    assert engine._git is False
+
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn(None, "x", outcome=("SUCCESS", "")))
+    engine._execute(Step(role="backend", task="t"))
+    assert vcs.log(project) == []            # nothing was committed
+
+
+def test_nothing_git_does_can_break_a_run(tmp_path, monkeypatch):
+    """git missing, or a broken repo, must not stop an agent working."""
+    from trance import vcs
+
+    missing = tmp_path / "nope"
+    missing.mkdir()
+    assert vcs.commit_all(missing, "x").ok is False    # not a repo, no exception
+    assert vcs.undo(missing, "", "").ok is True        # nothing to undo is not a failure
+    assert vcs.undo(missing, "deadbeef").ok is False   # a bad sha is
+    assert vcs.head(missing) == ""
+    assert vcs.log(missing) == []

@@ -141,6 +141,19 @@
       <select id="max-step-points" class="compact"></select>
     </label>
 
+    <h3>Git</h3>
+    <p class="muted small">Each step runs between two commits, so <code>git log</code> is the
+      record of what every agent did — and a step that goes wrong has something to go back
+      to. Turn this off and "revert on failure" on a step can do nothing.</p>
+    <label class="row small">
+      <input type="checkbox" id="git-commits">
+      <span>Commit the project after every step</span>
+    </label>
+    <label class="row small">
+      <input type="checkbox" id="git-auto-init">
+      <span>Create a repository when the project is not one</span>
+    </label>
+
     <h3>When a step keeps failing</h3>
     <p class="muted small">A block that has failed the same way three times will not be
       fixed by a fourth identical try — the loop varies the prompt and the fixing agent,

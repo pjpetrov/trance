@@ -230,7 +230,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "kinds": KIND_DEFAULTS,
             "planning": {"max_step_points": config.max_step_points, "scale": list(POINTS),
                          "escalation_preset": config.escalation_preset,
-                         "escalation_role": config.escalation_role},
+                         "escalation_role": config.escalation_role,
+                         "git_commits": config.git_commits,
+                         "git_auto_init": config.git_auto_init},
             "orchestrator": {"preset": config.orchestrator.preset,
                              "provider": orchestrator.provider, "model": orchestrator.model,
                              "base_url": orchestrator.base_url,
@@ -547,9 +549,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             if name and roles.get(name) is None:
                 raise HTTPException(400, f"unknown agent {name!r}")
             config.escalation_role = name
+        for flag in ("git_commits", "git_auto_init"):
+            if flag in body:
+                setattr(config, flag, bool(body[flag]))
         return {"max_step_points": config.max_step_points, "scale": list(POINTS),
                 "escalation_preset": config.escalation_preset,
-                "escalation_role": config.escalation_role}
+                "escalation_role": config.escalation_role,
+                "git_commits": config.git_commits,
+                "git_auto_init": config.git_auto_init}
 
     # -------------------------------------------------------------- loops
 

@@ -33,6 +33,7 @@ from .flow import Attempt, GateResult, Step
 from .loops import CHECK_FAILED, EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS
 from .indexer.service import default_db_path, index_repo
 from .session import Session
+from . import vcs
 from .agents.tools import stop_background
 from .worker.tools import ContextTools, project_map
 
@@ -98,6 +99,9 @@ class FlowEngine:
         self.approve = approve
         #: The loop library, for steps that run one instead of a single agent.
         self.loops = loops
+        #: Whether this project can hold checkpoints at all. Decided once, at
+        #: run start, so a step never pays for the discovery.
+        self._git = False
 
     # ----------------------------------------------------------------- run
 
@@ -122,6 +126,7 @@ class FlowEngine:
             # Index up front. Indexing only *after* each step meant the first
             # agent of a run never had a graph to query, and on a fresh project
             # was not even given the graph tools.
+            self._prepare_git()
             self._reindex()
             self._write_plan()
             while True:
@@ -204,6 +209,8 @@ class FlowEngine:
             walked += 1
             step.status = "running"
             attempt = Attempt(n=len(step.attempts) + 1)
+            attempt.checkpoint = self._checkpoint(
+                f"before {role.name} in {loop.name} — block {walked}")
             step.attempts.append(attempt)
             self._emit("loop_node", agent=role.name, step_id=step.id, payload={
                 "loop": loop.name, "node": node.id, "role": role.name,
@@ -245,15 +252,19 @@ class FlowEngine:
 
             outcome, reason = turn.outcome
             attempt.outcome, attempt.outcome_reason = outcome, reason
+            attempt.commit = self._commit_step(step, role.name, outcome)
             exit_name = SUCCESS if outcome == OUTCOME_SUCCESS else FAILED
             if outcome == OUTCOME_SUCCESS and node.check:
                 step.check = node.check          # so _run_check knows who to ask
                 if self._run_check(step, attempt) == "FAIL":
                     exit_name = CHECK_FAILED
+            # A fixer that made things worse should not hand its mess on.
+            if exit_name != SUCCESS and node.revert_on_fail:
+                self._revert(step, attempt, role.name)
             self._emit("step_outcome", agent=role.name, step_id=step.id, payload={
                 "outcome": outcome, "reason": reason, "loop": walked,
                 "of": loop.max_steps, "reported": turn.reported_outcome,
-                "exit": exit_name,
+                "exit": exit_name, "reverted": attempt.reverted,
             })
 
             carry = build_handoff(turn.transcript, turn.text)
@@ -324,6 +335,7 @@ class FlowEngine:
 
             step.status = "running"
             attempt = Attempt(n=loop)
+            attempt.checkpoint = self._checkpoint(f"before {role.name} — {step.task[:60]}")
             step.attempts.append(attempt)
             self._emit("step_started", agent=role.name, step_id=step.id, payload={
                 "task": step.task, "attempt": loop, "loop": loop, "of": limit,
@@ -382,6 +394,11 @@ class FlowEngine:
             outcome, reason = turn.outcome
             attempt.outcome = outcome
             attempt.outcome_reason = reason
+            # Commit first, then decide. A reverted step still has its work in
+            # history, which is the difference between undoing and destroying.
+            attempt.commit = self._commit_step(step, role.name, outcome)
+            if outcome != OUTCOME_SUCCESS and step.revert_on_fail:
+                self._revert(step, attempt, role.name)
             self._emit("step_outcome", agent=role.name, step_id=step.id, payload={
                 "outcome": outcome, "reason": reason, "loop": loop, "of": limit,
                 "reported": turn.reported_outcome,
@@ -760,6 +777,65 @@ class FlowEngine:
         if not db_path.exists():
             return None
         return ContextTools(GraphDB(db_path), self.project)
+
+    # ------------------------------------------------------------ history
+
+    def _prepare_git(self) -> None:
+        """Decide once whether this run can take checkpoints."""
+        if not self.config.git_commits:
+            return
+        if not vcs.is_repo(self.project):
+            if not self.config.git_auto_init:
+                return
+            result = vcs.ensure_repo(self.project)
+            if not result.ok:
+                self._emit("warning", payload={
+                    "message": (f"No git checkpoints this run: {result.detail}. "
+                                f"Steps cannot be reverted.")})
+                return
+            self._emit("git", payload={"action": "init", "message": result.detail})
+        self._git = True
+        # Anything already in the tree is committed before the first agent runs,
+        # so "revert this step" can never take a user's own edits with it.
+        self._checkpoint("before the run")
+
+    def _checkpoint(self, what: str) -> str:
+        """Commit whatever is lying around and return the sha to come back to."""
+        if not self._git:
+            return ""
+        result = vcs.commit_all(self.project, what)
+        if result.ok:
+            self._emit("git", payload={"action": "checkpoint", "sha": result.sha,
+                                       "files": result.files, "message": what})
+        return vcs.head(self.project)
+
+    def _commit_step(self, step: Step, role_name: str, outcome: str) -> str:
+        """Record what an agent did, so `git log` is the run."""
+        if not self._git:
+            return ""
+        task = " ".join((step.task or "").split())[:72]
+        result = vcs.commit_all(self.project, f"{role_name}: {task} [{outcome}]")
+        if result.ok:
+            self._emit("git", agent=role_name, step_id=step.id, payload={
+                "action": "commit", "sha": result.sha, "files": result.files,
+                "message": f"{role_name}: {task} [{outcome}]",
+            })
+        return result.sha
+
+    def _revert(self, step: Step, attempt: Attempt, role_name: str) -> None:
+        """Put the tree back to where this block started."""
+        if not self._git or not (attempt.checkpoint or attempt.commit):
+            return
+        result = vcs.undo(self.project, attempt.commit, attempt.checkpoint)
+        attempt.reverted = bool(result.ok)
+        self._emit("git", agent=role_name, step_id=step.id, payload={
+            "action": "revert", "ok": result.ok, "sha": attempt.checkpoint,
+            "files": result.files, "detail": result.detail,
+            "message": (f"Reverted {role_name}'s changes — the project is back to "
+                        f"where this block started."
+                        if result.ok else f"Could not revert: {result.detail}"),
+        })
+        self._reindex()          # the graph now describes files that changed back
 
     def _write_plan(self) -> None:
         write_plan(self.project, self.session.goal, self.session.flow.steps)

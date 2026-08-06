@@ -77,6 +77,9 @@ class LoopNode:
     focus: str = ""
     #: Optional check on this node's work, as on a step.
     check: str | None = None
+    #: Undo this block's changes when it does not succeed. Useful mid-loop: a
+    #: fixer that made things worse should not hand its mess to the next agent.
+    revert_on_fail: bool = False
     #: outcome -> Edge. A missing exit fails the loop, which is the safe default:
     #: an unrouted outcome means the author did not think about it.
     on: dict[str, Edge] = field(default_factory=dict)
@@ -86,7 +89,8 @@ class LoopNode:
 
     def to_dict(self) -> dict:
         return {"id": self.id, "role": self.role, "focus": self.focus,
-                "check": self.check, "on": {k: e.to_dict() for k, e in self.on.items()}}
+                "check": self.check, "revert_on_fail": self.revert_on_fail,
+                "on": {k: e.to_dict() for k, e in self.on.items()}}
 
     @classmethod
     def from_dict(cls, data: dict) -> "LoopNode":
@@ -95,6 +99,7 @@ class LoopNode:
             role=data.get("role") or "",
             focus=data.get("focus") or "",
             check=data.get("check") or None,
+            revert_on_fail=bool(data.get("revert_on_fail")),
             on={k: Edge.from_dict(v) for k, v in (data.get("on") or {}).items()
                 if k in EXITS},
         )

@@ -1,0 +1,167 @@
+"""Git checkpoints around each step.
+
+An agent that goes wrong leaves the project worse than it found it, and the only
+honest way to undo that is the one every developer already trusts. So each step
+runs between two commits: one taken before it starts, one after it finishes.
+The first is what "revert this step" means; the second is what makes the run
+readable afterwards — `git log` becomes the list of what each agent did.
+
+Everything here is deliberately narrow:
+
+* It only ever touches the working tree and the current branch. No pushing, no
+  rebasing, no branch switching, no history rewriting.
+* A revert is opt-in per step, because throwing away work is not something to
+  do on a guess.
+* Nothing raises. Git being absent, the project not being a repository, a
+  commit failing — none of that is a reason to stop a run, so every call
+  returns a result object that says what happened.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+#: Long enough for a slow first `git add` on a large tree, short enough that a
+#: hung git does not hold a run.
+TIMEOUT_S = 60
+
+#: Prefix on every message trance writes, so its commits are greppable and
+#: obviously not the user's.
+PREFIX = "trance"
+
+
+@dataclass
+class GitResult:
+    ok: bool
+    detail: str = ""
+    sha: str = ""
+    files: list[str] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def _run(project: Path, *args: str) -> tuple[int, str]:
+    try:
+        done = subprocess.run(
+            ["git", *args], cwd=str(project), capture_output=True, text=True,
+            timeout=TIMEOUT_S,
+        )
+    except FileNotFoundError:
+        return 127, "git is not installed"
+    except (subprocess.SubprocessError, OSError) as exc:
+        return 1, str(exc)
+    return done.returncode, (done.stdout or done.stderr or "").strip()
+
+
+def available() -> bool:
+    code, _ = _run(Path.cwd(), "--version")
+    return code == 0
+
+
+def is_repo(project: Path) -> bool:
+    code, out = _run(project, "rev-parse", "--is-inside-work-tree")
+    return code == 0 and out.strip() == "true"
+
+
+def ensure_repo(project: Path) -> GitResult:
+    """Make the project a repository if it is not one already.
+
+    A checkpoint needs somewhere to live, and asking the user to run `git init`
+    before trance is useful is a worse trade than creating an empty repository
+    they can delete.
+    """
+    if is_repo(project):
+        return GitResult(True, "already a repository")
+    code, out = _run(project, "init")
+    if code != 0:
+        return GitResult(False, out)
+    # A repository with no identity cannot commit, and the global config may
+    # not have one. Set it locally so nothing outside this project changes.
+    _run(project, "config", "user.email", "agents@trance.local")
+    _run(project, "config", "user.name", "trance agents")
+    return GitResult(True, "initialised a git repository")
+
+
+def head(project: Path) -> str:
+    code, out = _run(project, "rev-parse", "HEAD")
+    return out.strip() if code == 0 else ""
+
+
+def dirty(project: Path) -> list[str]:
+    """Paths that differ from HEAD, including untracked ones."""
+    code, out = _run(project, "status", "--porcelain")
+    if code != 0 or not out:
+        return []
+    # "XY PATH", and the two status columns can each be blank or set.
+    return [line[2:].strip() for line in out.splitlines() if line.strip()]
+
+
+def commit_all(project: Path, message: str) -> GitResult:
+    """Commit everything in the tree. Returns ok=False when there is nothing.
+
+    `git add -A` then commit: an agent's work is whatever it left on disk, and
+    working out which paths it touched is the tool layer's job, not this one's.
+    """
+    changed = dirty(project)
+    if not changed:
+        return GitResult(False, "nothing to commit")
+
+    code, out = _run(project, "add", "-A")
+    if code != 0:
+        return GitResult(False, f"git add failed: {out}")
+    code, out = _run(project, "commit", "-m", f"{PREFIX}: {message}", "--no-verify")
+    if code != 0:
+        return GitResult(False, f"git commit failed: {out}")
+    return GitResult(True, out.splitlines()[0] if out else "committed",
+                     sha=head(project), files=changed)
+
+
+def undo(project: Path, commit_sha: str, checkpoint: str = "") -> GitResult:
+    """Undo a step's work, leaving both the work and the undo in history.
+
+    A hard reset would be simpler and would throw the commit away with it —
+    "reverted" would then mean the agent's work is gone, and reading back what
+    it tried would need the reflog. `git revert` adds an inverse commit instead:
+    the tree goes back to where the step started and `git log` still shows both
+    what was done and that it was undone.
+
+    Only a step's own commit is ever reverted, which is the tip, so it always
+    applies cleanly. When the step committed nothing there is dirt to discard
+    instead, and that is what `checkpoint` is for.
+    """
+    if commit_sha:
+        code, out = _run(project, "revert", "--no-edit", commit_sha)
+        if code != 0:
+            _run(project, "revert", "--abort")
+            return GitResult(False, f"git revert failed: {out}")
+        return GitResult(True, f"reverted {commit_sha[:8]}", sha=head(project))
+
+    # Nothing was committed, so whatever is here is the step's and unwanted.
+    lost = dirty(project)
+    if not lost:
+        return GitResult(True, "nothing to undo", sha=checkpoint)
+    if checkpoint:
+        code, out = _run(project, "reset", "--hard", checkpoint)
+        if code != 0:
+            return GitResult(False, f"git reset failed: {out}")
+    code, clean_out = _run(project, "clean", "-fd")
+    removed = [line.replace("Removing ", "").strip()
+               for line in clean_out.splitlines() if line.startswith("Removing ")]
+    return GitResult(True, "discarded uncommitted changes", sha=checkpoint,
+                     files=lost + removed)
+
+
+def log(project: Path, limit: int = 20) -> list[dict]:
+    """Recent commits, for showing what a run actually produced."""
+    code, out = _run(project, "log", f"-{limit}", "--pretty=format:%H%x1f%s%x1f%ar")
+    if code != 0 or not out:
+        return []
+    entries = []
+    for line in out.splitlines():
+        parts = line.split("\x1f")
+        if len(parts) == 3:
+            entries.append({"sha": parts[0], "subject": parts[1], "when": parts[2]})
+    return entries

@@ -52,6 +52,10 @@ class Attempt:
     #: How full the window was on this attempt's last call — the same numbers
     #: the live gauge shows, kept so a finished step can still show them.
     context: dict = field(default_factory=dict)
+    #: The commit taken before this attempt, and the one taken after it.
+    checkpoint: str = ""
+    commit: str = ""
+    reverted: bool = False
     #: The step's own outcome, as reported by the agent that did the work.
     outcome: str = ""
     outcome_reason: str = ""
@@ -89,6 +93,10 @@ class Step:
     #: How many times the block may run before the flow is halted. The loop can
     #: only be left by succeeding — exhausting it stops the run.
     max_loops: int = 2
+    #: Roll the project back to the checkpoint taken before this step when it
+    #: fails. Off by default: throwing away work is not something to do on a
+    #: guess, and a half-finished step is often still worth reading.
+    revert_on_fail: bool = False
     #: Whether the escalation attempt has already been spent on this step.
     #: One per step: escalation that can itself loop is a longer loop with a
     #: bigger bill.
