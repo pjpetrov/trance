@@ -1,6 +1,7 @@
 """Worker tests. The LLM is stubbed — these cover the loop, the tools, and the
 response parsing, which is where the bugs actually live."""
 
+import time
 from pathlib import Path
 
 import pytest
@@ -95,7 +96,7 @@ class FakeClient:
         self.responses = list(responses)
         self.calls = []
 
-    def complete(self, messages, tools=None):
+    def complete(self, messages, tools=None, **kwargs):
         self.calls.append({"messages": list(messages), "tools": tools})
         return self.responses.pop(0)
 
@@ -167,3 +168,93 @@ def test_api_key_never_reaches_a_trace(tmp_path):
     cfg_file = tmp_path / "trance.toml"
     cfg_file.write_text('[providers.p]\napi_key = "secret-key"\n')
     assert "secret-key" not in str(Config.load(cfg_file).to_dict())
+
+
+# ------------------------------- stopping a generation that is already running
+
+def _slow_model_server(delay_s: float):
+    """An endpoint that accepts the request and then thinks for a long time."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            time.sleep(delay_s)                      # generating…
+            try:
+                self.wfile.write(b'{"choices":[{"message":{"content":"done"}}]}')
+            except OSError:
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    # Threaded, or shutdown() would block until the sleeping handler returns —
+    # the test would then take exactly as long as the hang it is proving we can
+    # break off.
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_stop_breaks_off_a_generation_in_flight():
+    """Regression: stop was only read between rounds, so pressing it did
+    nothing visible until the model finished — minutes, on a local one."""
+    import threading
+
+    from trance.config import ModelConfig
+    from trance.providers.base import Cancelled, abort_inflight
+    from trance.worker.client import ChatClient
+
+    server = _slow_model_server(20)
+    port = server.server_address[1]
+    client = ChatClient(ModelConfig(base_url=f"http://127.0.0.1:{port}/v1", timeout_s=60))
+    result = {}
+
+    def call():
+        try:
+            client.complete([{"role": "user", "content": "hi"}], cancel_token="s1")
+        except Cancelled:
+            result["cancelled"] = True
+        except Exception as exc:                     # noqa: BLE001
+            result["error"] = exc
+
+    started = time.time()
+    worker = threading.Thread(target=call)
+    worker.start()
+    time.sleep(0.6)                                  # let it get into read()
+
+    assert abort_inflight("s1") == 1
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert result.get("cancelled") is True, result
+    assert time.time() - started < 5                 # not the full 20s
+    server.shutdown()
+
+
+def test_a_finished_call_is_not_left_registered():
+    """A stale handle would make the next stop think it aborted something."""
+    from trance.config import ModelConfig
+    from trance.providers.base import _INFLIGHT, abort_inflight
+    from trance.worker.client import ChatClient
+
+    server = _slow_model_server(0)
+    port = server.server_address[1]
+    client = ChatClient(ModelConfig(base_url=f"http://127.0.0.1:{port}/v1", timeout_s=10))
+    client.complete([{"role": "user", "content": "hi"}], cancel_token="s2")
+
+    assert "s2" not in _INFLIGHT
+    assert abort_inflight("s2") == 0
+    server.shutdown()
+
+
+def test_aborting_an_unknown_session_is_harmless():
+    from trance.providers.base import abort_inflight
+
+    assert abort_inflight("never-existed") == 0
+    assert abort_inflight("") == 0

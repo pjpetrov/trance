@@ -49,7 +49,8 @@ class AnthropicClient:
 
     # ------------------------------------------------------------------ api
 
-    def complete(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResponse:
+    def complete(self, messages: list[dict], tools: list[dict] | None = None,
+                 cancel_token: str = "") -> ChatResponse:
         system, converted = split_system(messages)
         payload: dict[str, Any] = {
             "model": self.model,

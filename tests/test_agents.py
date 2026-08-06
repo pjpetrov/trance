@@ -378,7 +378,7 @@ def test_the_brief_is_in_every_agent_prompt(monkeypatch, tmp_path):
     captured = {}
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             captured["messages"] = messages
             return ChatResponse(text="done", finish_reason="stop")
 
@@ -1076,7 +1076,7 @@ def test_a_truncated_orchestrator_reply_says_so(monkeypatch, tmp_path):
     from trance.providers.base import ChatResponse, ToolCall
 
     class Fake:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             return ChatResponse(
                 text="", finish_reason="length",
                 tool_calls=[ToolCall(id="1", name="propose_flow", arguments={},
@@ -1601,7 +1601,7 @@ def test_repeated_truncation_fails_the_step_with_a_reason(monkeypatch, tmp_path)
     from trance.providers.base import ChatResponse
 
     class AlwaysTruncates:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             return ChatResponse(text="", finish_reason="length",
                                 provider_error="truncated_tool_call")
 
@@ -1630,7 +1630,7 @@ def test_one_truncated_call_is_retried_not_fatal(monkeypatch, tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             self.calls += 1
             seen.append(messages[-1])
             if self.calls == 1:
@@ -1923,7 +1923,7 @@ def test_an_agent_starts_with_what_the_team_already_decided(tmp_path, monkeypatc
     captured = {}
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             captured["prompt"] = messages[-1]["content"]
             return ChatResponse(text="OUTCOME: SUCCESS")
 
@@ -1990,7 +1990,7 @@ def test_an_agent_is_shown_the_map_before_it_starts_reading(tmp_path, monkeypatc
     captured = {}
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             captured["prompt"] = messages[-1]["content"]
             return ChatResponse(text="OUTCOME: SUCCESS")
 
@@ -2045,7 +2045,7 @@ def test_memory_is_in_every_request_of_a_turn(tmp_path, monkeypatch):
         def __init__(self):
             self.n = 0
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             self.n += 1
             seen.append("\n".join(str(m.get("content")) for m in messages))
             if self.n < 4:
@@ -2093,7 +2093,7 @@ def test_the_orchestrator_plans_against_the_teams_decisions(tmp_path, monkeypatc
     captured = {}
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             captured["system"] = messages[0]["content"]
             return ChatResponse(text="ok")
 
@@ -2120,7 +2120,7 @@ def _turn_with(monkeypatch, replies, role="backend", project=None, **kw):
         def __init__(self):
             self.n = 0
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             prompts.append(str(messages[-1].get("content")))
             reply = replies[min(self.n, len(replies) - 1)]
             self.n += 1
@@ -2312,7 +2312,7 @@ def test_compaction_can_be_triggered_from_the_ui(tmp_path, monkeypatch):
     from trance.server import app as app_module
 
     monkeypatch.setattr(app_module, "client_for", lambda config: type(
-        "C", (), {"complete": lambda self, messages, tools=None: ChatResponse(
+        "C", (), {"complete": lambda self, messages, tools=None, **kwargs: ChatResponse(
             text="- **backend**: the API is POST /api/games on port 3100")})())
 
     config = Config.load(tmp_path / "none.toml")
@@ -2348,7 +2348,7 @@ def _split_client(monkeypatch, pieces_by_task):
     asked = []
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             task = messages[-1]["content"].split("Task: ", 1)[-1].split("\n")[0]
             asked.append(task)
             pieces = pieces_by_task.get(task, [])
@@ -2488,7 +2488,7 @@ def test_a_step_can_be_split_from_the_flow_editor(tmp_path, monkeypatch):
     from trance.server import app as app_module
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             return ChatResponse(text="", tool_calls=[ToolCall(
                 id="c", name="split_step", arguments={"steps": [
                     {"role": "backend", "task": "write the model layer", "points": 3},
@@ -2721,7 +2721,7 @@ def test_the_orchestrator_is_told_what_each_agent_may_write(tmp_path, monkeypatc
     captured = {}
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             captured["system"] = messages[0]["content"]
             return ChatResponse(text="ok")
 
@@ -2788,7 +2788,7 @@ def test_an_empty_memory_says_so_rather_than_being_hidden(tmp_path, monkeypatch)
     captured = {}
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             captured["prompt"] = messages[-1]["content"]
             return ChatResponse(text="OUTCOME: SUCCESS")
 
@@ -2812,7 +2812,7 @@ def test_memory_is_shown_before_the_toolset(tmp_path, monkeypatch):
     captured = {}
 
     class FakeClient:
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             captured["prompt"] = messages[-1]["content"]
             return ChatResponse(text="OUTCOME: SUCCESS")
 
@@ -3367,7 +3367,7 @@ def test_the_estimate_is_calibrated_against_the_endpoints_own_count(tmp_path, mo
         def __init__(self):
             self.n = 0
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             chars = sum(len(str(m.get("content") or "")) + len(str(m.get("tool_calls") or ""))
                         for m in messages)
             sent.append(chars)
@@ -3405,7 +3405,7 @@ def _reader(monkeypatch, tmp_path, reads, final="OUTCOME: SUCCESS"):
         def __init__(self):
             self.n = 0
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             results.append([m for m in messages if m.get("role") == "tool"])
             if self.n < len(reads):
                 args = reads[self.n]
@@ -3448,7 +3448,7 @@ def test_a_file_that_changed_is_read_again_in_full(tmp_path, monkeypatch):
         def __init__(self):
             self.n = 0
 
-        def complete(self, messages, tools=None):
+        def complete(self, messages, tools=None, **kwargs):
             self.n += 1
             if self.n == 1:
                 return ChatResponse(text="", tool_calls=[ToolCall(

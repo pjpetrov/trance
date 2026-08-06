@@ -2566,6 +2566,14 @@ function consoleAppend(event) {
       }));
       return;
 
+    case "run_stopped":
+      if (!p.aborted_model_calls) return;
+      consolePush(consoleEntry({
+        kind: "cmd", icon: "⏹", time, tag: "system", failed: true,
+        label: p.message || "stopped — the model call in flight was broken off",
+      }));
+      return;
+
     case "supervision": case "warning": case "error":
       consolePush(consoleEntry({
         kind: "cmd", icon: ICON.fail, time, failed: true, tag: event.agent || "system",

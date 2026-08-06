@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 
 from .base import (
+    Cancelled,
+    abort_inflight,
     KIND_DEFAULTS,
     BackendError,
     ChatResponse,
@@ -18,7 +20,8 @@ from .base import (
 
 __all__ = [
     "ProviderConfig", "ProviderKind", "ChatResponse", "ToolCall", "BackendError",
-    "KIND_DEFAULTS", "ModelPreset", "ProviderStore", "client_for",
+    "KIND_DEFAULTS", "ModelPreset", "ProviderStore", "client_for", "Cancelled",
+    "abort_inflight",
 ]
 
 

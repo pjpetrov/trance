@@ -15,6 +15,7 @@ than a base_url swap.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -55,6 +56,10 @@ KIND_DEFAULTS: dict[str, dict[str, Any]] = {
         "models": [],
     },
 }
+
+
+class Cancelled(Exception):
+    """A model call was deliberately broken off. Not a failure of the model."""
 
 
 class BackendError(RuntimeError):
@@ -159,3 +164,50 @@ class ProviderConfig:
         if clean.get("api_key") == "***":
             clean.pop("api_key")
         return cls(**clean)
+
+
+# --------------------------------------------------------------- cancelling
+
+#: In-flight model calls, keyed by session. A local model can spend minutes on
+#: one generation, and until this existed "stop" only took effect when that
+#: generation finished — the button did nothing you could see.
+_INFLIGHT: dict[str, list] = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def register_inflight(token: str, handle) -> None:
+    """Record something abortable for `token`. Handles are per session."""
+    if not token:
+        return
+    with _INFLIGHT_LOCK:
+        _INFLIGHT.setdefault(token, []).append(handle)
+
+
+def clear_inflight(token: str, handle) -> None:
+    if not token:
+        return
+    with _INFLIGHT_LOCK:
+        handles = _INFLIGHT.get(token) or []
+        if handle in handles:
+            handles.remove(handle)
+        if not handles:
+            _INFLIGHT.pop(token, None)
+
+
+def abort_inflight(token: str) -> int:
+    """Break off every model call this session has open. Returns how many.
+
+    Shuts the socket down rather than closing it: shutdown unblocks the thread
+    sitting in read() without freeing the descriptor, so there is no window in
+    which the number could be reused by another connection.
+    """
+    with _INFLIGHT_LOCK:
+        handles = list(_INFLIGHT.get(token) or [])
+    aborted = 0
+    for handle in handles:
+        try:
+            handle.abort()
+            aborted += 1
+        except Exception:                       # a race with a finished call
+            continue
+    return aborted

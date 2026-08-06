@@ -23,7 +23,10 @@ from ..config import Config
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
 from ..flow import Flow, Step
-from ..providers import KIND_DEFAULTS, ModelPreset, ProviderConfig, ProviderStore, client_for
+from ..providers import (
+    KIND_DEFAULTS, ModelPreset, ProviderConfig, ProviderStore, abort_inflight,
+    client_for,
+)
 from ..session import ChatMessage, SessionStore
 from ..worker.client import BackendError
 
@@ -838,6 +841,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if session.id in brokers:
             brokers[session.id].abandon()
         session.stop()
+        # And break off the generation itself. The stop flag is only read
+        # between rounds, so without this the button does nothing visible until
+        # the model finishes — minutes, on a local one.
+        aborted = abort_inflight(session.id)
+        if aborted:
+            bus.emit("run_stopped", session_id, payload={
+                "reason": "stopped by user", "aborted_model_calls": aborted,
+                "message": "Stopped, and the model call in flight was broken off."})
         bus.emit("stopping", session_id, payload={
             "message": ("Stopping after the current agent turn. Resume will start a "
                         "fresh engine from the next pending step.")})

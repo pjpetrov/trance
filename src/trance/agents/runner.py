@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..config import ModelConfig
 from ..events import EventBus, summarize_messages
-from ..providers import client_for
+from ..providers import Cancelled, client_for
 from ..worker.client import salvage_tool_calls
 from .memory import ProjectMemory
 from .roles import AgentRole
@@ -404,7 +404,13 @@ def run_agent(
 
         started = time.time()
         sent_chars = _chars(messages)
-        response = client.complete(messages, tools=specs or None)
+        try:
+            response = client.complete(messages, tools=specs or None,
+                                       cancel_token=session_id)
+        except Cancelled:
+            # Stop, mid-generation. Not an error, and not the agent's doing.
+            turn.stop_reason = "cancelled"
+            break
         elapsed_ms = round((time.time() - started) * 1000, 1)
         reported = int((response.usage or {}).get("prompt_tokens") or 0)
         if reported > 0 and sent_chars > 0:
@@ -577,7 +583,11 @@ def run_agent(
             "content": "You have used your tool budget. Summarize what you did and what remains, now.",
         })
         messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
-        response = client.complete(messages, tools=None)
+        try:
+            response = client.complete(messages, tools=None, cancel_token=session_id)
+        except Cancelled:
+            turn.stop_reason = "cancelled"
+            return turn
         totals["input_tokens"] += response.usage.get("prompt_tokens", 0)
         totals["output_tokens"] += response.usage.get("completion_tokens", 0)
         event = bus.emit(
@@ -613,7 +623,11 @@ def run_agent(
                 "already correct and needed no changes, that is SUCCESS."),
         })
         messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
-        follow_up = client.complete(messages, tools=None)
+        try:
+            follow_up = client.complete(messages, tools=None, cancel_token=session_id)
+        except Cancelled:
+            turn.stop_reason = "cancelled"
+            return turn
         totals["input_tokens"] += follow_up.usage.get("prompt_tokens", 0)
         totals["output_tokens"] += follow_up.usage.get("completion_tokens", 0)
         bus.emit("model_call", session_id, agent=role.name, step_id=step_id, payload={

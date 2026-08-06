@@ -8,13 +8,40 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import ModelConfig
-from ..providers.base import BackendError, ChatResponse, ToolCall
+from ..providers.base import (
+    BackendError, Cancelled, ChatResponse, ToolCall, clear_inflight, register_inflight,
+)
+
+
+class _Abortable:
+    """Holds an open response so another thread can break it off.
+
+    urlopen blocks in read() until the model finishes generating, which for a
+    local 27B is minutes. Closing the response from the stopping thread would
+    free the file descriptor while this one may still touch it; shutting the
+    socket down unblocks the read and leaves the descriptor ours to close.
+    """
+
+    def __init__(self):
+        self.response = None
+        self.aborted = False
+
+    def abort(self) -> None:
+        self.aborted = True
+        response = self.response
+        sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
 
 class ChatClient:
@@ -22,7 +49,8 @@ class ChatClient:
         self.config = config
         self.endpoint = config.base_url.rstrip("/") + "/chat/completions"
 
-    def complete(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResponse:
+    def complete(self, messages: list[dict], tools: list[dict] | None = None,
+                 cancel_token: str = "") -> ChatResponse:
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
@@ -42,8 +70,11 @@ class ChatClient:
             },
             method="POST",
         )
+        handle = _Abortable()
+        register_inflight(cancel_token, handle)
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout_s) as resp:
+                handle.response = resp
                 body = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf8", errors="replace")
@@ -56,10 +87,19 @@ class ChatClient:
                                     provider_error="truncated_tool_call")
             raise BackendError(f"{self.endpoint} returned {exc.code}: {body[:400]}") from exc
         except urllib.error.URLError as exc:
+            if handle.aborted:
+                raise Cancelled("the model call was stopped") from exc
             raise BackendError(
                 f"cannot reach {self.endpoint} ({exc.reason}). Is the model server running? "
                 f"Override with --base-url or TRANCE_BASE_URL."
             ) from exc
+        except (OSError, ValueError) as exc:
+            # A shutdown socket surfaces as a read error rather than a URLError.
+            if handle.aborted:
+                raise Cancelled("the model call was stopped") from exc
+            raise BackendError(f"{self.endpoint} failed: {exc}") from exc
+        finally:
+            clear_inflight(cancel_token, handle)
 
         return _parse(body)
 
