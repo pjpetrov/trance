@@ -196,7 +196,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "providers": [p.to_dict() for p in providers.all(enabled_only=True)],
             "presets": [m.to_dict() for m in providers.presets()],
             "kinds": KIND_DEFAULTS,
-            "planning": {"max_step_points": config.max_step_points, "scale": list(POINTS)},
+            "planning": {"max_step_points": config.max_step_points, "scale": list(POINTS),
+                         "escalation_preset": config.escalation_preset,
+                         "escalation_role": config.escalation_role},
             "orchestrator": {"preset": config.orchestrator.preset,
                              "provider": orchestrator.provider, "model": orchestrator.model,
                              "base_url": orchestrator.base_url,
@@ -487,7 +489,19 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 raise HTTPException(400, "max_step_points must be between 0 and 13 "
                                          "(0 turns splitting off)")
             config.max_step_points = value
-        return {"max_step_points": config.max_step_points, "scale": list(POINTS)}
+        if "escalation_preset" in body:
+            name = (body.get("escalation_preset") or "").strip()
+            if name and providers.preset(name) is None:
+                raise HTTPException(400, f"unknown model {name!r}")
+            config.escalation_preset = name
+        if "escalation_role" in body:
+            name = (body.get("escalation_role") or "").strip()
+            if name and roles.get(name) is None:
+                raise HTTPException(400, f"unknown agent {name!r}")
+            config.escalation_role = name
+        return {"max_step_points": config.max_step_points, "scale": list(POINTS),
+                "escalation_preset": config.escalation_preset,
+                "escalation_role": config.escalation_role}
 
     # ----------------------------------------------------------- sessions
 

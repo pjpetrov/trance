@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .agents.handoff import Handoff, build as build_handoff
 from .agents.memory import COMPACT_PROMPT, ProjectMemory, write_plan
-from .agents.runner import run_agent
+from .agents.runner import OUTCOME_SUCCESS, run_agent
 from .config import Config
 from .providers import client_for
 from .curator.walker import CuratorConfig, curate
@@ -284,6 +284,12 @@ class FlowEngine:
             carry = build_handoff(turn.transcript, turn.text)
             self._run_fixer(step, attempt, feedback, loop, limit, carry)
 
+        # Every loop has failed. Before halting, one attempt with whatever the
+        # user configured as their stronger model — the loop varied the prompt
+        # and the fixer, and the model is the one thing it never varied.
+        if self._escalate(step, feedback, carry):
+            return
+
         step.status = "failed"
         last = step.attempts[-1] if step.attempts else None
         self._emit("step_failed", agent=role.name, step_id=step.id, payload={
@@ -293,6 +299,78 @@ class FlowEngine:
             "attempts": len(step.attempts), "max_loops": limit, "halts_flow": True,
         })
         self._halt(step)
+
+    def _escalate(self, step: Step, feedback: str, carry) -> bool:
+        """One final attempt on the escalation model. True if it succeeded.
+
+        Bounded to exactly one: escalation that can itself loop is just a longer
+        loop with a bigger bill.
+        """
+        preset = self.config.escalation_preset
+        if not preset or step.escalated:
+            return False
+        role = self.session.role(self.config.escalation_role or step.role)
+        if role is None:
+            return False
+
+        step.escalated = True
+        step.status = "running"
+        attempt = Attempt(n=len(step.attempts) + 1)
+        step.attempts.append(attempt)
+        model_config = self.config.resolve(self.config.worker, preset=preset)
+        self._emit("escalated", agent=role.name, step_id=step.id, payload={
+            "model": model_config.model, "preset": preset, "role": role.name,
+            "after_loops": step.loop_limit,
+            "message": (f"{step.loop_limit} loops did not fix this — trying once more "
+                        f"with {model_config.model}."),
+        })
+        self.on_change()
+
+        # What every previous attempt reported, not just the last. The point of
+        # a stronger model here is to see the pattern across the failures.
+        tried = "\n".join(
+            f"  attempt {a.n}: {a.outcome or 'no outcome'} — {a.outcome_reason or a.feedback or '?'}"
+            for a in step.attempts[:-1])
+        turn = run_agent(
+            role=role,
+            task=(
+                f"{step.task}\n\n"
+                f"## This has already failed {len(step.attempts) - 1} times\n{tried}\n\n"
+                f"Last reported: {feedback}\n\n"
+                f"Do not repeat the approach that failed. Work out why it keeps failing "
+                f"before changing anything — reproduce it, read the code that is actually "
+                f"running, and check assumptions the earlier attempts took for granted. "
+                f"A different design that works beats the intended one that does not."),
+            project=self.project, config=model_config, bus=self.bus,
+            session_id=self.session.id, step_id=step.id,
+            history=self.session.history, graph_tools=self._graph_tools(role),
+            should_stop=lambda: self.session.stopping,
+            memory=self.memory, project_map=self._project_map(role, step.task),
+            goal=self.session.goal, placement=self._placement(step),
+            approve=self.approve,
+            steering=[carry.body] if carry and carry.body else None,
+        )
+        attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
+        attempt.files_written = turn.files_written
+        attempt.outcome, attempt.outcome_reason = turn.outcome
+        step.summary = _summarize(turn.text)
+        self._record_history(role.name, step, turn)
+        self._reindex()
+
+        if attempt.outcome != OUTCOME_SUCCESS:
+            self._emit("escalation_failed", agent=role.name, step_id=step.id, payload={
+                "reason": attempt.outcome_reason, "model": model_config.model})
+            return False
+
+        integrity = self._run_check(step, attempt)
+        step.status = "blocked" if integrity == "UNKNOWN" else "done"
+        self._emit("step_finished", agent=role.name, step_id=step.id, payload={
+            "status": step.status, "attempt": attempt.n, "files": turn.files_written,
+            "summary": step.summary, "usage": turn.usage, "escalated": True,
+            "tool_calls": turn.tool_calls, "outcome": attempt.outcome,
+            "integrity": integrity,
+        })
+        return step.status == "done"
 
     def _run_fixer(self, step: Step, attempt: Attempt, feedback: str,
                    loop: int, limit: int, handoff: Handoff | None = None) -> None:

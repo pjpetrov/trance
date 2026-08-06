@@ -107,6 +107,14 @@ class Config:
     ask_on_refusal: bool = True
     #: How long a blocked agent waits for an answer before the refusal stands.
     approval_timeout_s: float = 300.0
+    #: A model preset used for one last attempt when a block has exhausted its
+    #: loops. Empty = no escalation, halt as before. A block that has failed the
+    #: same way three times is not going to be fixed by a fourth identical try;
+    #: the one thing that has not been varied is the model.
+    escalation_preset: str = ""
+    #: Optional agent for that attempt. Empty = the step's own role, with the
+    #: stronger model.
+    escalation_role: str = ""
     runs_dir: str = "runs"
     #: Root for new projects. Empty means "the directory trance was started in".
     workspace: str = ""
@@ -237,6 +245,8 @@ class Config:
             "max_recurate_rounds": self.max_recurate_rounds,
             "max_step_points": self.max_step_points,
             "ask_on_refusal": self.ask_on_refusal,
+            "escalation_preset": self.escalation_preset,
+            "escalation_role": self.escalation_role,
             "approval_timeout_s": self.approval_timeout_s,
             "runs_dir": self.runs_dir,
             "workspace": str(self.workspace_root),

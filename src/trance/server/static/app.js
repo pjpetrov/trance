@@ -1051,6 +1051,43 @@ function renderStepSize() {
     select.append(opt);
   }
   select.value = String(planning.max_step_points || 0);
+
+  const model = $("escalation-preset");
+  model.innerHTML = "";
+  const noEscalation = el("option", null, "none — halt instead");
+  noEscalation.value = "";
+  model.append(noEscalation);
+  state.presets.forEach((m) => {
+    const opt = el("option", null, `${m.name} — ${m.model}`);
+    opt.value = m.name;
+    model.append(opt);
+  });
+  model.value = planning.escalation_preset || "";
+
+  const who = $("escalation-role");
+  who.innerHTML = "";
+  const same = el("option", null, "the step's own agent");
+  same.value = "";
+  who.append(same);
+  Object.values(state.roles).filter((r) => r.name !== "orchestrator").forEach((r) => {
+    const opt = el("option", null, r.name);
+    opt.value = r.name;
+    who.append(opt);
+  });
+  who.value = planning.escalation_role || "";
+
+  const saveEscalation = async () => {
+    const body = await api("/api/config/planning", {
+      method: "PUT",
+      body: { escalation_preset: model.value, escalation_role: who.value },
+    });
+    state.planning = { ...state.planning, ...body };
+    toast(body.escalation_preset
+      ? `Exhausted steps get one more try on ${body.escalation_preset}.`
+      : "Exhausted steps will halt the run, as before.");
+  };
+  model.onchange = saveEscalation;
+  who.onchange = saveEscalation;
   select.onchange = async () => {
     const body = await api("/api/config/planning",
                            { method: "PUT", body: { max_step_points: Number(select.value) } });
@@ -2439,6 +2476,23 @@ function consoleAppend(event) {
       }
       return;
     }
+
+    case "escalated":
+      consolePush(consoleEntry({
+        kind: "step", icon: "⇧", time, tag: event.agent,
+        label: labelWith([[p.message || "escalating", ""],
+                          [`  ${p.role} on ${shortModel(p.model)}`, "c-path"]]),
+        open: true,
+      }));
+      return;
+
+    case "escalation_failed":
+      consolePush(consoleEntry({
+        kind: "cmd", icon: ICON.fail, time, tag: event.agent, failed: true,
+        label: `the stronger model did not fix it either — ${clip(p.reason, 70)}`,
+        body: () => el("pre", null, p.reason || ""),
+      }));
+      return;
 
     case "splitting_steps":
       consolePush(consoleEntry({

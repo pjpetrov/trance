@@ -3064,3 +3064,141 @@ def test_an_unknown_approval_is_a_404_not_a_hang(tmp_path):
     assert gone.status_code == 404 and "timed out" in gone.json()["detail"]
     bad = client.post(f"/api/sessions/{sid}/approvals/ap_1", json={"decision": "maybe"})
     assert bad.status_code == 400
+
+
+# ------------------ chat habits leaking into a tool argument
+
+def test_a_filename_header_is_stripped_before_the_file_is_written(tmp_path):
+    """Regression: agents prefix files with `# server/app.js`, which in a .js
+    file is a syntax error rather than a blemish."""
+    tools = _tools(tmp_path)
+    outcome = tools.call("write_file", {
+        "path": "server/app.js", "content": "# server/app.js\nconst x = 1;\n"})
+
+    assert (tmp_path / "server/app.js").read_text() == "const x = 1;\n"
+    assert "removed" in outcome.text          # and the agent is told, so it learns
+    assert outcome.detail["stripped"]
+
+
+def test_a_code_fence_around_the_whole_file_is_unwrapped(tmp_path):
+    tools = _tools(tmp_path)
+    tools.call("write_file", {
+        "path": "server/app.js", "content": "```javascript\nconst x = 1;\n```"})
+    assert (tmp_path / "server/app.js").read_text() == "const x = 1;"
+
+
+def test_stripping_never_touches_real_code():
+    """Being wrong here silently deletes someone's first line."""
+    from trance.agents.tools import strip_wrappers
+
+    for text, rel in [
+        ("#!/usr/bin/env python3\nprint(1)\n", "run.py"),        # a shebang
+        ("# Copyright 2026 Acme\nprint(1)\n", "run.py"),         # a real comment
+        ("# server/other.js\nconst x = 1;\n", "server/app.js"),  # a different file
+        ("const x = 1;\n", "app.js"),
+        ("// eslint-disable-next-line\nconst x = 1;\n", "app.js"),
+    ]:
+        assert strip_wrappers(text, rel) == (text, []), rel
+
+
+def test_a_markdown_file_keeps_its_fences(tmp_path):
+    """A fence in a README is content, not a wrapper."""
+    tools = _tools(tmp_path, "devops")
+    body = "```bash\nnpm test\n```"
+    tools.call("write_file", {"path": "README.md", "content": body})
+    assert (tmp_path / "README.md").read_text() == body
+
+
+# ---------------------------------- one last try on a stronger model
+
+def _escalating_engine(tmp_path, team, preset="big"):
+    from trance.providers.base import ModelPreset, ProviderConfig
+
+    engine = _engine(tmp_path, team)
+    engine.config.providers["p"] = ProviderConfig(name="p", kind="llamacpp")
+    engine.config.presets[preset] = ModelPreset(name=preset, provider="p", model="big-model")
+    engine.config.escalation_preset = preset
+    return engine
+
+
+def test_an_exhausted_block_gets_one_try_on_the_stronger_model(tmp_path, monkeypatch):
+    """Regression: 16 attempts on the same model, all failing the same way. The
+    loop varies the prompt and the fixer; it never varies the model."""
+    from trance.flow import Step
+
+    engine = _escalating_engine(tmp_path, ["backend", "factchecker"])
+    step = Step(role="backend", task="fix the socket handling", max_loops=2)
+    models = []
+
+    def fake(**kw):
+        models.append(kw["config"].model)
+        succeed = kw["config"].model == "big-model"
+        return _Turn("PASS", "done" if succeed else "still broken",
+                     outcome=("SUCCESS", "") if succeed else ("FAILED", "socket hangs"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert models[-1] == "big-model"
+    assert step.status == "done"
+    assert step.escalated is True
+    assert engine.session.status != "error"      # the run was not halted
+
+
+def test_the_escalated_attempt_is_shown_every_earlier_failure(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _escalating_engine(tmp_path, ["backend"])
+    step = Step(role="backend", task="fix the socket handling", max_loops=2)
+    tasks = []
+
+    def fake(**kw):
+        tasks.append(kw["task"])
+        big = kw["config"].model == "big-model"
+        return _Turn(None, "x", outcome=("SUCCESS", "") if big else ("FAILED", "socket hangs"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    brief = tasks[-1]
+    assert "already failed 2 times" in brief
+    assert "socket hangs" in brief
+    assert "Do not repeat the approach that failed" in brief
+
+
+def test_escalation_happens_once_and_then_the_run_halts(tmp_path, monkeypatch):
+    """Escalation that can loop is just a longer loop with a bigger bill."""
+    from trance.flow import Step
+
+    engine = _escalating_engine(tmp_path, ["backend"])
+    step = Step(role="backend", task="fix it", max_loops=2)
+    calls = []
+
+    def fake(**kw):
+        calls.append(kw["config"].model)
+        return _Turn(None, "no", outcome=("FAILED", "still broken"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert calls.count("big-model") == 1
+    assert step.status == "failed"
+    assert engine.session.status == "error"
+
+
+def test_without_an_escalation_model_nothing_changes(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])          # no escalation configured
+    step = Step(role="backend", task="fix it", max_loops=2)
+    calls = []
+
+    def fake(**kw):
+        calls.append(kw["config"].model)
+        return _Turn(None, "no", outcome=("FAILED", "still broken"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert len(calls) == 2 and step.status == "failed"
+    assert step.escalated is False

@@ -100,6 +100,10 @@ Write whole files with write_file. Not diffs, not patches, not fragments, not
 `# TODO: implement`, not `pass  # fill this in`. Every function you write has a
 working body. A file you write must run as-is.
 
+The `content` argument is the file, byte for byte. No ``` fence around it, and
+no first line naming the file — `# server/app.js` at the top of a .js file is a
+syntax error, not a header.
+
 Finish the task. If it needs three files, write three files. Do not stop after
 the first and describe the rest.
 

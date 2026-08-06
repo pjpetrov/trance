@@ -210,6 +210,42 @@ def set_command_policy(policy: CommandPolicy) -> CommandPolicy:
     return _POLICY
 
 
+#: A fence the model wrapped the whole file in, or a comment line that is just
+#: the file's own name. Both are chat habits leaking into a tool argument, and
+#: in a .js file `# server/app.js` is a syntax error rather than a blemish.
+_FENCE = re.compile(r"^\s*```[a-zA-Z0-9_+-]*[ \t]*\n(?P<body>.*?)\n?\s*```\s*$", re.DOTALL)
+_NAME_COMMENT = re.compile(
+    r"^[ \t]*(?://|\#|/\*|<!--|--)[ \t]*(?P<name>[\w./\\-]+)[ \t]*(?:\*/|-->)?[ \t]*$")
+
+
+def strip_wrappers(content: str, rel: str) -> tuple[str, list[str]]:
+    """Remove a code fence, or a first line that is only this file's name.
+
+    Deliberately narrow. A leading `#` comment is stripped only when the rest of
+    the line is the path being written — never a shebang, never a real comment —
+    because the cost of being wrong here is silently deleting someone's code.
+    """
+    notes: list[str] = []
+    text = content or ""
+
+    fenced = _FENCE.match(text)
+    if fenced and not rel.endswith((".md", ".markdown")):
+        text = fenced.group("body")
+        notes.append("a ``` code fence wrapped around the whole file")
+
+    lines = text.split("\n")
+    if lines:
+        match = _NAME_COMMENT.match(lines[0])
+        candidates = {rel, rel.lstrip("./"), Path(rel).name}
+        if match and match.group("name") in candidates:
+            lines = lines[1:]
+            if lines and not lines[0].strip():
+                lines = lines[1:]
+            text = "\n".join(lines)
+            notes.append(f"a first line that was just the file name ({match.group(0).strip()})")
+    return text, notes
+
+
 #: A diff longer than this is truncated for display. It is never sent to the
 #: model, so this only bounds what the UI has to render.
 MAX_DIFF_LINES = 400
@@ -492,6 +528,7 @@ class AgentTools:
                 previous = target.read_text(encoding="utf8")
             except OSError:
                 previous = ""
+        content, stripped = strip_wrappers(content, rel)
         final = previous + content if append else content
         target.write_text(final, encoding="utf8")
 
@@ -503,14 +540,20 @@ class AgentTools:
         added = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
         removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
 
+        # Told, not silently fixed: an agent that never learns keeps doing it,
+        # and the next thing it wraps might be something we do not detect.
+        warning = (f"\n\nNote: I removed {' and '.join(stripped)} before writing. "
+                   f"write_file takes the file's exact contents — no fences, no "
+                   f"file-name header." if stripped else "")
         verb = "Appended to" if append else ("Updated" if existed else "Created")
         size = (f"{len(content)} bytes added, {len(final)} total" if append
                 else f"{len(final)} bytes")
         return ToolOutcome(
-            f"{verb} {rel} ({size}, {len(final.splitlines())} lines).",
+            f"{verb} {rel} ({size}, {len(final.splitlines())} lines).{warning}",
             files_written=[rel],
             detail={
                 "kind": "write", "path": rel, "created": not existed, "appended": append,
+                "stripped": stripped,
                 "bytes": len(final), "added": added, "removed": removed,
                 "diff": "\n".join(diff_lines[:MAX_DIFF_LINES]),
                 "truncated": truncated,
