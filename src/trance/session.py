@@ -48,6 +48,9 @@ class Session:
     _pause: threading.Event = field(default_factory=threading.Event, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
     _thread: object = field(default=None, repr=False)
+    #: Waits for a stopping engine to exit, then starts a fresh one. A stop only
+    #: takes effect when the current model call returns, which can be minutes.
+    _handover: object = field(default=None, repr=False)
 
     # ---------------------------------------------------------------- state
 

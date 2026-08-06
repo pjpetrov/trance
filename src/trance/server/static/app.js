@@ -1614,8 +1614,12 @@ function openStep(step, index) {
   const rerun = el("button", null, "rerun");
   rerun.onclick = async () => {
     const r = await api(`/api/sessions/${state.session.id}/steps/${step.id}/rerun`, { method: "POST" });
-    toast(r.restarted ? `Re-running ${step.role}…`
-                      : `${step.role} queued — the running engine will pick it up.`);
+    // A stop only lands when the model call returns, so "nothing happened" is
+    // usually "waiting" — say which, or the button reads as broken.
+    const resumed = r.resumed ? " Un-paused." : "";
+    toast(r.restarted ? `Re-running ${step.role}…${resumed}`
+          : r.waiting_for ? `${step.role} queued — starts when ${r.waiting_for}.${resumed}`
+          : `${step.role} queued — the running engine will pick it up.${resumed}`);
   };
   const skip = el("button", null, "skip");
   skip.onclick = () => api(`/api/sessions/${state.session.id}/steps/${step.id}/skip`, { method: "POST" });

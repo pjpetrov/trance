@@ -291,3 +291,119 @@ def test_resume_with_nothing_pending_says_so(tmp_path, monkeypatch):
     assert body["running"] is False
     assert "rerun one" in body["reason"]
     assert engines == []                        # nothing was started
+
+
+# ------------------------------------------- rerun while a step is in flight
+
+def _slow_engine_client(tmp_path, monkeypatch, engines, release):
+    """A client whose engine thread lives until `release` is set, like one stuck
+    inside a model call."""
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    class FakeEngine:
+        def __init__(self, session, config, bus, on_change=None):
+            self.session = session
+
+        def start(self):
+            engines.append(self.session.id)
+            self.session.status = "running"
+            thread = threading.Thread(target=release.wait, daemon=True)
+            thread.start()
+            self.session._thread = thread
+            return thread
+
+    monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    return TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+
+def test_rerun_after_a_stop_starts_once_the_model_call_returns(tmp_path, monkeypatch):
+    """Regression: stop only lands when the in-flight model call returns. A
+    rerun during that window started nothing, and nobody started anything after
+    — the step sat pending until the user clicked again."""
+    import threading
+    import time
+
+    engines: list[str] = []
+    release = threading.Event()
+    client = _slow_engine_client(tmp_path, monkeypatch, engines, release)
+    try:
+        sid = client.post("/api/sessions", json={
+            "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+        client.put(f"/api/sessions/{sid}/flow",
+                   json={"steps": [{"role": "backend", "task": "t"}]})
+        client.post(f"/api/sessions/{sid}/start")
+        assert engines == [sid]
+
+        session = client.app.state.store.get(sid)
+        client.post(f"/api/sessions/{sid}/stop")           # still mid-inference
+        step_id = session.flow.steps[0].id
+        body = client.post(f"/api/sessions/{sid}/steps/{step_id}/rerun").json()
+
+        assert body["restarted"] is False
+        assert "model call" in body["waiting_for"]         # not silently nothing
+        assert engines == [sid]
+
+        release.set()                                      # the call returns
+        for _ in range(100):
+            if len(engines) > 1:
+                break
+            time.sleep(0.05)
+        assert engines == [sid, sid]                       # handed over, no click
+        assert not session.stopping
+    finally:
+        release.set()
+
+
+def test_rerunning_a_step_un_pauses_the_session(tmp_path, monkeypatch):
+    """"Run this step" and "stay paused" cannot both be honoured, and only one
+    of them was just asked for."""
+    engines: list[str] = []
+    client = _client(tmp_path, monkeypatch, engines)
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow",
+               json={"steps": [{"role": "backend", "task": "t"}]})
+    client.post(f"/api/sessions/{sid}/start")
+    client.post(f"/api/sessions/{sid}/pause")
+
+    session = client.app.state.store.get(sid)
+    assert session.paused
+    body = client.post(f"/api/sessions/{sid}/steps/{session.flow.steps[0].id}/rerun").json()
+
+    assert body["resumed"] is True
+    assert not session.paused
+    assert body["restarted"] is True
+
+
+def test_only_one_handover_is_armed_per_session(tmp_path, monkeypatch):
+    """Clicking rerun five times must not queue five engines."""
+    import threading
+
+    engines: list[str] = []
+    release = threading.Event()
+    client = _slow_engine_client(tmp_path, monkeypatch, engines, release)
+    try:
+        sid = client.post("/api/sessions", json={
+            "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+        client.put(f"/api/sessions/{sid}/flow",
+                   json={"steps": [{"role": "backend", "task": "t"}]})
+        client.post(f"/api/sessions/{sid}/start")
+        client.post(f"/api/sessions/{sid}/stop")
+
+        step_id = client.app.state.store.get(sid).flow.steps[0].id
+        for _ in range(5):
+            client.post(f"/api/sessions/{sid}/steps/{step_id}/rerun")
+
+        release.set()
+        import time
+        time.sleep(0.4)
+        assert len(engines) == 2        # the original and exactly one successor
+    finally:
+        release.set()

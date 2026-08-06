@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -60,14 +61,44 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return bool(thread is not None and thread.is_alive())
 
     def ensure_running(session) -> bool:
-        """Start an engine if none is live and there is pending work."""
+        """Start an engine if none is live and there is pending work.
+
+        A stopping engine counts as live — it is still inside a model call and
+        will exit when that returns. Starting a second one now would run the
+        same step twice, so we wait for the first to die instead. Without this
+        the step sits pending forever: the old engine unwinds and nobody starts
+        a new one.
+        """
         if engine_alive(session):
+            if session.stopping:
+                _start_when_free(session)
             return False
         if session.flow.next_pending() is None:
             return False
         session.error = None
+        session.clear_stop()
         FlowEngine(session, config, bus, on_change=lambda: touch(session)).start()
         return True
+
+    def _start_when_free(session) -> None:
+        """Hand over to a fresh engine the moment the stopping one exits."""
+        thread = getattr(session, "_thread", None)
+        if thread is None or getattr(session, "_handover", None) is not None:
+            return
+
+        def wait_and_start():
+            thread.join(timeout=900)
+            session._handover = None
+            if session.flow.next_pending() is not None and not engine_alive(session):
+                session.clear_stop()
+                session.error = None
+                bus.emit("run_started", session.id, payload={
+                    "reason": "the previous run finished unwinding", "steps": 1})
+                FlowEngine(session, config, bus, on_change=lambda: touch(session)).start()
+
+        session._handover = threading.Thread(
+            target=wait_and_start, name=f"handover-{session.id}", daemon=True)
+        session._handover.start()
 
     def refresh_team(session):
         """Re-bind a session's team to the current library definitions."""
@@ -769,6 +800,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(404, "no such step")
         step.status = "pending"
         step.attempts = []          # a rerun is a fresh attempt, not attempt N+1
+        # "Run this step" and "stay paused" cannot both be honoured, and only
+        # one of them was asked for just now.
+        was_paused = session.paused
+        session.resume()
         bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
         touch(session)
         # Marking it pending is not enough: if the previous run already
@@ -777,7 +812,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if restarted:
             bus.emit("run_started", session_id,
                      payload={"reason": f"rerun of {step.role} step", "steps": 1})
-        return {**step.to_dict(), "restarted": restarted, "status_now": session.status}
+        # A stopping engine is still inside a model call; a live one will reach
+        # this step on its own. Either way the click did something, and saying
+        # which is the difference between "queued" and "broken".
+        pending_on = ("the current model call to finish" if session.stopping
+                      else "the running step to finish" if engine_alive(session)
+                      else "")
+        return {**step.to_dict(), "restarted": restarted,
+                "resumed": was_paused, "waiting_for": pending_on,
+                "status_now": session.status}
 
     @app.post("/api/sessions/{session_id}/steps/{step_id}/skip")
     def skip(session_id: str, step_id: str):
