@@ -60,6 +60,18 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     def touch(session):
         store.save(session)
 
+    #: Background tasks, held until they finish. asyncio keeps only a weak
+    #: reference to a task, so one that nothing else refers to can be collected
+    #: mid-flight and silently cancelled — which is how a split that was really
+    #: running simply never reported back.
+    _background: set = set()
+
+    def _spawn(coro):
+        task = asyncio.ensure_future(coro)
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+        return task
+
     #: One broker per session: a refused action asks the user instead of ending
     #: the step, and the answer can widen the policy for the rest of the run.
     brokers: dict[str, ApprovalBroker] = {}
@@ -759,7 +771,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                     "message": (f"{len(oversized)} step(s) are over "
                                 f"{config.max_step_points} points — breaking them up."),
                 })
-                asyncio.create_task(_split_in_background(session, proposal))
+                _spawn(_split_in_background(session, proposal))
         touch(session)
         return session.to_dict()
 

@@ -4000,3 +4000,85 @@ def test_the_orchestrator_can_put_a_loop_on_a_step(tmp_path, monkeypatch):
     steps = result["proposal"]["steps"]
     assert steps[-1]["loop"] == "test-and-fix" and steps[-1]["role"] == ""
     assert "added_final_check" not in result["proposal"]   # it did not forget
+
+
+def test_the_background_split_reports_back(tmp_path, monkeypatch):
+    """Regression: the split ran and the plan was updated on the server, but
+    nothing told the browser, so the screen kept the un-split plan."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    proposal = {"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "loop": "", "task": "build everything", "points": 8,
+         "check": None, "on_fail": None, "max_loops": 2}]}
+
+    def split(p, **kw):
+        return {**p, "split": [{"task": "build everything", "points": 8,
+                                "into": ["part one", "part two"]}],
+                "steps": [{"role": "backend", "loop": "", "task": "part one", "points": 3},
+                          {"role": "backend", "loop": "", "task": "part two", "points": 3}]}
+
+    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
+                        lambda **kw: {"text": "here", "proposal": proposal})
+    monkeypatch.setattr(app_module.orchestrator_agent, "split_oversized", split)
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+
+    # The context manager runs the lifespan, so background tasks progress the
+    # way they do under a live server rather than only during a request.
+    with TestClient(app) as client:
+        sid = client.post("/api/sessions",
+                          json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+        body = client.post(f"/api/sessions/{sid}/chat", json={"message": "go"}).json()
+        # The response is the un-split plan: that is the point of showing it early.
+        assert [s["task"] for s in body["flow"]["steps"]] == ["build everything"]
+
+        for _ in range(50):
+            client.get("/api/config")                 # drive the loop
+            events = [e for e in app.state.bus.history(sid) if e.type == "flow_updated"]
+            if events:
+                break
+            time.sleep(0.05)
+
+    assert events, "the split finished but never reported back"
+    assert events[-1].payload["message"] == "Split into 2 steps."
+    assert [s.task for s in app.state.store.get(sid).flow.steps] == ["part one", "part two"]
+
+
+def test_the_step_being_split_is_named_in_the_event(tmp_path, monkeypatch):
+    """So the UI can mark that card rather than the whole plan."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    proposal = {"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "loop": "", "task": "small", "points": 2},
+        {"role": "backend", "loop": "", "task": "huge", "points": 8}]}
+    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
+                        lambda **kw: {"text": "h", "proposal": proposal})
+    monkeypatch.setattr(app_module.orchestrator_agent, "split_oversized",
+                        lambda p, **kw: {**p, "split": []})
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    with TestClient(app) as client:
+        sid = client.post("/api/sessions",
+                          json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+        client.post(f"/api/sessions/{sid}/chat", json={"message": "go"})
+        time.sleep(0.1)
+        client.get("/api/config")
+
+        notice = next(e for e in app.state.bus.history(sid) if e.type == "splitting_steps")
+        session = app.state.store.get(sid)
+        assert notice.payload["step_ids"] == [session.flow.steps[1].id]   # the 8, not the 2
+        assert notice.payload["tasks"] == ["huge"]

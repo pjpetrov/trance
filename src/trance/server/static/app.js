@@ -266,9 +266,22 @@ async function sendChat() {
   state.session.chat.push({ role: "user", content: text });
   renderChat();
   try {
-    state.session = await api(`/api/sessions/${state.session.id}/chat`, {
+    // The response is a snapshot taken when the request returned. Splitting
+    // runs after that and pushes a newer flow over the websocket, so assigning
+    // the whole session here can put the un-split plan back — the split really
+    // happened, and the screen silently went backwards.
+    const before = state.flowVersion || 0;
+    const body = await api(`/api/sessions/${state.session.id}/chat`, {
       method: "POST", body: { message: text },
     });
+    const newer = (state.flowVersion || 0) !== before;
+    const flow = state.session.flow;
+    const team = state.session.team;
+    state.session = body;
+    if (newer) {
+      state.session.flow = flow;
+      state.session.team = team;
+    }
     renderChat();
     renderFlowEditor();
     renderSessionBar();
@@ -831,6 +844,9 @@ function isPlanning() {
 function applyRefinedFlow(payload) {
   state.splitting = null;
   if (!state.session) return;
+  //: Bumped on every flow the server pushes, so a slower response cannot put
+  //: an older one back.
+  state.flowVersion = (state.flowVersion || 0) + 1;
   const edited = state.draftBase && draftFingerprint() !== state.draftBase;
   state.session.flow = payload.flow;
   if (!isPlanning()) { renderFlowView(); return; }

@@ -272,6 +272,16 @@ try {
     console.log("BROKEN: a hand-edited draft was clobbered by a background split");
     process.exit(1);
   }
+  // The race the user hit: a split lands while the chat response is still in
+  // flight, and the older response must not put the un-split plan back.
+  const versionBefore = api.state.flowVersion || 0;
+  api.applyRefinedFlow({ flow: { steps: [{ id: "z", role: "backend", task: "split part",
+                                           status: "pending", check: null, on_fail: null,
+                                           max_loops: 2, attempts: [] }] } });
+  if ((api.state.flowVersion || 0) === versionBefore) {
+    console.log("BROKEN: a pushed flow did not bump the version a stale response checks");
+    process.exit(1);
+  }
   void untouched;
   // The badge must call out a step that is over the limit — that is its job.
   if (!api.pointsBadge({ points: 8 }).className.includes("over")) {
