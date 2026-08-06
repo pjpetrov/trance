@@ -85,9 +85,10 @@ class AgentTurn:
     def outcome(self) -> tuple[str, str]:
         """(outcome, detail) reported by the agent for its own step.
 
-        Returns ("SUCCESS", "") when the agent says the work is done, or
-        ("FAILED", reason) when it reports anything else. An agent that never
-        says is taken at its word — the fact check exists to catch that.
+        An agent that never states one is NOT taken as successful. A step that
+        described a real defect and then stopped mid-thought was being marked
+        done purely because nothing said otherwise, which is the worst way to
+        be wrong here.
         """
         for line in reversed(self.text.splitlines()):
             stripped = line.strip()
@@ -97,7 +98,8 @@ class AgentTurn:
             if body.upper().startswith(OUTCOME_SUCCESS):
                 return OUTCOME_SUCCESS, ""
             return "FAILED", body or "no reason given"
-        return OUTCOME_SUCCESS, ""
+        return "UNSTATED", ("the agent finished without stating an outcome, so there is "
+                            "nothing to say the work succeeded")
 
     @property
     def reported_outcome(self) -> bool:
@@ -270,6 +272,34 @@ def run_agent(
         turn.model_event_ids.append(event.id)
         turn.text = response.text
         turn.stop_reason = "max_rounds"
+
+    # A missing OUTCOME line is usually a slip, not a failure. One short
+    # question resolves it without spending a whole loop of the block.
+    if turn.stop_reason not in ("cancelled",) and not turn.reported_outcome:
+        messages.append({
+            "role": "user",
+            "content": (
+                "You did not end with an outcome line. Reply with exactly one line and "
+                "nothing else:\n"
+                "  OUTCOME: SUCCESS          — the task is done and you believe it works\n"
+                "  OUTCOME: FAILED — <what is wrong>\n"
+                "Report FAILED if you did not finish, could not run something, or found a "
+                "problem — including one you were not asked to look for."),
+        })
+        messages, _ = fit_context(messages, model_config.input_budget)
+        follow_up = client.complete(messages, tools=None)
+        totals["input_tokens"] += follow_up.usage.get("prompt_tokens", 0)
+        totals["output_tokens"] += follow_up.usage.get("completion_tokens", 0)
+        bus.emit("model_call", session_id, agent=role.name, step_id=step_id, payload={
+            "round": turn.rounds + 1, "model": model_config.model,
+            "base_url": model_config.base_url, "messages": messages,
+            "response_text": follow_up.text, "reasoning": follow_up.reasoning,
+            "tool_calls": [], "finish_reason": follow_up.finish_reason,
+            "usage": follow_up.usage, "summary": summarize_messages(messages),
+            "asked_for_outcome": True,
+        })
+        if follow_up.text.strip():
+            turn.text = f"{turn.text}\n\n{follow_up.text.strip()}"
 
     turn.usage = totals
     return turn

@@ -86,6 +86,25 @@ def _json_objects(text: str):
                     break
 
 
+#: Qwen and other Hermes-template models emit calls as XML when the structured
+#: channel is not used: <function=name><parameter=key>value</parameter></function>
+_XML_FUNCTION = re.compile(r"<function=([\w.-]+)\s*>(.*?)</function\s*>", re.DOTALL)
+_XML_PARAM = re.compile(r"<parameter=([\w.-]+)\s*>(.*?)</parameter\s*>", re.DOTALL)
+
+
+def _xml_tool_calls(text: str, known_names: set[str]) -> list[ToolCall]:
+    recovered: list[ToolCall] = []
+    for match in _XML_FUNCTION.finditer(text):
+        name = match.group(1)
+        if name not in known_names:
+            continue
+        args = {key: value.strip() for key, value in _XML_PARAM.findall(match.group(2))}
+        recovered.append(ToolCall(
+            id=f"salvaged_xml_{len(recovered)}", name=name, arguments=args,
+            raw_arguments=json.dumps(args)))
+    return recovered
+
+
 def salvage_tool_calls(text: str, known_names: set[str]) -> list[ToolCall]:
     """Recover tool calls a model emitted as prose instead of structured calls.
 
@@ -99,6 +118,9 @@ def salvage_tool_calls(text: str, known_names: set[str]) -> list[ToolCall]:
     """
     if not text:
         return []
+    xml = _xml_tool_calls(text, known_names)
+    if xml:
+        return xml
     recovered: list[ToolCall] = []
     for blob in _json_objects(text):
         try:

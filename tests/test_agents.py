@@ -1365,13 +1365,16 @@ def test_outcome_is_read_from_the_agents_own_last_line():
     assert outcome == "FAILED" and "2 tests failed" in reason
 
 
-def test_an_agent_that_says_nothing_is_taken_at_its_word():
-    """The fact check is what catches this, not a pessimistic default."""
+def test_an_agent_that_states_nothing_is_not_counted_as_success():
+    """A tester described a real defect, stopped mid-thought, and the step was
+    marked done purely because nothing said otherwise."""
     from trance.agents.runner import AgentTurn
 
-    turn = AgentTurn(text="I wrote the file.")
-    assert turn.outcome == ("SUCCESS", "")
-    assert turn.reported_outcome is False        # visible in the event
+    turn = AgentTurn(text="I've written a test file. Now I need to actually run it.")
+    outcome, reason = turn.outcome
+    assert outcome == "UNSTATED"
+    assert "without stating an outcome" in reason
+    assert turn.reported_outcome is False
 
 
 def test_the_last_outcome_line_wins():
@@ -1398,3 +1401,70 @@ def test_the_factchecker_checks_truthfulness_not_quality():
     assert "report of its own work is TRUE" in prompt
     assert "not a reviewer" in prompt
     assert "the whole run stops" in prompt     # it knows the weight of a FAIL
+
+
+def test_an_unstated_outcome_opens_the_loop(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "reviewer"])
+    step = Step(role="backend", task="t", on_fail="reviewer", max_loops=2)
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        first = order.count("backend") == 1
+        return _Turn(None, "x", outcome=("UNSTATED", "never said") if first
+                     else ("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert order == ["backend", "reviewer", "backend"]   # it did not simply pass
+    assert step.status == "done"
+
+
+# ------------------------------------- XML-shaped tool calls (Qwen/Hermes)
+
+def test_xml_tool_calls_are_recovered():
+    """A tester emitted <function=run_command> as text, so the command never
+    ran and the step was marked done anyway."""
+    from trance.worker.client import salvage_tool_calls
+
+    text = ("I've written a comprehensive test file. Now I need to actually run it.\n\n"
+            "<tool_call>\n<function=run_command>\n<parameter=command>\n"
+            "python3 tests/test_server_load.py\n</parameter>\n</function>\n</tool_call>")
+    (call,) = salvage_tool_calls(text, {"run_command", "write_file"})
+    assert call.name == "run_command"
+    assert call.arguments == {"command": "python3 tests/test_server_load.py"}
+
+
+def test_xml_salvage_handles_several_parameters():
+    from trance.worker.client import salvage_tool_calls
+
+    text = ("<function=write_file><parameter=path>a.py</parameter>"
+            "<parameter=content>X = 1</parameter></function>")
+    (call,) = salvage_tool_calls(text, {"write_file"})
+    assert call.arguments == {"path": "a.py", "content": "X = 1"}
+
+
+def test_xml_salvage_refuses_tools_the_role_lacks():
+    from trance.worker.client import salvage_tool_calls
+
+    assert salvage_tool_calls(
+        "<function=run_command><parameter=command>rm -rf /</parameter></function>",
+        {"write_file"}) == []
+
+
+def test_json_salvage_still_works_alongside_xml():
+    from trance.worker.client import salvage_tool_calls
+
+    (call,) = salvage_tool_calls(
+        '{"name": "write_file", "arguments": {"path": "a.py", "content": "x"}}',
+        {"write_file"})
+    assert call.name == "write_file" and call.arguments["path"] == "a.py"
+
+
+def test_the_tester_is_forbidden_from_weakening_tests():
+    prompt = BUILTIN_ROLES["tester"].system_prompt
+    assert "Never weaken a test to make it pass" in prompt
+    assert "leave the test as it is and report FAILED" in prompt
+    assert "defect you were not asked about" in prompt

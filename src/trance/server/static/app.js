@@ -1850,6 +1850,14 @@ function consoleAppend(event) {
     }
 
     case "model_call": {
+      if (p.asked_for_outcome) {
+        consolePush(consoleEntry({
+          kind: "think", icon: "?", time, tag: shortModel(p.model),
+          label: `asked for an outcome → ${clip(p.response_text, 60)}`,
+          body: () => el("pre", null, p.response_text || ""),
+        }));
+        return;
+      }
       const wants = (p.tool_calls || []).map((t) => t.name);
       const label = wants.length
         ? `thinking → ${wants.join(", ")}`
@@ -1890,12 +1898,12 @@ function consoleAppend(event) {
 
     case "step_outcome": {
       const bad = p.outcome !== "SUCCESS";
+      const label = p.outcome === "SUCCESS" ? "outcome: SUCCESS"
+        : p.outcome === "UNSTATED" ? "outcome: not stated — treated as unfinished"
+        : `outcome: FAILED — ${clip(p.reason, 80)}`;
       consolePush(consoleEntry({
         kind: bad ? "cmd" : "write", icon: bad ? "!" : ICON.verdict, time,
-        tag: event.agent, failed: bad,
-        label: bad ? `outcome: FAILED — ${clip(p.reason, 80)}`
-                   : `outcome: SUCCESS${p.reported ? "" : " (not stated — assumed)"}`,
-        open: bad,
+        tag: event.agent, failed: bad, label, open: bad,
         body: bad ? () => el("pre", null, p.reason || "") : null,
       }));
       return;
