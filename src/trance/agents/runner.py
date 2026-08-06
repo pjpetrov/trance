@@ -238,6 +238,7 @@ def run_agent(
     project_map: str = "",
     goal: str = "",
     placement: str = "",
+    approve=None,
 ) -> AgentTurn:
     model_config = config
     client = client_for(model_config)
@@ -245,7 +246,8 @@ def run_agent(
         bus.emit(kind, session_id, agent=role.name, step_id=step_id, payload=payload)
 
     memory = memory if memory is not None else ProjectMemory(project)
-    tools = AgentTools(project, role, graph_tools, notify=notify, memory=memory)
+    tools = AgentTools(project, role, graph_tools, notify=notify, memory=memory,
+                       approve=approve, session_id=session_id, step_id=step_id)
     specs = tools.specs()
 
     user_parts = []

@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..agents import orchestrator as orchestrator_agent
 from ..agents.orchestrator import POINTS
+from ..agents.approval import ALWAYS, ApprovalBroker, DECISIONS
 from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
 from ..agents.store import CommandStore, PROTECTED, RoleStore, validate as validate_agent
@@ -50,6 +51,70 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     def touch(session):
         store.save(session)
 
+    #: One broker per session: a refused action asks the user instead of ending
+    #: the step, and the answer can widen the policy for the rest of the run.
+    brokers: dict[str, ApprovalBroker] = {}
+    app.state.brokers = brokers
+
+    def broker_for(session) -> ApprovalBroker:
+        existing = brokers.get(session.id)
+        if existing is not None:
+            existing.revive()
+            return existing
+
+        def on_request(request):
+            bus.emit("approval_requested", session.id, agent=request.agent,
+                     step_id=request.step_id, payload={
+                         **request.to_dict(),
+                         "timeout_s": config.approval_timeout_s,
+                         "message": _approval_message(request)})
+
+        def on_resolved(request):
+            bus.emit("approval_resolved", session.id, agent=request.agent,
+                     step_id=request.step_id, payload=request.to_dict())
+
+        broker = ApprovalBroker(
+            on_request=on_request, on_resolved=on_resolved,
+            on_always=lambda request: _widen_policy(session, request),
+            timeout_s=config.approval_timeout_s, enabled=config.ask_on_refusal)
+        brokers[session.id] = broker
+        return broker
+
+    def _approval_message(request) -> str:
+        if request.kind == "write":
+            return (f"{request.agent} wants to write {request.subject}, which is outside "
+                    f"its remit ({', '.join(request.detail.get('remit') or []) or 'nothing'}).")
+        return (f"{request.agent} wants to run a command using "
+                f"{', '.join(request.detail.get('programs') or [])}, which is not on its "
+                f"allowlist.")
+
+    def _widen_policy(session, request) -> None:
+        """Make "always" mean it — the same ask must not come back next step."""
+        if request.kind == "write":
+            role = roles.get(request.agent)
+            if role is not None and request.subject not in role.paths:
+                # The exact path, not a widened glob. The user allowed this
+                # file; inferring "and everything like it" is not what they said.
+                role.paths = [*role.paths, request.subject]
+                roles.upsert(role)
+                for other in store.all():
+                    refresh_team(other)
+                    touch(other)
+            return
+
+        programs = [p for p in request.detail.get("programs") or [] if p]
+        role = roles.get(request.agent)
+        if role is not None and role.commands:
+            role.commands = sorted(set(role.commands) | set(programs))
+            roles.upsert(role)
+            for other in store.all():
+                refresh_team(other)
+                touch(other)
+            return
+        policy = commands.update(allowed=sorted(set(commands.policy.allowed) | set(programs)))
+        set_command_policy(policy)
+        bus.emit("commands_updated", session.id, payload=policy.to_dict())
+
     def engine_alive(session) -> bool:
         """Is a flow engine actually executing this session right now?
 
@@ -77,7 +142,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             return False
         session.error = None
         session.clear_stop()
-        FlowEngine(session, config, bus, on_change=lambda: touch(session)).start()
+        FlowEngine(session, config, bus, on_change=lambda: touch(session),
+                   approve=broker_for(session).ask).start()
         return True
 
     def _start_when_free(session) -> None:
@@ -94,7 +160,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 session.error = None
                 bus.emit("run_started", session.id, payload={
                     "reason": "the previous run finished unwinding", "steps": 1})
-                FlowEngine(session, config, bus, on_change=lambda: touch(session)).start()
+                FlowEngine(session, config, bus, on_change=lambda: touch(session),
+                           approve=broker_for(session).ask).start()
 
         session._handover = threading.Thread(
             target=wait_and_start, name=f"handover-{session.id}", daemon=True)
@@ -685,8 +752,31 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if session.flow.next_pending() is None:
             raise HTTPException(409, "every step is finished — rerun one first")
         session.error = None
-        FlowEngine(session, config, bus, on_change=lambda: touch(session)).start()
+        FlowEngine(session, config, bus, on_change=lambda: touch(session),
+                   approve=broker_for(session).ask).start()
         return session.to_dict()
+
+    @app.get("/api/sessions/{session_id}/approvals")
+    def list_approvals(session_id: str):
+        """Outstanding asks, so a reloaded page does not lose the question."""
+        session = _need(store, session_id)
+        broker = brokers.get(session.id)
+        return {"pending": [r.to_dict() for r in (broker.pending() if broker else [])],
+                "enabled": config.ask_on_refusal, "timeout_s": config.approval_timeout_s}
+
+    @app.post("/api/sessions/{session_id}/approvals/{request_id}")
+    def resolve_approval(session_id: str, request_id: str, body: dict):
+        """once = do it now; always = do it and widen the policy; deny = refuse."""
+        session = _need(store, session_id)
+        decision = (body or {}).get("decision", "")
+        if decision not in DECISIONS:
+            raise HTTPException(400, f"decision must be one of {', '.join(DECISIONS)}")
+        broker = brokers.get(session.id)
+        request = broker.resolve(request_id, decision) if broker else None
+        if request is None:
+            raise HTTPException(404, "that request is no longer waiting — it may have "
+                                     "timed out, in which case it was denied")
+        return {**request.to_dict(), "widened": decision == ALWAYS}
 
     @app.post("/api/sessions/{session_id}/pause")
     def pause(session_id: str):
@@ -729,6 +819,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     @app.post("/api/sessions/{session_id}/stop")
     def stop(session_id: str):
         session = _need(store, session_id)
+        # Release anything blocked on a question first, or the engine cannot
+        # reach its own stop check to notice the stop.
+        if session.id in brokers:
+            brokers[session.id].abandon()
         session.stop()
         bus.emit("stopping", session_id, payload={
             "message": ("Stopping after the current agent turn. Resume will start a "

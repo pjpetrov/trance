@@ -137,6 +137,20 @@ try {
                  notes: ["- **backend**: port 3100"] } },
     { type: "memory_compacted", agent: "orchestrator",
       payload: { compacted: false, reason: "the rewrite produced no notes" } },
+    { type: "approval_requested", agent: "tester", step_id: "st1",
+      payload: { id: "ap_1", kind: "write", agent: "tester", subject: "jest.config.js",
+                 detail: { remit: ["tests/**"] }, timeout_s: 300,
+                 message: "tester wants to write jest.config.js" } },
+    { type: "approval_requested", agent: "tester", step_id: "st1",
+      payload: { id: "ap_2", kind: "command", agent: "tester", subject: "npx jest",
+                 detail: { programs: ["npx"] }, timeout_s: 300,
+                 message: "tester wants to run npx" } },
+    { type: "approval_resolved", agent: "tester", step_id: "st1",
+      payload: { id: "ap_1", kind: "write", subject: "jest.config.js", decision: "always",
+                 detail: {} } },
+    { type: "approval_resolved", agent: "tester", step_id: "st1",
+      payload: { id: "ap_2", kind: "command", subject: "npx jest", decision: "deny",
+                 detail: { timed_out: true } } },
   ]) {
     api.consoleAppend({ ...ev, ts: new Date().toISOString() });
     api.trackActivity(ev);

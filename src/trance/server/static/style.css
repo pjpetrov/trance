@@ -541,3 +541,26 @@ input.tiny { width: 62px; min-width: 0; }
 .badge.points.over {
   color: var(--warn); border-color: var(--warn); font-weight: 600;
 }
+
+
+/* ── permission prompt ─────────────────────────────────────────────────
+   Deliberately the loudest thing in the console: an agent thread is
+   blocked behind it and the run is going nowhere until it is answered. */
+.c-approval {
+  flex: 0 0 auto; border: 1px solid var(--warn); border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--panel-2));
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.c-approval-head { display: flex; gap: 8px; align-items: baseline; }
+.c-approval-icon { flex: 0 0 auto; }
+.c-approval-title { font-weight: 600; color: var(--fg); }
+.c-approval-subject {
+  margin: 0; padding: 7px 9px; border-radius: 6px; background: var(--bg);
+  font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+  word-break: break-all; max-height: 8em; overflow-y: auto;
+}
+.c-approval.settled {
+  border-style: dashed; border-color: var(--line); background: transparent;
+  padding: 5px 9px;
+}
+.c-approval-said { color: var(--muted); font-size: 12.5px; }

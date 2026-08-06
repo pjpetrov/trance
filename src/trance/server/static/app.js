@@ -609,6 +609,54 @@ function renderRun() {
   loadMemory();      // only the count; the notes load when the modal opens
 }
 
+/* ─────────────── a refusal, asked rather than enforced ─────────────── */
+
+/* The agent's thread is blocked while this is on screen. A remit is a good
+ * default and a bad absolute — but loosening it in advance defeats the point,
+ * so the boundary asks instead. "always" writes the answer into the policy. */
+
+function approvalEntry(event) {
+  const p = event.payload || {};
+  const wrap = el("div", "c-entry c-approval");
+  wrap.id = `approval-${p.id}`;
+
+  const head = el("div", "c-approval-head");
+  head.append(el("span", "c-approval-icon", "🔒"));
+  head.append(el("span", "c-approval-title", p.message || "Permission needed"));
+  wrap.append(head);
+  wrap.append(el("pre", "c-approval-subject", p.subject || ""));
+
+  const row = el("div", "row small");
+  const decide = async (decision, label) => {
+    for (const b of row.querySelectorAll("button")) b.disabled = true;
+    try {
+      await api(`/api/sessions/${state.session.id}/approvals/${p.id}`,
+                { method: "POST", body: { decision } });
+      toast(label);
+    } catch (_) {
+      for (const b of row.querySelectorAll("button")) b.disabled = false;
+    }
+  };
+
+  const once = el("button", "primary", "Allow once");
+  once.onclick = () => decide("once", "Allowed for this action only.");
+  const always = el("button", null, p.kind === "write"
+    ? `Always allow ${p.agent} to write this`
+    : `Always allow ${p.agent} to run this`);
+  always.onclick = () => decide("always", "Allowed, and added to the policy.");
+  const deny = el("button", "danger", "Deny");
+  deny.onclick = () => decide("deny", "Refused — the agent was told why.");
+  row.append(once, always, deny);
+  wrap.append(row);
+
+  if (p.timeout_s) {
+    wrap.append(el("div", "muted small",
+      `The agent is waiting. With no answer in ${Math.round(p.timeout_s / 60)} min `
+      + "this is refused, which is what would have happened anyway."));
+  }
+  return wrap;
+}
+
 /* ───────────────── the team's shared memory ───────────────────────── */
 
 /* Behind a button rather than on the run screen: it is a handful of lines that
@@ -776,6 +824,8 @@ function connect(sessionId) {
       renderSessionBar();
       return;
     }
+    if (event.type === "approval_requested") setActivity(
+      event.payload.agent, "waiting for you to allow or refuse an action");
     if (event.type === "splitting_steps") {
       state.splitting = event.payload;
       if (isPlanning()) renderFlowEditor();
@@ -2369,6 +2419,26 @@ function consoleAppend(event) {
         },
       }));
       return;
+
+    case "approval_requested":
+      consolePush(approvalEntry(event));
+      return;
+
+    case "approval_resolved": {
+      // Replace the live card with what was decided, so scrolling back does
+      // not show a question that is no longer open.
+      const card = document.getElementById(`approval-${p.id}`);
+      if (card) {
+        card.className = "c-approval settled";
+        card.innerHTML = "";
+        const said = p.decision === "deny"
+          ? (p.detail && p.detail.timed_out ? "no answer in time — refused"
+             : p.detail && p.detail.abandoned ? "run stopped — refused" : "refused")
+          : p.decision === "always" ? "allowed, and allowed from now on" : "allowed once";
+        card.append(el("span", "c-approval-said", `${p.subject} — ${said}`));
+      }
+      return;
+    }
 
     case "splitting_steps":
       consolePush(consoleEntry({

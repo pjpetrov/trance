@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import copy
+
 import pytest
 
 from trance.agents.roles import BUILTIN_ROLES, AgentRole
@@ -1796,6 +1798,14 @@ def test_a_rerunning_agent_is_reminded_of_its_own_previous_pass(tmp_path, monkey
 
 # ---------------------------------------------- building a file in pieces
 
+def _tools_with_approval(tmp_path, role, broker):
+    from trance.agents.tools import AgentTools
+
+    role = BUILTIN_ROLES[role] if isinstance(role, str) else role
+    return AgentTools(tmp_path, role, None, notify=lambda *a, **k: None,
+                      approve=broker.ask, session_id="s", step_id="st")
+
+
 def _tools(tmp_path, role_name="backend"):
     from trance.agents.tools import AgentTools
 
@@ -2885,3 +2895,172 @@ def test_the_re_ask_says_that_no_changes_needed_is_success(tmp_path, monkeypatch
 
     _turn_with(monkeypatch, [ChatResponse(text="OUTCOME: already fine"),
                              ChatResponse(text="OUTCOME: SUCCESS")], project=tmp_path)
+
+
+# ------------------------------ asking instead of refusing outright
+
+def test_a_refused_write_asks_before_it_refuses(tmp_path):
+    """The tester needed jest.config.js, nobody had given it one, and the
+    refusal cost a whole step. A remit is a good default and a bad absolute."""
+    import threading
+
+    from trance.agents.approval import ONCE, ApprovalBroker
+
+    broker = ApprovalBroker(on_request=lambda r: threading.Timer(
+        0.01, broker.resolve, args=(r.id, ONCE)).start())
+    tools = _tools_with_approval(tmp_path, "tester", broker)
+
+    outcome = tools.call("write_file", {"path": "jest.config.js", "content": "module.exports={}"})
+    assert outcome.ok is True
+    assert (tmp_path / "jest.config.js").read_text() == "module.exports={}"
+    assert outcome.remit_violation is None
+
+
+def test_a_denied_write_still_refuses_exactly_as_before(tmp_path):
+    import threading
+
+    from trance.agents.approval import DENY, ApprovalBroker
+
+    broker = ApprovalBroker(on_request=lambda r: threading.Timer(
+        0.01, broker.resolve, args=(r.id, DENY)).start())
+    tools = _tools_with_approval(tmp_path, "tester", broker)
+
+    outcome = tools.call("write_file", {"path": "jest.config.js", "content": "x"})
+    assert outcome.ok is False
+    assert outcome.remit_violation == "jest.config.js"
+    assert not (tmp_path / "jest.config.js").exists()
+
+
+def test_a_refused_command_asks_too(tmp_path):
+    import threading
+
+    from trance.agents.approval import ONCE, ApprovalBroker
+
+    asked = []
+    broker = ApprovalBroker(on_request=lambda r: (asked.append(r), threading.Timer(
+        0.01, broker.resolve, args=(r.id, ONCE)).start()))
+    role = copy.deepcopy(BUILTIN_ROLES["tester"])
+    role.commands = ["echo"]                       # npx is not on its list
+    tools = _tools_with_approval(tmp_path, role, broker)
+
+    outcome = tools.call("run_command", {"command": "npx --version"})
+    assert asked and asked[0].kind == "command"
+    assert "npx" in asked[0].detail["programs"]
+    assert outcome.detail.get("kind") == "command"        # it actually ran
+
+
+def test_no_answer_in_time_denies(tmp_path):
+    """Blocking a worker on a human is only safe with a way out."""
+    from trance.agents.approval import ApprovalBroker
+
+    broker = ApprovalBroker(on_request=lambda r: None, timeout_s=0.05)
+    tools = _tools_with_approval(tmp_path, "tester", broker)
+
+    outcome = tools.call("write_file", {"path": "jest.config.js", "content": "x"})
+    assert outcome.ok is False and outcome.remit_violation == "jest.config.js"
+
+
+def test_stopping_releases_an_agent_waiting_on_an_answer(tmp_path):
+    """Otherwise the engine cannot reach its own stop check."""
+    import threading
+    import time
+
+    from trance.agents.approval import ApprovalBroker
+
+    broker = ApprovalBroker(on_request=lambda r: None, timeout_s=30)
+    tools = _tools_with_approval(tmp_path, "tester", broker)
+    result = {}
+
+    worker = threading.Thread(
+        target=lambda: result.update(
+            outcome=tools.call("write_file", {"path": "jest.config.js", "content": "x"})))
+    worker.start()
+    for _ in range(200):
+        if broker.pending():
+            break
+        time.sleep(0.01)
+
+    broker.abandon()
+    worker.join(timeout=5)
+    assert not worker.is_alive()                   # not stuck for 30s
+    assert result["outcome"].ok is False
+
+
+def test_asking_can_be_turned_off_entirely(tmp_path):
+    """An unattended run wants the old behaviour, immediately."""
+    from trance.agents.approval import ApprovalBroker
+
+    asked = []
+    broker = ApprovalBroker(on_request=lambda r: asked.append(r), enabled=False)
+    tools = _tools_with_approval(tmp_path, "tester", broker)
+
+    outcome = tools.call("write_file", {"path": "jest.config.js", "content": "x"})
+    assert outcome.ok is False and asked == []
+
+
+def test_always_writes_the_answer_into_the_policy(tmp_path):
+    """"always" has to mean it — the same question must not come back next step."""
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [{"role": "tester", "task": "t"}]})
+    client.post(f"/api/sessions/{sid}/start")
+    app.state.store.get(sid).stop()
+
+    broker = app.state.brokers[sid]
+    answers = {}
+
+    def ask():
+        answers["request"] = broker.ask(
+            kind="write", agent="tester", session_id=sid, step_id="st",
+            subject="jest.config.js", detail={"remit": ["tests/**"]})
+
+    worker = threading.Thread(target=ask)
+    worker.start()
+    for _ in range(200):
+        if broker.pending():
+            break
+        time.sleep(0.01)
+
+    pending = client.get(f"/api/sessions/{sid}/approvals").json()["pending"]
+    assert [r["subject"] for r in pending] == ["jest.config.js"]
+
+    body = client.post(f"/api/sessions/{sid}/approvals/{pending[0]['id']}",
+                       json={"decision": "always"}).json()
+    worker.join(timeout=5)
+
+    assert body["widened"] is True
+    assert answers["request"].allowed is True
+    # The exact path, not a widened glob: the user allowed this file.
+    tester = next(r for r in client.get("/api/agents").json()["agents"]
+                  if r["name"] == "tester")
+    assert "jest.config.js" in tester["paths"]
+
+
+def test_an_unknown_approval_is_a_404_not_a_hang(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+
+    gone = client.post(f"/api/sessions/{sid}/approvals/ap_nope", json={"decision": "once"})
+    assert gone.status_code == 404 and "timed out" in gone.json()["detail"]
+    bad = client.post(f"/api/sessions/{sid}/approvals/ap_1", json={"decision": "maybe"})
+    assert bad.status_code == 400

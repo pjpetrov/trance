@@ -84,7 +84,8 @@ def _similar(parent: Path, name: str) -> list[str]:
 
 
 class FlowEngine:
-    def __init__(self, session: Session, config: Config, bus: EventBus, on_change=None):
+    def __init__(self, session: Session, config: Config, bus: EventBus, on_change=None,
+                 approve=None):
         self.session = session
         self.config = config
         self.bus = bus
@@ -92,6 +93,8 @@ class FlowEngine:
         self.project = Path(session.project_dir).expanduser().resolve()
         #: The team's shared notebook, in the project so the user can read it.
         self.memory = ProjectMemory(self.project)
+        #: Asks the user before a refusal becomes final. None = refuse outright.
+        self.approve = approve
 
     # ----------------------------------------------------------------- run
 
@@ -214,6 +217,7 @@ class FlowEngine:
                 should_stop=lambda: session.stopping,
                 memory=self.memory, project_map=self._project_map(role, step.task),
                 goal=session.goal, placement=self._placement(step),
+                approve=self.approve,
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
@@ -342,6 +346,7 @@ class FlowEngine:
             should_stop=lambda: self.session.stopping,
             memory=self.memory, project_map=self._project_map(fixer, step.task),
             goal=self.session.goal,
+            approve=self.approve,
         )
         attempt.fix_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
         attempt.fix_summary = _summarize(turn.text)
@@ -444,6 +449,7 @@ class FlowEngine:
                 should_stop=lambda: self.session.stopping,
                 memory=self.memory, project_map=self._project_map(gate, step.task),
                 goal=self.session.goal,
+                approve=self.approve,
             )
             verdict = turn.verdict or "UNKNOWN"
             result = GateResult(

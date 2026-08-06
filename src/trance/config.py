@@ -102,6 +102,11 @@ class Config:
     #: Steps estimated above this are broken up before the flow is proposed.
     #: 0 turns splitting off and leaves the estimates as information only.
     max_step_points: int = 5
+    #: Ask the user before a refused write or command becomes final. Off means
+    #: refuse outright, which is what an unattended run wants.
+    ask_on_refusal: bool = True
+    #: How long a blocked agent waits for an answer before the refusal stands.
+    approval_timeout_s: float = 300.0
     runs_dir: str = "runs"
     #: Root for new projects. Empty means "the directory trance was started in".
     workspace: str = ""
@@ -231,6 +236,8 @@ class Config:
             "curator": asdict(self.curator),
             "max_recurate_rounds": self.max_recurate_rounds,
             "max_step_points": self.max_step_points,
+            "ask_on_refusal": self.ask_on_refusal,
+            "approval_timeout_s": self.approval_timeout_s,
             "runs_dir": self.runs_dir,
             "workspace": str(self.workspace_root),
         }

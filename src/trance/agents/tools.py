@@ -234,13 +234,19 @@ class ToolOutcome:
 
 class AgentTools:
     def __init__(self, project: Path, role: AgentRole, graph_tools=None, notify=None,
-                 memory=None):
+                 memory=None, approve=None, session_id: str = "", step_id: str = ""):
         self.project = Path(project).resolve()
         self.role = role
         self.graph = graph_tools
         #: The team's shared notebook. Every agent may write to it, including
         #: ones with no file access — it is how they talk to each other at all.
         self.memory = memory if memory is not None else ProjectMemory(self.project)
+        #: Called before a refusal becomes final: ask(kind=, subject=, detail=)
+        #: returns an ApprovalRequest. None means refuse without asking, which
+        #: is what the CLI and the tests do.
+        self._approve = approve
+        self.session_id = session_id
+        self.step_id = step_id
         #: Called with (event_type, payload) so a long command is visible while
         #: it runs instead of only when it finishes.
         self.notify = notify or (lambda kind, payload: None)
@@ -467,7 +473,10 @@ class AgentTools:
         if target is None:
             return ToolOutcome(f"Refused: {path!r} is outside the project directory.", ok=False)
         rel = target.relative_to(self.project).as_posix()
-        if not self.role.may_write(rel):
+        if not self.role.may_write(rel) and not self._ask_user(
+                "write", rel,
+                {"remit": list(self.role.paths), "agent_title": self.role.title,
+                 "append": append, "bytes": len(content or "")}):
             message = (
                 f"Refused: {rel} is outside your remit ({', '.join(self.role.paths) or 'none'}). "
                 f"You are the {self.role.title}. Report that this file needs changing and which "
@@ -507,6 +516,15 @@ class AgentTools:
                 "truncated": truncated,
             },
         )
+
+    def _ask_user(self, kind: str, subject: str, detail: dict) -> bool:
+        """Let the user overrule a refusal. False keeps the refusal."""
+        if self._approve is None:
+            return False
+        request = self._approve(
+            kind=kind, agent=self.role.name, session_id=self.session_id,
+            step_id=self.step_id, subject=subject, detail=detail)
+        return bool(request is not None and request.allowed)
 
     def remember(self, note: str) -> ToolOutcome:
         stored, message = self.memory.note(self.role.name, note)
@@ -692,7 +710,9 @@ class AgentTools:
         """Run through a shell, but still check every program it would invoke."""
         programs = programs_in(command)
         missing = _shell_missing(programs, self.allowed_commands)
-        if missing:
+        if missing and not self._ask_user(
+                "command", command,
+                {"programs": missing, "agent_has_own_list": bool(self.role.commands)}):
             return self._refuse_programs(missing, command)
         return self._execute(["bash", "-c", command], command, shell=True,
                              background=background)
@@ -750,7 +770,9 @@ class AgentTools:
                 f"exit code already tells you it is missing.",
                 ok=False,
             )
-        if parts[0] not in self.allowed_commands:
+        if parts[0] not in self.allowed_commands and not self._ask_user(
+                "command", command,
+                {"programs": [parts[0]], "agent_has_own_list": bool(self.role.commands)}):
             return self._refuse_programs([parts[0]], command)
         return self._execute(parts, command, shell=False, background=background)
 

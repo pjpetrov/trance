@@ -107,7 +107,7 @@ def test_rerun_restarts_the_engine_when_the_run_has_finished(tmp_path, monkeypat
     started = []
 
     class FakeEngine:
-        def __init__(self, session, config, bus, on_change=None):
+        def __init__(self, session, config, bus, on_change=None, **kwargs):
             self.session = session
 
         def start(self):
@@ -153,7 +153,7 @@ def test_rerun_does_not_launch_a_second_engine_while_one_is_live(tmp_path, monke
     keep_going = threading.Event()
 
     class FakeEngine:
-        def __init__(self, session, config, bus, on_change=None):
+        def __init__(self, session, config, bus, on_change=None, **kwargs):
             self.session = session
 
         def start(self):
@@ -196,7 +196,7 @@ def _client(tmp_path, monkeypatch, engines):
     from trance.server import app as app_module
 
     class FakeEngine:
-        def __init__(self, session, config, bus, on_change=None):
+        def __init__(self, session, config, bus, on_change=None, **kwargs):
             self.session = session
 
         def start(self):
@@ -244,7 +244,7 @@ def test_resume_while_merely_paused_does_not_start_a_second_engine(tmp_path, mon
     running = threading.Event()
 
     class FakeEngine:
-        def __init__(self, session, config, bus, on_change=None):
+        def __init__(self, session, config, bus, on_change=None, **kwargs):
             self.session = session
 
         def start(self):
@@ -306,7 +306,7 @@ def _slow_engine_client(tmp_path, monkeypatch, engines, release):
     from trance.server import app as app_module
 
     class FakeEngine:
-        def __init__(self, session, config, bus, on_change=None):
+        def __init__(self, session, config, bus, on_change=None, **kwargs):
             self.session = session
 
         def start(self):
