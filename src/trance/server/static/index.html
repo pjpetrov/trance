@@ -118,20 +118,22 @@
 <div id="settings" class="modal">
   <div class="modal-card">
     <div class="modal-head">
-      <h2>Providers &amp; models</h2>
+      <h2>Models</h2>
       <button id="close-settings" class="icon-btn">✕</button>
     </div>
-    <p class="muted small">Each provider has a <b>shortname</b> — that is the handle you attach to an
-      agent. Anthropic uses its own API; OpenAI, Ollama and llama.cpp share the OpenAI-compatible one.</p>
-    <h3>Models</h3>
-    <p class="muted small">A model is a named <b>provider + model id</b> pair. This is the single
-      thing you assign to an agent — no picking an endpoint and a model separately.</p>
+    <p class="muted small">A model is everything needed to call it: the API it speaks, where it
+      lives, the key, and the model id. Its <b>name</b> is the handle you attach to an agent —
+      one thing to define, one thing to pick.</p>
     <div id="preset-list" class="provider-list"></div>
     <div class="row"><button id="add-preset" class="primary">+ Add model</button></div>
 
-    <h3>Providers (endpoints &amp; credentials)</h3>
-    <div id="provider-list" class="provider-list"></div>
-    <div class="row"><button id="add-provider">+ Add provider</button></div>
+    <details id="providers-fold">
+      <summary class="muted small">shared providers (from trance.toml, or older setups)</summary>
+      <p class="muted small">A model may borrow its endpoint from one of these instead of
+        carrying its own. Nothing here is needed for a new model.</p>
+      <div id="provider-list" class="provider-list"></div>
+      <div class="row"><button id="add-provider">+ Add provider</button></div>
+    </details>
     <h3>Orchestrator</h3>
     <p class="muted small">The agent you chat with. Set from here, not per-role.</p>
     <div id="orchestrator-settings" class="row"></div>

@@ -466,3 +466,108 @@ def test_a_partial_agent_update_keeps_everything_else(tmp_path):
     assert after["system_prompt"] == before["system_prompt"]
     assert after["paths"] == before["paths"]
     assert after["toolsets"] == before["toolsets"]
+
+
+# ------------------------------- a model carries its own connection
+
+def test_a_model_can_define_its_own_endpoint():
+    """Adding a model used to mean editing two places and remembering which
+    provider it belonged to."""
+    from trance.config import Config
+    from trance.providers.base import ModelPreset
+
+    config = Config()
+    config.presets["claude"] = ModelPreset(
+        name="claude", kind="anthropic", model="claude-opus-5", api_key="sk-test")
+    resolved = config.resolve(config.worker, preset="claude")
+
+    assert resolved.kind == "anthropic"
+    assert resolved.model == "claude-opus-5"
+    assert resolved.api_key == "sk-test"
+    assert "localhost" not in resolved.base_url        # not the llamacpp default
+    assert resolved.context_window == 1_000_000        # the kind's default window
+
+
+def test_a_model_with_no_endpoint_still_uses_its_provider():
+    """Configs written before models carried connections keep working."""
+    from trance.config import Config
+    from trance.providers.base import ModelPreset, ProviderConfig
+
+    config = Config()
+    config.providers["local"] = ProviderConfig(name="local", kind="llamacpp")
+    config.presets["small"] = ModelPreset(name="small", provider="local", model="qwen")
+
+    resolved = config.resolve(config.worker, preset="small")
+    assert resolved.provider == "local" and resolved.model == "qwen"
+
+
+def test_a_models_key_is_redacted_but_kept():
+    from trance.providers.base import ModelPreset
+
+    preset = ModelPreset(name="claude", kind="anthropic", api_key="sk-secret")
+    shown = preset.to_dict()
+    assert shown["api_key"] == "***" and shown["has_key"] is True
+
+    # Echoing the placeholder back must not overwrite the real key with "***".
+    again = ModelPreset.from_dict({**shown, "name": "claude"})
+    assert again.api_key is None
+
+
+def test_a_model_is_created_without_defining_a_provider_first(tmp_path):
+    """The whole point: one definition, not two."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    body = client.put("/api/presets/claude", json={
+        "kind": "anthropic", "model": "claude-opus-5", "api_key": "sk-test"}).json()
+
+    assert body["self_contained"] is True
+    assert body["has_key"] is True and body["api_key"] == "***"
+    assert body["context_window"] == 1_000_000
+    assert "anthropic" in body["base_url"]
+
+
+def test_saving_a_model_again_does_not_drop_its_key(tmp_path):
+    """The UI echoes "***" back; treating that as the key would lock you out."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    client.put("/api/presets/claude", json={"kind": "anthropic", "model": "claude-opus-5",
+                                            "api_key": "sk-real"})
+    client.put("/api/presets/claude", json={"context_window": 500000})   # partial save
+
+    assert app.state.config.presets["claude"].api_key == "sk-real"
+    assert app.state.config.presets["claude"].context_window == 500000
+    assert app.state.config.presets["claude"].model == "claude-opus-5"
+
+
+def test_a_model_with_neither_a_kind_nor_a_provider_is_refused(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.providers.clear()
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    for provider in list(app.state.config.providers):
+        client.delete(f"/api/providers/{provider}")
+
+    response = client.put("/api/presets/orphan", json={"model": "x"})
+    assert response.status_code == 400
+    assert "API kind" in response.json()["detail"]

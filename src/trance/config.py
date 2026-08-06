@@ -146,7 +146,13 @@ class Config:
             provider = chosen_preset.provider
             model = model or chosen_preset.model
             max_tokens = max_tokens or (chosen_preset.max_tokens or None)
-        chosen = self.provider(provider or defaults.provider)
+        # A model that carries its own endpoint is its own provider. Falling
+        # through to a named one would send it to whatever that URL happens to
+        # be, which is how an Anthropic model ended up pointed at localhost.
+        if chosen_preset is not None and chosen_preset.self_contained:
+            chosen = chosen_preset.as_provider()
+        else:
+            chosen = self.provider(provider or defaults.provider)
         window = (chosen_preset.context_window if chosen_preset else 0) or chosen.context_window
         return ModelConfig(
             base_url=chosen.base_url,

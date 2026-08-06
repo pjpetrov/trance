@@ -1117,6 +1117,19 @@ function presetCard(preset, isNew) {
   name.placeholder = "e.g. cheap-tester";
   name.title = "Rename freely — agents using this model are re-pointed automatically";
 
+  // The connection lives on the model now: one definition, not two.
+  const kind = el("select", "compact");
+  Object.entries(state.kinds || {}).forEach(([id, spec]) => {
+    const opt = el("option", null, `${spec.label || id}`);
+    opt.value = id;
+    if (id === preset.kind) opt.selected = true;
+    kind.append(opt);
+  });
+  const borrowed = el("option", null, "— use a shared provider —");
+  borrowed.value = "";
+  if (!preset.kind) borrowed.selected = true;
+  kind.prepend(borrowed);
+
   const provider = el("select", "compact");
   state.providers.forEach((p) => {
     const opt = el("option", null, `${p.name} (${p.kind})`);
@@ -1124,6 +1137,17 @@ function presetCard(preset, isNew) {
     if (p.name === preset.provider) opt.selected = true;
     provider.append(opt);
   });
+
+  const baseUrl = el("input", "compact");
+  baseUrl.value = preset.base_url || "";
+  baseUrl.placeholder = "default for this API";
+  baseUrl.title = "Endpoint. Blank uses the default for the API kind.";
+
+  const key = el("input", "compact");
+  key.type = "password";
+  key.value = preset.has_key ? "***" : "";
+  key.placeholder = preset.has_key ? "saved — leave to keep" : "none needed locally";
+  key.title = "Sent as the API key. Leave the dots alone to keep the stored one.";
 
   const model = el("input", "compact");
   model.value = preset.model || "";
@@ -1137,9 +1161,10 @@ function presetCard(preset, isNew) {
   const ctx = el("input", "compact");
   ctx.type = "number";
   ctx.value = preset.context_window || "";
-  ctx.placeholder = "inherit provider";
-  ctx.title = "Override when the model's window differs from the provider default " +
-              "(e.g. Haiku is 200k where Opus is 1M). Wrong values 400 mid-run.";
+  ctx.placeholder = "default for this API";
+  ctx.title = "How much this model can hold. Set it when it differs from the API default " +
+              "(Haiku is 200k where Opus is 1M), and when your llama-server was started " +
+              "with a smaller -c. Wrong values 400 mid-run.";
 
   const out = el("input", "compact");
   out.type = "number";
@@ -1149,9 +1174,25 @@ function presetCard(preset, isNew) {
               "past it is cut off mid-argument and rejected, so a model that writes " +
               "whole files needs room. It is taken out of the context window.";
 
-  grid.append(wrap("Name (agents pick this)", name), wrap("Provider", provider),
-              wrap("Model", model), wrap("Context window", ctx),
+  const providerField = wrap("Shared provider", provider);
+  const urlField = wrap("Base URL", baseUrl);
+  const keyField = wrap("API key", key);
+
+  // Either the model brings its own endpoint or it borrows one — showing both
+  // at once is the two-definitions problem all over again.
+  const showConnection = () => {
+    const own = !!kind.value;
+    providerField.hidden = own;
+    urlField.hidden = !own;
+    keyField.hidden = !own;
+  };
+  kind.onchange = showConnection;
+
+  grid.append(wrap("Name (agents pick this)", name), wrap("API", kind),
+              providerField, urlField, keyField,
+              wrap("Model id", model), wrap("Context window", ctx),
               wrap("Max output", out));
+  showConnection();
 
   const actions = el("div", "row small");
   const save = el("button", "primary", "Save");
@@ -1176,7 +1217,11 @@ function presetCard(preset, isNew) {
     await api(`/api/presets/${encodeURIComponent(target)}`, {
       method: "PUT",
       body: {
-        provider: provider.value,
+        kind: kind.value,
+        provider: kind.value ? "" : provider.value,
+        base_url: kind.value ? baseUrl.value.trim() : "",
+        // "***" means "keep what is stored"; the server drops it.
+        ...(kind.value && key.value !== "***" ? { api_key: key.value.trim() } : {}),
         model: model.value.trim(),
         context_window: Number(ctx.value) || 0,
         max_tokens: Number(out.value) || 0,
@@ -1383,10 +1428,10 @@ async function refreshConfig() {
 }
 
 $("add-preset").onclick = () => {
-  const provider = state.providers[0];
-  if (!provider) return toast("Add a provider first — a model needs an endpoint.");
+  // A new model brings its own endpoint. Nothing else has to exist first.
+  const kind = Object.keys(state.kinds || {})[0] || "llamacpp";
   $("preset-list").append(presetCard(
-    { name: "", provider: provider.name, model: provider.model }, true));
+    { name: "", kind, base_url: "", model: "", provider: "" }, true));
 };
 
 /* ──────────────────────────── agents modal ────────────────────────── */

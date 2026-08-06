@@ -396,15 +396,33 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.put("/api/presets/{name}")
     def upsert_preset(name: str, body: dict):
-        """A preset names a (provider, model) pair — the unit an agent picks."""
+        """A model: the API it speaks, where it lives, and what it is called."""
         name = name.strip()
         if not name or " " in name:
             raise HTTPException(400, "name must be non-empty and contain no spaces")
-        provider = providers.get(body.get("provider"))
-        if provider is None:
-            raise HTTPException(400, f"unknown provider {body.get('provider')!r}")
-        model = (body.get("model") or "").strip() or provider.model
-        window = int(body.get("context_window") or 0) or provider.context_window
+
+        # Merge onto what is stored, so saving one field does not drop the key.
+        stored = providers.preset(name)
+        body = {**(stored.to_dict(redact=False) if stored else {}), **body}
+        body.pop("has_key", None)
+        body.pop("self_contained", None)
+
+        kind = (body.get("kind") or "").strip()
+        if kind and kind not in KIND_DEFAULTS:
+            raise HTTPException(400, (
+                f"unknown API kind {kind!r}. Choose one of: {', '.join(KIND_DEFAULTS)}"))
+        provider = None
+        if not kind:
+            # No endpoint of its own: it must borrow a defined one.
+            provider = providers.get(body.get("provider"))
+            if provider is None:
+                raise HTTPException(400, (
+                    "choose an API kind for this model, or name a provider it belongs to"))
+        candidate = ModelPreset.from_dict({**body, "name": name})
+        model = (candidate.model or "").strip() or (provider.model if provider else "")
+        if not model:
+            raise HTTPException(400, "a model id is required")
+        window = candidate.context_window or (provider.context_window if provider else 0)
         reserved = int(body.get("max_tokens") or 0)
         # Output room is taken *out of* the window. Past half of it the agent has
         # less context than reply space, which is the opposite of the point.
@@ -412,7 +430,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(400, (
                 f"max output {reserved} leaves only {max(0, window - reserved)} tokens of "
                 f"a {window}-token window for context. Keep it under {window // 2}."))
-        saved = providers.upsert_preset(ModelPreset.from_dict({**body, "name": name, "model": model}))
+        saved = providers.upsert_preset(ModelPreset.from_dict(
+            {**body, "name": name, "model": model, "context_window": window}))
         _sync()
         return saved.to_dict()
 

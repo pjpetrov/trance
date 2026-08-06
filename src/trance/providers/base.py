@@ -98,30 +98,62 @@ class ChatResponse:
 
 @dataclass
 class ModelPreset:
-    """A named (provider, model) pair — the single thing an agent picks.
+    """A model, with everything needed to call it. The one thing an agent picks.
 
-    Selecting a provider *and* a model for every agent is two decisions where
-    the user has one in mind ("give the tester the cheap local model"). A preset
-    composes them under one shortname, so credentials and endpoint stay defined
-    once on the provider while each model you actually use gets its own handle.
+    This used to be half a definition — a name pointing at a separately defined
+    provider — so adding a model meant editing two places and remembering which
+    endpoint it belonged to. A model now carries its own connection: the kind of
+    API, the URL, the key. `provider` remains for configs written before that,
+    and is what a model falls back to when it defines no endpoint of its own.
     """
 
     name: str
-    provider: str
+    provider: str = ""
     model: str = ""
+    #: Which API this speaks. Empty = follow `provider`.
+    kind: str = ""
+    #: Endpoint. Empty with a kind set = that kind's default URL.
+    base_url: str = ""
+    api_key: str | None = None
     #: 0 means "inherit the provider's window".
     context_window: int = 0
     #: 0 means "inherit the agent defaults".
     max_tokens: int = 0
     description: str = ""
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    def __post_init__(self) -> None:
+        if self.kind:
+            defaults = KIND_DEFAULTS.get(self.kind, KIND_DEFAULTS["llamacpp"])
+            self.base_url = self.base_url or defaults["base_url"]
+            self.model = self.model or defaults["model"]
+            self.context_window = self.context_window or defaults["context_window"]
+
+    @property
+    def self_contained(self) -> bool:
+        """Whether this model defines its own endpoint rather than borrowing one."""
+        return bool(self.kind and self.base_url)
+
+    def as_provider(self) -> "ProviderConfig":
+        """The connection this model implies, for the client factory."""
+        return ProviderConfig(name=f"model:{self.name}", kind=self.kind,
+                              base_url=self.base_url, model=self.model,
+                              api_key=self.api_key, context_window=self.context_window)
+
+    def to_dict(self, redact: bool = True) -> dict:
+        data = asdict(self)
+        if redact and data.get("api_key"):
+            data["api_key"] = "***"
+        data["has_key"] = bool(self.api_key)
+        data["self_contained"] = self.self_contained
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelPreset":
         known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        clean = {k: v for k, v in data.items() if k in known}
+        if clean.get("api_key") == "***":      # the redacted placeholder echoed back
+            clean.pop("api_key")
+        return cls(**clean)
 
 
 @dataclass
