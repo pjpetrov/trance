@@ -2946,15 +2946,41 @@ async function openLoops() {
   await renderLoops();
 }
 
-async function renderLoops() {
+/* One loop at a time. A loop is a state machine with a row per outcome per
+ * block; three of them stacked is more than anyone can hold at once, and the
+ * one you came to edit is never the one on screen. */
+async function renderLoops(select) {
   const data = await api("/api/loops");
   state.loops = data;
+  const names = data.loops.map((l) => l.name);
+  const current = names.includes(select) ? select
+    : names.includes(state.loopName) ? state.loopName : names[0];
+  state.loopName = current;
+
+  const picker = $("loop-which");
+  picker.innerHTML = "";
+  names.forEach((name) => {
+    const opt = el("option", null, name);
+    opt.value = name;
+    if (name === current) opt.selected = true;
+    picker.append(opt);
+  });
+  picker.disabled = !names.length;
+  picker.onchange = () => renderLoops(picker.value);
+
   const box = $("loop-list");
   box.innerHTML = "";
-  if (!data.loops.length) {
-    box.append(el("p", "muted small", "No loops yet."));
+  const loop = data.loops.find((l) => l.name === current);
+  $("loop-summary").textContent = loop
+    ? `${loop.nodes.length} block(s) · ${loop.roles.join(" → ")}`
+    : "";
+  if (!loop) {
+    box.append(el("p", "muted small",
+      "No loops yet. A loop is a block of agents wired by outcome — start with "
+      + "the agent that runs first."));
+    return;
   }
-  data.loops.forEach((loop) => box.append(loopCard(structuredClone(loop), false)));
+  box.append(loopCard(structuredClone(loop), false));
 }
 
 function loopCard(loop, isNew) {
@@ -3028,7 +3054,7 @@ function loopCard(loop, isNew) {
     result.textContent = "saved";
     result.className = "check-result ok";
     toast(`Loop “${name.value.trim()}” saved.`);
-    await renderLoops();
+    await renderLoops(name.value.trim());
   };
   actions.append(save, result);
 
@@ -3172,6 +3198,10 @@ function exitRow(loop, node, outcome, redraw) {
 }
 
 $("add-loop").onclick = () => {
-  $("loop-list").prepend(loopCard(
+  // A new one takes over the modal too, so there is only ever one on screen.
+  const box = $("loop-list");
+  box.innerHTML = "";
+  $("loop-summary").textContent = "unsaved";
+  box.append(loopCard(
     { name: "", description: "", prompt: "", nodes: [], start: "", max_steps: 12 }, true));
 };

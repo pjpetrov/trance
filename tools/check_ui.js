@@ -53,7 +53,12 @@ const RESPONSES = {
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
                       suggested_dir: "/w/project", state_dir: "/s" },
   "/api/sessions": [],
-  "/api/loops": { loops: [{ name: "test-and-fix", description: "d", prompt: "p",
+  "/api/loops": { loops: [{ name: "another-loop", description: "d2", prompt: "",
+                            start: "n_a", max_steps: 6, roles: ["reviewer"],
+                            nodes: [{ id: "n_a", role: "reviewer", focus: "",
+                                      check: null, revert_on_fail: false,
+                                      on: { SUCCESS: { target: "exit", max_visits: 1 } } }] },
+                          { name: "test-and-fix", description: "d", prompt: "p",
                             start: "n_test", max_steps: 10, roles: ["tester", "backend"],
                             nodes: [{ id: "n_test", role: "tester", focus: "run tests",
                                       check: null,
@@ -93,6 +98,7 @@ const session = {
 };
 global.state = undefined;
 const flat = (n) => !n ? "" : (n.textContent || "") + (n.children || []).map(flat).join(" ");
+(async () => {
 try {
   // state lives inside the module scope; exercise the renderers that read it
   // Render a real session with steps in every status — an empty flow used to
@@ -272,6 +278,19 @@ try {
   api.renderStepSize();
   // The loops editor: an existing loop, and an empty one being created.
   api.state.loops = RESPONSES["/api/loops"];
+  // The modal shows exactly one loop, chosen by name.
+  await api.renderLoops("test-and-fix");
+  {
+    const shown = flat(document.getElementById("loop-list")).replace(/\s+/g, " ");
+    if (shown.includes("reviewer")) {
+      console.log("BROKEN: the loops modal rendered more than the selected loop");
+      process.exit(1);
+    }
+    if (!shown.includes("on SUCCESS")) {
+      console.log("BROKEN: the selected loop did not render");
+      process.exit(1);
+    }
+  }
   api.state.commands = RESPONSES["/api/commands"];
   api.loopCard(JSON.parse(JSON.stringify(RESPONSES["/api/loops"].loops[0])), false);
   api.loopCard({ name: "", description: "", prompt: "", nodes: [], start: "",
@@ -282,7 +301,8 @@ try {
                             attempts: [], runs_a_loop: true }];
   api.redrawEditor ? api.redrawEditor() : api.renderFlowEditor();
 
-  const card = api.loopCard(JSON.parse(JSON.stringify(RESPONSES["/api/loops"].loops[0])), false);
+  const withCheck = RESPONSES["/api/loops"].loops.find((l) => l.name === "test-and-fix");
+  const card = api.loopCard(JSON.parse(JSON.stringify(withCheck)), false);
   const loopText = flat(card).replace(/\s+/g, " ");
   for (const want of ["on SUCCESS", "on FAILED", "on CHECK FAILED", "leave the loop"]) {
     if (!loopText.includes(want)) {
@@ -418,3 +438,4 @@ try {
   console.log("BROKEN:", e.constructor.name + ":", e.message);
   process.exit(1);
 }
+})();
