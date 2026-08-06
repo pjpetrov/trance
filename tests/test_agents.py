@@ -4308,12 +4308,14 @@ def test_a_genuine_miss_does_not_reindex_forever(tmp_path):
                        reindex=lambda: calls.append(1))
 
     tools.call("write_file", {"path": "b.py", "content": "x = 1\n"})
-    for _ in range(3):
+    for _ in range(5):
         tools.call("get_definition", {"symbol": "nothing_like_this"})
-    assert calls == [1]                         # the write is only worth one retry
+    # One for the write, one for anything else that may have changed the tree,
+    # and then it stops: a model guessing names would re-index once per guess.
+    assert calls == [1, 1]
 
 
-def test_nothing_is_reindexed_when_nothing_was_written(tmp_path):
+def test_a_miss_is_retried_once_even_with_no_write(tmp_path):
     from trance.agents.tools import AgentTools
     from trance.db import GraphDB
     from trance.indexer.service import index_repo
@@ -4326,5 +4328,37 @@ def test_nothing_is_reindexed_when_nothing_was_written(tmp_path):
     tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
                        notify=lambda *a, **k: None, reindex=lambda: calls.append(1))
 
-    tools.call("get_definition", {"symbol": "missing"})
-    assert calls == []
+    # One allowance covers files a command or another agent changed; after that
+    # a miss is a real miss.
+    for _ in range(4):
+        tools.call("get_definition", {"symbol": "missing"})
+    assert calls == [1]
+
+
+def test_search_symbols_finds_what_was_just_written(tmp_path):
+    """Six searches in a row all missed functions that were plainly in the file
+    — the index simply had not seen it yet."""
+    from trance.agents.tools import AgentTools
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import ContextTools
+
+    (tmp_path / "server").mkdir()
+    (tmp_path / "server" / "seed.py").write_text("def seeded():\n    pass\n")
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+                       notify=lambda *a, **k: None,
+                       reindex=lambda: index_repo(tmp_path, db))
+
+    tools.call("write_file", {"path": "server/game.py",
+                              "content": "def collectPelletAt():\n    pass\n\n"
+                                         "def eatGhost():\n    pass\n"})
+
+    first = tools.call("search_symbols", {"pattern": "collectPelletAt"})
+    assert first.detail["hit"] is True
+
+    # And the ones after it, from the same re-index rather than another.
+    second = tools.call("search_symbols", {"pattern": "eatGhost"})
+    assert second.detail["hit"] is True

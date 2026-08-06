@@ -606,3 +606,31 @@ input.tiny { width: 62px; min-width: 0; }
 .exit-tag.check_failed { color: var(--warn); }
 input.tiny { width: 68px; }
 .badge.loop-badge { background: var(--purple); color: #10121c; font-weight: 600; }
+
+
+/* ── step detail, one section per block ────────────────────────────────
+   A step with five loop passes was a single wall of model calls. Folded,
+   each section says who ran and what came of it; that is what you are
+   looking for nine times out of ten. */
+.step-block {
+  border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2);
+  margin: 8px 0; overflow: hidden;
+}
+.step-block > summary {
+  cursor: pointer; list-style: none; padding: 9px 11px;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+.step-block > summary::-webkit-details-marker { display: none; }
+.step-block > summary::before { content: "▸"; color: var(--muted); flex: 0 0 auto; }
+.step-block[open] > summary::before { content: "▾"; }
+.step-block > summary:hover { background: rgba(122,162,247,.07); }
+.step-block[open] > summary { border-bottom: 1px solid var(--line); }
+.block-n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.block-why {
+  flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.step-block > summary .ctx-gauge { margin-left: auto; }
+.step-block-body { padding: 10px 11px 12px; }
+.badge.outcome-ok { color: var(--ok); border-color: var(--ok); }
+.badge.outcome-bad { color: var(--err); border-color: var(--err); }

@@ -310,9 +310,24 @@ class AgentTools:
         #: this step, so an agent asking about a file it just wrote gets nothing.
         self._reindex = reindex
         self._wrote_since_index = False
+        #: Re-indexes spent this turn. A write earns one; one more covers files
+        #: changed by something else — a command, another agent, the user. Past
+        #: that a miss is a real miss, and a model guessing names would
+        #: otherwise re-index once per guess.
+        self._reindexes_left = 1
         #: Called with (event_type, payload) so a long command is visible while
         #: it runs instead of only when it finishes.
         self.notify = notify or (lambda kind, payload: None)
+
+    def _may_reindex(self) -> bool:
+        """Spend a re-index, if one is left."""
+        if self._wrote_since_index:
+            self._wrote_since_index = False
+            return True
+        if self._reindexes_left > 0:
+            self._reindexes_left -= 1
+            return True
+        return False
 
     @property
     def command_policy(self) -> CommandPolicy:
@@ -467,14 +482,14 @@ class AgentTools:
                     f"{self._usage(name)}", ok=False)
         if self.graph is not None:
             result = self.graph.call(name, arguments)
-            if not result.hit and self._wrote_since_index and self._reindex is not None:
-                # It may be asking about something it wrote a moment ago.
-                # Re-indexing is incremental, so this costs one changed file.
+            if not result.hit and self._reindex is not None and self._may_reindex():
+                # It may be asking about something written a moment ago — by
+                # itself, or by a command it ran. Re-indexing is incremental, so
+                # this costs the files that actually changed.
                 try:
                     self._reindex()
                 except Exception:                  # indexing must never break a tool
                     pass
-                self._wrote_since_index = False
                 result = self.graph.call(name, arguments)
             # A lookup that found nothing is not a refusal: the tool ran and
             # answered. Saying so lets the UI show a miss as a miss instead of

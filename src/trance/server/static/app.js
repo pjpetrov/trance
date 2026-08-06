@@ -1750,68 +1750,129 @@ function openStep(step, index) {
   body.append(rowWithCopy("task", step.task || ""));
   body.append(el("pre", "code", step.task || "(no task)"));
 
-  // Everything this step's agents were actually sent, from the event stream.
+  // One section per block that ran. A step with five loop passes was a single
+  // wall of model calls; which pass a call belonged to was the one thing you
+  // needed and the only thing not shown.
   const stepEvents = state.events.filter((e) => e.step_id === step.id);
-  const bundles = stepEvents.filter((e) => e.type === "context_bundle");
-  const calls = stepEvents.filter((e) => e.type === "model_call");
-  const tools = stepEvents.filter((e) => e.type === "tool_call");
-
-  (step.attempts || []).forEach((a) => {
-    const cls = a.verdict === "PASS" ? "pass" : a.verdict === "FAIL" ? "fail"
-      : a.verdict ? "unknown" : "";
-    const card = el("div", `attempt ${cls}`);
-    card.append(el("div", "row small", ""));
-    card.firstChild.append(el("span", "badge", `attempt ${a.n}`));
-    if (a.outcome) {
-      const b = el("span", "badge", `outcome: ${a.outcome}`);
-      b.style.borderColor = a.outcome === "SUCCESS" ? "var(--ok)" : "var(--err)";
-      card.firstChild.append(b);
-    }
-    (a.gate_results || []).forEach((g) => {
-      const b = el("span", "badge", `${g.gate}: ${g.verdict}`);
-      b.style.borderColor = g.verdict === "PASS" ? "var(--ok)"
-        : g.verdict === "FAIL" ? "var(--err)" : "var(--warn)";
-      card.firstChild.append(b);
-    });
-    if (!(a.gate_results || []).length) {
-      card.firstChild.append(el("span", "badge", a.verdict || "no verdict"));
-    }
-    card.firstChild.append(
-      el("span", "muted small", (a.files_written || []).join(", ") || "no files written"));
-    if (a.outcome_reason) {
-      card.append(rowWithCopy("why the step failed", a.outcome_reason));
-      card.append(el("pre", "code", a.outcome_reason));
-    }
-    if (a.feedback) {
-      card.append(rowWithCopy("fact check", a.feedback));
-      card.append(el("pre", "code", a.feedback));
-    }
-    body.append(card);
-  });
+  const blocks = groupStepEvents(stepEvents, step);
 
   if (step.summary) {
     body.append(rowWithCopy("result", step.summary));
     body.append(el("pre", "code", step.summary));
   }
 
-  body.append(el("h3", null, `Context — ${calls.length} model call(s)`));
-  if (bundles.length) {
-    bundles.forEach((b) => {
-      const d = el("details");
-      d.append(el("summary", "muted small",
-        `▸ curated bundle: ${b.payload.stats?.symbols ?? 0} symbols, ~${b.payload.stats?.est_tokens ?? 0} tok`));
-      d.append(el("pre", "code", b.payload.rendered || ""));
-      body.append(d);
-    });
+  if (!blocks.length) {
+    body.append(el("p", "muted small",
+      "Nothing recorded for this step in this view — it may have run before the "
+      + "page was opened."));
   }
-  if (!calls.length) {
-    body.append(el("p", "muted small", "No model calls recorded for this step in this view."));
+  blocks.forEach((block, i) => body.append(
+    blockSection(block, i === blocks.length - 1 && step.status === "running")));
+}
+
+/* Split a step's events into the blocks that produced them. Each block starts
+ * where the engine says one starts — a step attempt, a loop node, a fixer, an
+ * escalation — so the grouping is the engine's own, not a guess from timing. */
+const BLOCK_STARTS = new Set(["step_started", "loop_node", "fixing", "escalated"]);
+
+function groupStepEvents(events, step) {
+  const attempts = step.attempts || [];
+  const blocks = [];
+  let taken = 0;
+
+  events.forEach((event) => {
+    if (BLOCK_STARTS.has(event.type) || !blocks.length) {
+      const p = event.payload || {};
+      const isAttempt = event.type === "step_started" || event.type === "loop_node";
+      blocks.push({
+        agent: event.agent || step.role,
+        kind: event.type === "fixing" ? "fix"
+          : event.type === "escalated" ? "escalation"
+          : event.type === "loop_node" ? "loop" : "attempt",
+        label: p.message || (p.task ? `attempt ${p.attempt || blocks.length + 1}` : ""),
+        n: p.visit || p.attempt || blocks.length + 1,
+        attempt: isAttempt ? attempts[taken++] : null,
+        events: [],
+      });
+    }
+    blocks[blocks.length - 1].events.push(event);
+  });
+
+  // A step whose events predate this page still has its attempt records.
+  if (!blocks.length) {
+    attempts.forEach((a) => blocks.push({
+      agent: step.role, kind: "attempt", label: "", n: a.n, attempt: a, events: [],
+    }));
   }
-  calls.forEach((c) => body.append(renderEvent(c)));
+  return blocks;
+}
+
+function blockSection(block, openByDefault) {
+  const wrap = el("details", "step-block");
+  wrap.open = !!openByDefault;
+
+  const summary = el("summary");
+  const badge = el("span", "badge role", block.agent);
+  const role = state.roles[block.agent];
+  if (role) badge.style.background = role.color;
+  summary.append(el("span", "block-n", `${block.n}.`), badge);
+
+  const a = block.attempt;
+  if (block.kind === "fix") summary.append(el("span", "badge", "fixing"));
+  if (block.kind === "escalation") summary.append(el("span", "badge", "escalated"));
+
+  // Folded, this line is the whole point: what came of this block.
+  if (a && a.outcome) {
+    const out = el("span", `badge outcome-${a.outcome === "SUCCESS" ? "ok" : "bad"}`,
+                   a.outcome);
+    summary.append(out);
+  }
+  (a ? a.gate_results || [] : []).forEach((g) => {
+    summary.append(el("span", `badge outcome-${g.verdict === "PASS" ? "ok" : "bad"}`,
+                      `${g.gate}: ${g.verdict}`));
+  });
+  const reason = a && (a.outcome_reason || a.feedback);
+  if (reason) summary.append(el("span", "muted small block-why", clip(reason, 80)));
+  else if (a && (a.files_written || []).length) {
+    summary.append(el("span", "muted small", a.files_written.join(", ")));
+  }
+  if (a && a.context && a.context.window) summary.append(contextGauge(a.context));
+  wrap.append(summary);
+
+  const inner = el("div", "step-block-body");
+  if (a && a.outcome_reason) {
+    inner.append(rowWithCopy("why the step failed", a.outcome_reason));
+    inner.append(el("pre", "code", a.outcome_reason));
+  }
+  if (a && a.feedback) {
+    inner.append(rowWithCopy("fact check", a.feedback));
+    inner.append(el("pre", "code", a.feedback));
+  }
+
+  const bundles = block.events.filter((e) => e.type === "context_bundle");
+  const calls = block.events.filter((e) => e.type === "model_call");
+  const tools = block.events.filter((e) => e.type === "tool_call");
+  bundles.forEach((b) => {
+    const d = el("details");
+    d.append(el("summary", "muted small",
+      `▸ curated bundle: ${b.payload.stats?.symbols ?? 0} symbols, `
+      + `~${b.payload.stats?.est_tokens ?? 0} tok`));
+    d.append(el("pre", "code", b.payload.rendered || ""));
+    inner.append(d);
+  });
+  if (calls.length) {
+    inner.append(el("h3", null, `Context — ${calls.length} model call(s)`));
+    calls.forEach((c) => inner.append(renderEvent(c)));
+  }
   if (tools.length) {
-    body.append(el("h3", null, `Tool calls — ${tools.length}`));
-    tools.forEach((t) => body.append(renderEvent(t)));
+    inner.append(el("h3", null, `Tool calls — ${tools.length}`));
+    tools.forEach((t) => inner.append(renderEvent(t)));
   }
+  if (!inner.children.length) {
+    inner.append(el("p", "muted small", "No calls recorded for this block."));
+  }
+  wrap.append(inner);
+  return wrap;
 }
 
 /* ─────────────── intercept a specific action while paused ─────────── */

@@ -79,7 +79,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,openStep,groupStepEvents,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -331,6 +331,57 @@ try {
   listeners.keydown({ key: "Escape", preventDefault() {} });
   if (!modal.classList.contains("open")) {
     console.log("BROKEN: Escape closed a modal while typing in a textarea");
+    process.exit(1);
+  }
+  // The step detail: one folded section per block that ran.
+  const loopStep = {
+    id: "st1", role: "tester", loop: "test-and-fix", task: "make it pass",
+    status: "done", check: null, on_fail: null, max_loops: 2, checker: null,
+    attempts: [
+      { n: 1, outcome: "FAILED", outcome_reason: "the ball passes through",
+        files_written: [], gate_results: [],
+        context: { tokens: 20000, window: 64000, budget: 55000, percent: 31 } },
+      { n: 2, outcome: "SUCCESS", outcome_reason: "", files_written: ["game.js"],
+        gate_results: [{ gate: "factchecker", verdict: "PASS" }], context: {} },
+    ],
+  };
+  api.state.events = [
+    { id: "e1", type: "loop_node", agent: "tester", step_id: "st1",
+      ts: new Date().toISOString(),
+      payload: { message: "test-and-fix: tester", visit: 1, role: "tester" } },
+    { id: "e2", type: "model_call", agent: "tester", step_id: "st1",
+      ts: new Date().toISOString(),
+      payload: { model: "m", tool_calls: [], messages: [], summary: {} } },
+    { id: "e3", type: "loop_node", agent: "backend", step_id: "st1",
+      ts: new Date().toISOString(),
+      payload: { message: "test-and-fix: backend", visit: 2, role: "backend" } },
+    { id: "e4", type: "tool_call", agent: "backend", step_id: "st1",
+      ts: new Date().toISOString(),
+      payload: { name: "write_file", ok: true, arguments: {}, result: "",
+                 detail: { kind: "write", path: "game.js", added: 2, removed: 0 } } },
+  ];
+  const grouped = api.groupStepEvents(api.state.events, loopStep);
+  if (grouped.length !== 2 || grouped[0].agent !== "tester"
+      || grouped[1].agent !== "backend") {
+    console.log("BROKEN: step events were not grouped by block", grouped.length);
+    process.exit(1);
+  }
+  if (grouped[0].events.length !== 2 || grouped[1].events.length !== 2) {
+    console.log("BROKEN: events landed in the wrong block");
+    process.exit(1);
+  }
+  api.openStep(loopStep, 0);
+  const detail = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
+  for (const want of ["FAILED", "SUCCESS", "the ball passes through"]) {
+    if (!detail.includes(want)) {
+      console.log("BROKEN: the folded sections do not show", JSON.stringify(want));
+      process.exit(1);
+    }
+  }
+  // A step that ran before the page opened still shows its attempts.
+  const noEvents = api.groupStepEvents([], loopStep);
+  if (noEvents.length !== 2) {
+    console.log("BROKEN: attempts without events produced no sections");
     process.exit(1);
   }
   console.log("all render paths ran without a ReferenceError");
