@@ -62,6 +62,16 @@ Edit or delete freely — this file is read into every agent's prompt.
 """
 
 
+#: Notes written by hand, through the UI or the file. `remember` always stamps
+#: the agent's name, so this can only be the user.
+_USER_AUTHORS = ("user", "you", "human", "me")
+
+
+def _is_users(note: str) -> bool:
+    match = re.match(r"^-\s*\*\*(?P<who>[^*]+)\*\*\s*:", note)
+    return bool(match) and match.group("who").strip().lower() in _USER_AUTHORS
+
+
 def _normalize(text: str) -> str:
     """Compare notes by what they say, not how they were punctuated.
 
@@ -136,8 +146,16 @@ class ProjectMemory:
         if not before:
             return {"compacted": False, "reason": "nothing to compact"}
 
+        # A note the user wrote is an instruction, not an observation. Handing it
+        # to a model to "merge and shorten" is how a deliberate correction gets
+        # summarised away by the very agents it was meant to correct.
+        mine = [n for n in before if _is_users(n)]
+        theirs = [n for n in before if not _is_users(n)]
+        if not theirs:
+            return {"compacted": False, "reason": "only user notes, which are kept verbatim"}
+
         try:
-            proposed = rewrite("\n".join(before))
+            proposed = rewrite("\n".join(theirs))
         except Exception as exc:                       # a failed rewrite is not fatal
             return {"compacted": False, "reason": f"rewrite failed: {exc}"}
 
@@ -147,8 +165,9 @@ class ProjectMemory:
         # Losing the team's shared facts is far worse than a memory that is long.
         if not kept:
             return {"compacted": False, "reason": "the rewrite produced no notes"}
-        if len(kept) > len(before):
+        if len(kept) > len(theirs):
             return {"compacted": False, "reason": "the rewrite was not shorter"}
+        kept = mine + kept          # the user's notes survive intact, and lead
 
         with self._lock:
             archive = self.path.with_name("memory.archive.md")

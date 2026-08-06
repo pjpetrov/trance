@@ -3202,3 +3202,41 @@ def test_without_an_escalation_model_nothing_changes(tmp_path, monkeypatch):
 
     assert len(calls) == 2 and step.status == "failed"
     assert step.escalated is False
+
+
+def test_compaction_never_rewrites_what_the_user_wrote(tmp_path):
+    """A user note is an instruction, not an observation. Handing it to a model
+    to "merge and shorten" is how a deliberate correction gets summarised away
+    by the agents it was meant to correct."""
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    _fill(memory, 20)
+    memory.note("user", "THE TEST SUITE PASSES — stop trying to fix a socket bug")
+    memory.note("backend", "one more agent observation")
+
+    seen = {}
+
+    def rewrite(text):
+        seen["text"] = text
+        return "- **backend**: everything merged into one line"
+
+    result = memory.compact(rewrite)
+    assert result["compacted"] is True
+
+    assert "THE TEST SUITE PASSES" not in seen["text"]      # never sent to the model
+    notes = memory.notes()
+    assert any("THE TEST SUITE PASSES" in n for n in notes)  # and still there
+    assert notes[0].startswith("- **user**")                # kept, and leading
+
+
+def test_a_memory_of_only_user_notes_is_left_alone(tmp_path):
+    from trance.agents.memory import ProjectMemory
+
+    memory = ProjectMemory(tmp_path)
+    for i in range(30):
+        memory.note("user", f"instruction {i} that the agents must follow exactly")
+
+    result = memory.compact(lambda text: "- **backend**: nope")
+    assert result["compacted"] is False
+    assert len(memory.notes()) == 30
