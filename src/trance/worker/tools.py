@@ -46,10 +46,18 @@ def specs() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "search_symbols",
-                "description": "Find indexed symbols whose name or path matches a pattern.",
+                "description": (
+                    "Find indexed symbols by NAME. Matches function names, class names "
+                    "and file paths — one identifier or fragment of one, e.g. "
+                    "'streamBacktest' or 'binance'. This is not a text search: a phrase "
+                    "or a description of behaviour will never match anything."
+                ),
                 "parameters": {
                     "type": "object",
-                    "properties": {"pattern": {"type": "string"}},
+                    "properties": {"pattern": {
+                        "type": "string",
+                        "description": "One identifier or part of one — no spaces.",
+                    }},
                     "required": ["pattern"],
                 },
             },
@@ -115,7 +123,7 @@ class ContextTools:
     def search_symbols(self, pattern: str) -> ToolResult:
         matches = self.db.find_symbols(pattern)
         if not matches:
-            return ToolResult(f"No symbols match {pattern!r}.", hit=False, symbols=[])
+            return ToolResult(_no_match(pattern), hit=False, symbols=[])
         lines = [f"{m.kind} {m.qualname}  ({m.file_path}:{m.start_line})" for m in matches[:MAX_RESULTS]]
         if len(matches) > MAX_RESULTS:
             lines.append(f"... and {len(matches) - MAX_RESULTS} more")
@@ -178,6 +186,27 @@ class ContextTools:
         except OSError:
             return sym.signature
         return data[sym.start_byte : sym.end_byte].decode("utf8", errors="replace")
+
+
+def _no_match(pattern: str) -> str:
+    """Say why, when the pattern was never going to match anything.
+
+    Models reach for this as if it were a semantic search — "SSE done event
+    equity curve" is a test description, not an identifier — and a bare "no
+    symbols match" tells them nothing, so they try another sentence.
+    """
+    base = f"No symbols match {pattern!r}."
+    words = pattern.split()
+    if len(words) > 1:
+        longest = max(words, key=len)
+        return (
+            f"{base} search_symbols matches indexed FUNCTION and CLASS NAMES and file "
+            f"paths — it is not a full-text or semantic search, so a phrase will never "
+            f"match. Search one identifier at a time (try {longest!r}), or use "
+            f"list_files / read_file if you are looking for behaviour rather than a name."
+        )
+    return (f"{base} It may be defined in a third-party package, or spelled differently. "
+            f"The project map in your prompt lists what is indexed.")
 
 
 def _miss(symbol: str) -> str:

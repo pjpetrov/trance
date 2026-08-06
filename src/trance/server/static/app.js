@@ -2259,6 +2259,22 @@ function consoleAppend(event) {
         }));
         return;
       }
+      if (d.kind === "graph") {
+        // A lookup that found nothing is not a refusal — the tool answered.
+        // Misses show even with reads hidden: they are how you notice an agent
+        // searching for phrases the graph could never contain.
+        if (d.hit && !showReads) return;
+        consolePush(consoleEntry({
+          kind: "graph", icon: ICON.graph, time, tag: event.agent,
+          label: labelWith([
+            [`${p.name} `, ""], [clip(d.query, 48), "c-path"],
+            [d.hit ? "" : "  no match", "muted"],
+          ]),
+          body: () => el("pre", null, p.result || ""),
+          open: !d.hit,
+        }));
+        return;
+      }
       if (d.kind === "memory") {
         consolePush(consoleEntry({
           kind: "write", icon: "🧠", time, tag: event.agent,

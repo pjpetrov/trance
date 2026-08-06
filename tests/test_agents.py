@@ -3240,3 +3240,52 @@ def test_a_memory_of_only_user_notes_is_left_alone(tmp_path):
     result = memory.compact(lambda text: "- **backend**: nope")
     assert result["compacted"] is False
     assert len(memory.notes()) == 30
+
+
+# ------------------------------- a lookup that found nothing is not a refusal
+
+def test_a_graph_miss_is_not_reported_as_a_refusal(tmp_path):
+    from trance.agents.tools import AgentTools
+
+    """Regression: search_symbols misses rendered as "search_symbols refused",
+    in red, next to writes that had actually been blocked."""
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import ContextTools
+
+    (tmp_path / "app.py").write_text("def charge(order):\n    return 1\n")
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+                       notify=lambda *a, **k: None)
+
+    miss = tools.call("search_symbols", {"pattern": "nothing_like_this"})
+    assert miss.detail["kind"] == "graph"      # the UI keys off this, not off ok
+    assert miss.detail["hit"] is False
+
+    hit = tools.call("search_symbols", {"pattern": "charge"})
+    assert hit.detail["hit"] is True and "charge" in hit.text
+
+
+def test_a_phrase_search_explains_itself(tmp_path):
+    """The model was passing test descriptions — "SSE done event equity curve"
+    — and a bare "no symbols match" just invited another sentence."""
+    from trance.worker.tools import _no_match
+
+    message = _no_match("SSE done event equity curve")
+    assert "not a full-text or semantic search" in message
+    assert "'equity'" in message                  # a concrete next move
+    assert "read_file" in message
+
+    single = _no_match("streamBacktst")
+    assert "full-text" not in single              # not the same advice
+    assert "project map" in single
+
+
+def test_the_tool_description_says_it_matches_names(tmp_path):
+    from trance.worker.tools import specs
+
+    search = next(s for s in specs() if s["function"]["name"] == "search_symbols")
+    assert "not a text search" in search["function"]["description"]
+    assert "no spaces" in (search["function"]["parameters"]["properties"]["pattern"]
+                           ["description"])

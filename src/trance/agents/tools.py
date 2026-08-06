@@ -424,7 +424,13 @@ class AgentTools:
                     f"{self._usage(name)}", ok=False)
         if self.graph is not None:
             result = self.graph.call(name, arguments)
-            return ToolOutcome(result.text, ok=result.hit)
+            # A lookup that found nothing is not a refusal: the tool ran and
+            # answered. Saying so lets the UI show a miss as a miss instead of
+            # painting it red next to writes that were actually blocked.
+            return ToolOutcome(
+                result.text, ok=result.hit,
+                detail={"kind": "graph", "tool": name, "hit": result.hit,
+                        "query": next((str(v) for v in arguments.values()), "")})
         return ToolOutcome(f"No such tool: {name}", ok=False)
 
     def _schema(self, name: str) -> dict:
