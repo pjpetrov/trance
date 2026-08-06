@@ -224,6 +224,18 @@ try {
                        notes: ["- **backend**: port 3100", "- a note with no author"] };
   api.renderMemory();
   api.paintMemoryCount();
+  // Editing must hide the cards, and leaving it must bring them back.
+  document.getElementById("memory-edit").onclick();
+  if (!document.getElementById("memory-list").hidden
+      || document.getElementById("memory-editor").hidden) {
+    console.log("BROKEN: the memory editor does not replace the cards");
+    process.exit(1);
+  }
+  document.getElementById("memory-cancel").onclick();
+  if (document.getElementById("memory-list").hidden) {
+    console.log("BROKEN: the cards did not come back after cancelling");
+    process.exit(1);
+  }
   api.renderStepSize();
   // The loops editor: an existing loop, and an empty one being created.
   api.state.loops = RESPONSES["/api/loops"];

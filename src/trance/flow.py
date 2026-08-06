@@ -49,6 +49,9 @@ class Attempt:
     #: because a step that failed for this reason is fixed by reassigning it,
     #: not by looping — and only these paths say which agent to reassign it to.
     refused_paths: list[str] = field(default_factory=list)
+    #: How full the window was on this attempt's last call — the same numbers
+    #: the live gauge shows, kept so a finished step can still show them.
+    context: dict = field(default_factory=dict)
     #: The step's own outcome, as reported by the agent that did the work.
     outcome: str = ""
     outcome_reason: str = ""

@@ -233,6 +233,7 @@ class FlowEngine:
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
+            attempt.context = turn.context
             attempt.refused_paths = list(dict.fromkeys(turn.remit_violations))
             step.summary = _summarize(turn.text)
             self._record_history(role.name, step, turn)
@@ -359,6 +360,7 @@ class FlowEngine:
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
+            attempt.context = turn.context
             step.summary = _summarize(turn.text)
 
             attempt.refused_paths = list(dict.fromkeys(turn.remit_violations))
@@ -490,6 +492,7 @@ class FlowEngine:
         )
         attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
         attempt.files_written = turn.files_written
+        attempt.context = turn.context
         attempt.outcome, attempt.outcome_reason = turn.outcome
         step.summary = _summarize(turn.text)
         self._record_history(role.name, step, turn)

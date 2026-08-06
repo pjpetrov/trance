@@ -251,6 +251,8 @@ class AgentTurn:
     notes_written: int = 0
     #: Repeat lookups answered with a pointer instead of the content again.
     deduped_lookups: int = 0
+    #: Window usage on the last call, for the step to keep after the run moves on.
+    context: dict = field(default_factory=dict)
     model_event_ids: list[str] = field(default_factory=list)
     #: Everything this agent did, in order — the raw material for the handoff
     #: to a fixer. Never fed back to this agent; the conversation already holds
@@ -412,6 +414,7 @@ def run_agent(
             turn.stop_reason = "cancelled"
             break
         elapsed_ms = round((time.time() - started) * 1000, 1)
+        turn.context = context_usage(messages, response, model_config)
         reported = int((response.usage or {}).get("prompt_tokens") or 0)
         if reported > 0 and sent_chars > 0:
             # Keep the densest ratio seen: the budget has to hold for the worst
@@ -441,7 +444,7 @@ def run_agent(
                 "finish_reason": response.finish_reason,
                 "usage": response.usage,
                 "summary": summarize_messages(messages),
-                "context": context_usage(messages, response, model_config),
+                "context": turn.context,
             },
         )
         turn.model_event_ids.append(event.id)

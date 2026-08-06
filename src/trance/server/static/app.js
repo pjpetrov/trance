@@ -769,12 +769,17 @@ function renderMemory() {
   }
 }
 
+/* Editing replaces the cards rather than appearing under them: the raw file and
+ * the rendered notes are two views of the same thing, and showing both invites
+ * editing one while reading the other. */
 function memoryEditing(on) {
   $("memory-editor").hidden = !on;
   $("memory-list").hidden = on;
   $("memory-edit").hidden = on;
+  $("memory-compact").hidden = on;
   $("memory-save").hidden = !on;
   $("memory-cancel").hidden = !on;
+  if (on) $("memory-raw").focus();
 }
 
 async function openMemory() {
@@ -792,7 +797,10 @@ $("memory-edit").onclick = () => {
   memoryEditing(true);
 };
 
-$("memory-cancel").onclick = () => memoryEditing(false);
+$("memory-cancel").onclick = () => {
+  renderMemory();              // discard the edit, restore the cards as they were
+  memoryEditing(false);
+};
 
 $("memory-compact").onclick = async () => {
   const button = $("memory-compact");
@@ -1670,7 +1678,13 @@ function renderFlowView() {
       if (last.outcome) parts.push(`outcome ${last.outcome}`);
       (last.gate_results || []).forEach((g) => parts.push(`${g.gate}:${g.verdict}`));
       if (last.files_written?.length) parts.push(last.files_written.join(", "));
-      meta.append(el("div", "muted small", parts.join(" · ")));
+      const row = el("div", "row small step-usage");
+      row.append(el("span", "muted small", parts.join(" · ")));
+      // What this step actually cost. The live gauge disappears with the step
+      // that was running; keeping the last reading is how you compare them.
+      const used = lastContext(step);
+      if (used) row.append(contextGauge(used));
+      meta.append(row);
     }
     node.append(meta);
 
@@ -2012,6 +2026,16 @@ function svg(tag, attrs) {
   return node;
 }
 
+//: The most recent window reading this step produced, if it ever ran.
+function lastContext(step) {
+  const attempts = step.attempts || [];
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const ctx = attempts[i].context;
+    if (ctx && ctx.window) return ctx;
+  }
+  return null;
+}
+
 function contextGauge(ctx) {
   const pct = Math.max(0, Math.min(100, ctx.percent ?? 0));
   const level = contextLevel(ctx);
@@ -2090,13 +2114,14 @@ function elapsed(ms) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 }
 
+/* One line, in the header, wherever you are. It used to be drawn twice — once
+ * there and once on the run screen — which just made the same fact compete
+ * with itself for space. */
 function paintActivity() {
   const header = $("now-working");
-  const strip = $("activity-strip");
   if (!activity.agent) {
     header.className = "now-working";
     header.innerHTML = "";
-    if (strip) { strip.className = "activity-strip"; strip.innerHTML = ""; }
     return;
   }
   const role = state.roles[activity.agent];
@@ -2107,19 +2132,11 @@ function paintActivity() {
   header.append(el("span", "dot"));
   const badge = el("span", "badge role", activity.agent);
   if (role) badge.style.background = role.color;
-  header.append(badge, el("span", "muted", clip(activity.what, 40)), el("span", "activity-elapsed", since));
-
-  if (strip) {
-    strip.className = "activity-strip active";
-    strip.innerHTML = "";
-    const b2 = el("span", "badge role", activity.agent);
-    if (role) b2.style.background = role.color;
-    strip.append(el("span", "dot"), b2,
-                 el("span", "activity-what", activity.what),
-                 el("span", "activity-elapsed", since));
-    if (activity.model) strip.append(el("span", "muted small", shortModel(activity.model)));
-    if (activity.context) strip.append(contextGauge(activity.context));
-  }
+  header.append(badge,
+                el("span", "activity-what", clip(activity.what, 52)),
+                el("span", "activity-elapsed", since));
+  if (activity.model) header.append(el("span", "muted small", shortModel(activity.model)));
+  if (activity.context) header.append(contextGauge(activity.context));
 }
 
 function trackActivity(event) {

@@ -754,6 +754,8 @@ class _Turn:
         self.stop_reason = "stop"
         self.salvaged_calls = 0
         self.truncated_calls = 0
+        self.context = {"tokens": 12000, "window": 64000, "budget": 55000,
+                        "reserved": 8000, "percent": 18.8, "estimated": False}
 
 
 def test_a_passing_check_lets_the_flow_move_on(tmp_path, monkeypatch):
@@ -4183,3 +4185,38 @@ def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
     assert [s["check"] for s in steps[:2]] == ["factchecker", "factchecker"]
     assert steps[-1]["loop"] == "test-and-fix"
     assert {"devops", "backend", "factchecker", "tester"} <= set(result["proposal"]["team"])
+
+
+def test_a_step_keeps_the_window_reading_it_ended_on(tmp_path, monkeypatch):
+    """The live gauge disappears with the step that was running; keeping the
+    last reading is how you compare one step against another."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])
+    step = Step(role="backend", task="t")
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn(None, "x", outcome=("SUCCESS", "")))
+    engine._execute(step)
+
+    assert step.attempts[-1].context["tokens"] == 12000
+    assert step.attempts[-1].context["window"] == 64000
+    assert step.to_dict()["attempts"][-1]["context"]["percent"] == 18.8
+
+
+def test_the_runner_records_the_window_it_last_used(tmp_path, monkeypatch):
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    class Counter:
+        def complete(self, messages, tools=None, **kw):
+            return ChatResponse(text="OUTCOME: SUCCESS", usage={"prompt_tokens": 4321})
+
+    monkeypatch.setattr(runner, "client_for", lambda config: Counter())
+    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+                            config=ModelConfig(context_window=64000), bus=EventBus(),
+                            session_id="s", step_id="st")
+
+    assert turn.context["tokens"] == 4321
+    assert turn.context["estimated"] is False
