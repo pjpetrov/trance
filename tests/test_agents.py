@@ -1645,7 +1645,7 @@ def test_one_truncated_call_is_retried_not_fatal(monkeypatch, tmp_path):
     assert turn.truncated_calls == 1
     assert turn.outcome[0] == "SUCCESS"
     # The retry prompt must say what went wrong, or the model repeats it verbatim.
-    assert "cut off" in seen[-1]["content"] and "smaller pieces" in seen[-1]["content"]
+    assert "cut off" in seen[-1]["content"] and "append_file" in seen[-1]["content"]
 
 
 # ------------------------------------------------ context gauge numbers
@@ -1792,3 +1792,54 @@ def test_a_rerunning_agent_is_reminded_of_its_own_previous_pass(tmp_path, monkey
     second = "\n".join(steering[1])
     assert "the ball passes through" in second
     assert "Expected: -3" in second
+
+
+# ---------------------------------------------- building a file in pieces
+
+def _tools(tmp_path, role_name="backend"):
+    from trance.agents.tools import AgentTools
+
+    return AgentTools(tmp_path, BUILTIN_ROLES[role_name], None, notify=lambda *a, **k: None)
+
+
+def test_a_file_can_be_built_up_across_several_calls(tmp_path):
+    """A model cannot emit more tokens than the context it has left, so a long
+    file has to arrive in pieces or not at all."""
+    tools = _tools(tmp_path)
+    tools.call("write_file", {"path": "server/app.js", "content": "// part 1\n"})
+    outcome = tools.call("append_file", {"path": "server/app.js", "content": "// part 2\n"})
+
+    assert outcome.ok
+    assert (tmp_path / "server/app.js").read_text() == "// part 1\n// part 2\n"
+    assert outcome.detail["appended"] is True
+    assert outcome.detail["removed"] == 0        # appending never deletes
+    assert "2 lines" in outcome.text
+
+
+def test_append_creates_the_file_when_it_is_missing(tmp_path):
+    tools = _tools(tmp_path)
+    outcome = tools.call("append_file", {"path": "server/new.js", "content": "x\n"})
+    assert outcome.ok and outcome.detail["created"] is True
+    assert (tmp_path / "server/new.js").read_text() == "x\n"
+
+
+def test_append_obeys_the_remit_like_any_write(tmp_path):
+    """The bypass would be obvious otherwise: append to a file you may not write."""
+    tools = _tools(tmp_path, "tester")           # may write tests/**, nothing else
+    outcome = tools.call("append_file", {"path": "server/app.js", "content": "sneaky"})
+    assert outcome.ok is False
+    assert outcome.remit_violation == "server/app.js"
+    assert not (tmp_path / "server/app.js").exists()
+
+
+def test_an_agent_without_the_files_toolset_cannot_append(tmp_path):
+    tools = _tools(tmp_path, "factchecker")
+    outcome = tools.call("append_file", {"path": "a.txt", "content": "x"})
+    assert outcome.ok is False and "do not have" in outcome.text
+
+
+def test_agents_are_told_how_to_write_a_file_too_long_for_one_reply():
+    from trance.agents.tools import permissions_brief
+
+    brief = permissions_brief(BUILTIN_ROLES["backend"])
+    assert "append_file" in brief and "cut off" in brief

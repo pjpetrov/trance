@@ -274,6 +274,14 @@ class AgentTools:
                     {"path": {"type": "string"}, "content": {"type": "string",
                      "description": "The ENTIRE file contents. Not a diff, not a fragment."}},
                     ["path", "content"]),
+                _fn("append_file",
+                    "Add to the END of a file, creating it if absent. Use this when a file is "
+                    "too long to emit in one reply: write_file the first section, then "
+                    "append_file each remaining section. Never use it to edit existing "
+                    "lines — it only ever adds to the end.",
+                    {"path": {"type": "string"}, "content": {"type": "string",
+                     "description": "Text to add at the end, exactly as it should appear."}},
+                    ["path", "content"]),
                 _fn("list_files", "List project files, optionally under a subdirectory.",
                     {"subdir": {"type": "string", "description": "Optional subdirectory."}}, []),
             ]
@@ -328,6 +336,7 @@ class AgentTools:
         handlers = {
             "read_file": self.read_file,
             "write_file": self.write_file,
+            "append_file": self.append_file,
             "list_files": self.list_files,
             "run_command": self.run_command,
             "stop_command": self.stop_command,
@@ -420,6 +429,20 @@ class AgentTools:
                            detail={"kind": "read", "path": path, "bytes": len(raw)})
 
     def write_file(self, path: str, content: str) -> ToolOutcome:
+        return self._put(path, content, append=False)
+
+    def append_file(self, path: str, content: str) -> ToolOutcome:
+        """Add to the end of a file, so a large one can be built up in pieces.
+
+        A model cannot emit a file longer than the context it has left — every
+        token it generates occupies the same window the prompt sits in. Without
+        this, "write it in smaller pieces" is advice an agent cannot follow:
+        write_file takes the *whole* file, so section two would have to repeat
+        section one and hit the same ceiling.
+        """
+        return self._put(path, content, append=True)
+
+    def _put(self, path: str, content: str, *, append: bool) -> ToolOutcome:
         target = self._resolve(path)
         if target is None:
             return ToolOutcome(f"Refused: {path!r} is outside the project directory.", ok=False)
@@ -440,23 +463,26 @@ class AgentTools:
                 previous = target.read_text(encoding="utf8")
             except OSError:
                 previous = ""
-        target.write_text(content, encoding="utf8")
+        final = previous + content if append else content
+        target.write_text(final, encoding="utf8")
 
         diff_lines = list(difflib.unified_diff(
-            previous.splitlines(), content.splitlines(),
+            previous.splitlines(), final.splitlines(),
             fromfile=f"a/{rel}", tofile=f"b/{rel}", lineterm="", n=3,
         ))
         truncated = len(diff_lines) > MAX_DIFF_LINES
         added = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
         removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
 
-        verb = "Updated" if existed else "Created"
+        verb = "Appended to" if append else ("Updated" if existed else "Created")
+        size = (f"{len(content)} bytes added, {len(final)} total" if append
+                else f"{len(final)} bytes")
         return ToolOutcome(
-            f"{verb} {rel} ({len(content)} bytes).",
+            f"{verb} {rel} ({size}, {len(final.splitlines())} lines).",
             files_written=[rel],
             detail={
-                "kind": "write", "path": rel, "created": not existed,
-                "bytes": len(content), "added": added, "removed": removed,
+                "kind": "write", "path": rel, "created": not existed, "appended": append,
+                "bytes": len(final), "added": added, "removed": removed,
                 "diff": "\n".join(diff_lines[:MAX_DIFF_LINES]),
                 "truncated": truncated,
             },
@@ -745,6 +771,12 @@ def permissions_brief(role: AgentRole) -> str:
         lines.append(
             "write_file creates any missing parent directories, so you never need to "
             "create a folder before writing into it."
+        )
+        lines.append(
+            "A reply has a length limit, and a tool call that runs past it is cut off "
+            "and never runs. For a long file, write_file the first section and then "
+            "append_file each remaining section — do not try to emit the whole thing "
+            "in one call and do not resend a call that was cut off."
         )
     elif "inspect" not in role.toolsets:
         lines.append("You have NO file access: you cannot read or write files.")

@@ -257,10 +257,10 @@ def run_agent(
                     f"Your last tool call was cut off partway through its arguments — it hit "
                     f"the {model_config.max_tokens}-token output limit — so the endpoint "
                     f"rejected it and nothing ran.\n\n"
-                    f"Do not send that call again unchanged; it will be cut off in the same "
-                    f"place. Write the file in smaller pieces: one write_file per file, and "
-                    f"for a large file write it in sections across several calls, appending "
-                    f"as you go. Keep each call's content well under the limit."),
+                    f"Do not send that call again unchanged; it will be cut off in the "
+                    f"same place. Split the file: write_file with the first section only, "
+                    f"then append_file for each following section. Keep every call's "
+                    f"content well under the limit."),
             })
             if turn.truncated_calls >= 3:
                 turn.stop_reason = "truncated_tool_calls"

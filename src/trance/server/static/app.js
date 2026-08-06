@@ -1897,7 +1897,7 @@ function consoleAppend(event) {
         consolePush(consoleEntry({
           kind: "write", icon: d.created ? ICON.create : ICON.write, time, tag: event.agent,
           label: labelWith([
-            [d.created ? "create " : "edit ", ""], [d.path, "c-path"],
+            [d.appended ? "append " : d.created ? "create " : "edit ", ""], [d.path, "c-path"],
             ["  +" + d.added, "c-add"], [" −" + d.removed, "c-del"],
           ]),
           body: () => {
