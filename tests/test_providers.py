@@ -640,3 +640,20 @@ def test_a_model_can_be_tested_from_its_own_card(tmp_path, monkeypatch):
     body = client.post("/api/presets/local/check").json()
     assert body["ok"] is True and body["reply"] == "OK"
     assert client.post("/api/presets/nope/check").status_code == 404
+
+
+def test_static_assets_are_always_revalidated(tmp_path):
+    """A cached app.js showing behaviour that was removed is indistinguishable
+    from a bug in the software."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    response = client.get("/static/app.js")
+    assert response.status_code == 200
+    assert "no-cache" in response.headers.get("cache-control", "")

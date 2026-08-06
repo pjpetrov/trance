@@ -189,7 +189,17 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     def index():
         return FileResponse(STATIC / "index.html")
 
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    class FreshStatic(StaticFiles):
+        """Always revalidate. The UI changes under the user constantly, and a
+        cached app.js showing behaviour that was removed is indistinguishable
+        from a bug in the software."""
+
+        def file_response(self, *args, **kwargs):
+            response = super().file_response(*args, **kwargs)
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return response
+
+    app.mount("/static", FreshStatic(directory=STATIC), name="static")
 
     # ------------------------------------------------------------- config
 
@@ -735,12 +745,17 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             # Splitting is one model call per oversized step and can run for a
             # minute on a local model. Showing the plan first and refining it
             # after beats an empty flow panel and no explanation.
-            oversized = [s for s in proposal["steps"]
-                         if (s.get("points") or 0) > config.max_step_points > 0]
+            # The flow is already applied, so the proposal's steps and the
+            # session's are the same list — which is how the UI can mark the
+            # exact steps being worked on rather than the whole plan.
+            oversized = [(step.id, raw) for step, raw
+                         in zip(session.flow.steps, proposal["steps"])
+                         if (raw.get("points") or 0) > config.max_step_points > 0]
             if oversized:
                 bus.emit("splitting_steps", session_id, agent="orchestrator", payload={
                     "count": len(oversized), "threshold": config.max_step_points,
-                    "tasks": [s["task"] for s in oversized],
+                    "step_ids": [step_id for step_id, _ in oversized],
+                    "tasks": [raw["task"] for _, raw in oversized],
                     "message": (f"{len(oversized)} step(s) are over "
                                 f"{config.max_step_points} points — breaking them up."),
                 })

@@ -293,7 +293,6 @@ function renderFlowEditor() {
       ? "Waiting for the orchestrator to break the oversized steps up…"
       : "No steps yet — describe the project to the orchestrator, or add one manually."));
   }
-  if (state.splitting) box.append(splittingNote());
   state.draftSteps.forEach((step, index) => box.append(stepCard(step, index)));
 }
 
@@ -303,13 +302,17 @@ function draftFingerprint() {
     (s) => [s.role, s.task, s.check, s.on_fail, s.max_loops]));
 }
 
-function splittingNote() {
-  const note = el("div", "splitting-note");
-  note.append(el("span", "spin", "◐"));
-  note.append(el("span", null,
-    `The orchestrator is breaking up ${state.splitting.count} step(s) over `
-    + `${state.splitting.threshold} points. The plan below updates when it is done.`));
-  return note;
+//: Ids of the steps the orchestrator is breaking up right now.
+function splittingIds() {
+  return new Set((state.splitting && state.splitting.step_ids) || []);
+}
+
+function splittingMark(step) {
+  const mark = el("span", "splitting-mark");
+  mark.append(el("span", "spin", "◐"), el("span", null, "splitting…"));
+  mark.title = `Over ${state.splitting.threshold} points — the orchestrator is `
+               + "breaking this step into smaller ones. It updates when that is done.";
+  return mark;
 }
 
 //: A step you can no longer be waiting on — safe to fold away.
@@ -379,6 +382,7 @@ function stepCard(step, index) {
     if (role) badge.style.background = role.color;
     head.append(badge, el("span", "badge", step.status));
     if (step.points) head.append(pointsBadge(step));
+    if (splittingIds().has(step.id)) head.append(splittingMark(step));
     head.append(el("span", "step-peek", clip(step.task, 70)));
     const open = el("button", "step-toggle", "▸");
     open.title = "Show this step";
@@ -450,6 +454,7 @@ function stepCard(step, index) {
   }
 
   head.append(pointsBadge(step));
+  if (splittingIds().has(step.id)) head.append(splittingMark(step));
 
   // Splitting is the fix for the number being too big, so it belongs next to it.
   const split = el("button", "small", "split");
@@ -545,17 +550,16 @@ function stepCard(step, index) {
     }
     gatesBox.append(row);
 
-    const who = step.on_fail || step.role;
     const limit = step.max_loops ?? 2;
     gatesBox.append(el("div", "loop-note",
-      `${step.role} reports SUCCESS → next step. ` +
-      `Anything else → ${who} fixes it → ${step.role} runs again ` +
-      `(${limit} loop${limit > 1 ? "s" : ""}, then the flow halts).`));
+      `${step.role} reports SUCCESS → next step. Anything else → ${step.role} tries `
+      + `again (${limit} tr${limit > 1 ? "ies" : "y"} in all, then the flow halts). `
+      + "To bring another agent in on failure, run a loop instead."));
     gatesBox.append(el("div", step.check ? "loop-note check-note" : "loop-note muted",
       step.check
         ? `${step.check} separately checks that the report is true. It never sends work `
-          + `to ${who} — if ${step.role} claims SUCCESS and ${step.check} disagrees, `
-          + `the flow stops.`
+          + `back — if ${step.role} claims SUCCESS and ${step.check} disagrees, the flow `
+          + "stops."
         : `No fact check — ${step.role}'s report of its own outcome is taken at face value.`));
   };
   drawGates();
@@ -1679,10 +1683,9 @@ function openStep(step, index) {
   const skip = el("button", null, "skip");
   skip.onclick = () => api(`/api/sessions/${state.session.id}/steps/${step.id}/skip`, { method: "POST" });
   head.append(rerun, skip);
-  if (step.checker) {
-    head.append(el("span", "badge", `check: ${step.checker}`));
-    head.append(el("span", "badge", `on fail: ${step.fixer}`));
-  }
+  if (step.loop) head.append(el("span", "badge loop-badge", `↻ ${step.loop}`));
+  if (step.checker) head.append(el("span", "badge", `check: ${step.checker}`));
+  if (step.on_fail) head.append(el("span", "badge", `on fail: ${step.on_fail}`));
   body.append(head);
 
   body.append(rowWithCopy("task", step.task || ""));

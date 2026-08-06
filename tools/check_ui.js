@@ -93,12 +93,25 @@ try {
   api.state.roles = { backend: { name: "backend", color: "#7aa2f7", verifier: false },
                       tester: { name: "tester", color: "#f7768e", verifier: true } };
   api.state.planning = { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] };
+  // One step mid-split: the marker belongs on that card, not above the plan.
+  api.state.splitting = { count: 1, threshold: 5, step_ids: ["s4"] };
   api.state.draftSteps = ["pending", "running", "done", "failed", "skipped", "blocked"]
     .map((status, i) => ({ id: `s${i}`, role: "backend", task: `task ${i}`, status,
                            check: "tester", on_fail: null, max_loops: 2, checker: "tester",
                            fixer: "backend", loop_limit: 2, attempts: [],
                            points: [0, 1, 3, 5, 8, 13][i] }));
   api.state.draftSteps.forEach((step, i) => api.stepCard(step, i));   // every status
+  const splitting = api.stepCard(api.state.draftSteps[4], 4);
+  if (!flat(splitting).includes("splitting…")) {
+    console.log("BROKEN: the step being split is not marked");
+    process.exit(1);
+  }
+  if (flat(api.stepCard(api.state.draftSteps[0], 0)).includes("splitting…")) {
+    console.log("BROKEN: a step that is not being split is marked");
+    process.exit(1);
+  }
+  api.state.splitting = null;
+
   api.renderSessionBar(); api.renderChat(); api.renderFlowEditor();
   api.renderFlowView(); api.renderRun(); api.paintPaused();
   api.consoleReset();
@@ -163,6 +176,9 @@ try {
                  notes: ["- **backend**: port 3100"] } },
     { type: "memory_compacted", agent: "orchestrator",
       payload: { compacted: false, reason: "the rewrite produced no notes" } },
+    { type: "splitting_steps", agent: "orchestrator",
+      payload: { count: 1, threshold: 5, step_ids: ["s4"], tasks: ["build it all"],
+                 message: "1 step(s) are over 5 points — breaking them up." } },
     { type: "approval_requested", agent: "tester", step_id: "st1",
       payload: { id: "ap_1", kind: "write", agent: "tester", subject: "jest.config.js",
                  detail: { remit: ["tests/**"] }, timeout_s: 300,
