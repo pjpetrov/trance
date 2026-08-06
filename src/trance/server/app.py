@@ -252,6 +252,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if provider is None:
             raise HTTPException(400, f"unknown provider {body.get('provider')!r}")
         model = (body.get("model") or "").strip() or provider.model
+        window = int(body.get("context_window") or 0) or provider.context_window
+        reserved = int(body.get("max_tokens") or 0)
+        # Output room is taken *out of* the window. Past half of it the agent has
+        # less context than reply space, which is the opposite of the point.
+        if reserved and reserved > window // 2:
+            raise HTTPException(400, (
+                f"max output {reserved} leaves only {max(0, window - reserved)} tokens of "
+                f"a {window}-token window for context. Keep it under {window // 2}."))
         saved = providers.upsert_preset(ModelPreset.from_dict({**body, "name": name, "model": model}))
         _sync()
         return saved.to_dict()

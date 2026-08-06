@@ -71,6 +71,21 @@ class AgentDefaults:
 #: whose output is a tool call.
 ORCHESTRATOR_MAX_TOKENS = 8192
 
+#: Share of the context window reserved for the reply when nothing explicit is
+#: configured. A flat 4096 is far too little for an agent writing a whole file,
+#: and the failure is ugly rather than graceful: the model stops mid-string and
+#: the endpoint rejects the half-written tool call. An eighth scales with the
+#: model — 8k on a 64k local window, 25k on Haiku's 200k.
+OUTPUT_SHARE = 8
+#: Above this, more output room buys nothing and costs input. No current model
+#: will emit more than this in one reply anyway.
+MAX_OUTPUT_TOKENS = 32_768
+
+
+def default_output_tokens(window: int, floor: int) -> int:
+    """Output budget for a window when no preset or role sets one explicitly."""
+    return max(floor, min(MAX_OUTPUT_TOKENS, max(1024, window // OUTPUT_SHARE)))
+
 
 @dataclass
 class Config:
@@ -122,7 +137,9 @@ class Config:
             model=model or defaults.model or chosen.model,
             api_key=chosen.api_key,
             temperature=defaults.temperature if temperature is None else temperature,
-            max_tokens=max_tokens or defaults.max_tokens,
+            # An explicit setting on the preset or the role always wins; the
+            # fallback scales with the window rather than sitting at 4096.
+            max_tokens=max_tokens or default_output_tokens(window, defaults.max_tokens),
             timeout_s=defaults.timeout_s,
             max_tool_rounds=defaults.max_tool_rounds,
             context_window=window,

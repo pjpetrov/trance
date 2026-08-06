@@ -323,3 +323,36 @@ def test_rename_to_the_same_name_is_a_noop(tmp_path):
 def test_rename_unknown_preset_returns_none(tmp_path):
     store = ProviderStore(tmp_path / "p.json")
     assert store.rename_preset("nope", "other") is None
+
+
+def _api(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    return TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+
+def test_a_preset_can_set_its_own_output_room(tmp_path, monkeypatch):
+    client = _api(tmp_path, monkeypatch)
+    body = client.put("/api/presets/coder", json={
+        "provider": "default", "model": "qwen", "context_window": 64000,
+        "max_tokens": 16384}).json()
+    assert body["max_tokens"] == 16384
+
+    presets = client.get("/api/presets").json()["presets"]
+    assert next(p for p in presets if p["name"] == "coder")["max_tokens"] == 16384
+
+
+def test_output_room_larger_than_half_the_window_is_refused(tmp_path, monkeypatch):
+    """Reply space is taken out of the window; past half of it the agent has
+    more room to talk than to read."""
+    client = _api(tmp_path, monkeypatch)
+    response = client.put("/api/presets/greedy", json={
+        "provider": "default", "model": "qwen", "context_window": 64000,
+        "max_tokens": 64000})
+    assert response.status_code == 400
+    assert "32000" in response.json()["detail"]

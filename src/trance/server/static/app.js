@@ -805,8 +805,17 @@ function presetCard(preset, isNew) {
   ctx.title = "Override when the model's window differs from the provider default " +
               "(e.g. Haiku is 200k where Opus is 1M). Wrong values 400 mid-run.";
 
+  const out = el("input", "compact");
+  out.type = "number";
+  out.value = preset.max_tokens || "";
+  out.placeholder = "auto (⅛ of window)";
+  out.title = "Longest single reply this model may produce. A tool call that runs " +
+              "past it is cut off mid-argument and rejected, so a model that writes " +
+              "whole files needs room. It is taken out of the context window.";
+
   grid.append(wrap("Name (agents pick this)", name), wrap("Provider", provider),
-              wrap("Model", model), wrap("Context window", ctx));
+              wrap("Model", model), wrap("Context window", ctx),
+              wrap("Max output", out));
 
   const actions = el("div", "row small");
   const save = el("button", "primary", "Save");
@@ -834,6 +843,7 @@ function presetCard(preset, isNew) {
         provider: provider.value,
         model: model.value.trim(),
         context_window: Number(ctx.value) || 0,
+        max_tokens: Number(out.value) || 0,
       },
     });
     if (target === preset.name) toast(`Saved model “${target}”.`);
