@@ -510,12 +510,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                     raise HTTPException(400, (
                         f"{step.checker!r} cannot verify — it has no way to inspect a "
                         f"result. Choose one of: {', '.join(allowed) or '(none configured)'}."))
-            if step.on_fail:
-                if roles.get(step.on_fail) is None:
-                    raise HTTPException(400, f"unknown fixing agent {step.on_fail!r}")
-                if not step.checker:
-                    raise HTTPException(
-                        400, "a fixing agent only makes sense with a check to fail")
+            if step.on_fail and roles.get(step.on_fail) is None:
+                raise HTTPException(400, f"unknown fixing agent {step.on_fail!r}")
         # Same rule whether or not a run is live: only in-flight steps are
         # immutable. Editing a finished or failed step re-queues it.
         outcome = session.flow.apply_edits(steps)

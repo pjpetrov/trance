@@ -1468,3 +1468,72 @@ def test_the_tester_is_forbidden_from_weakening_tests():
     assert "Never weaken a test to make it pass" in prompt
     assert "leave the test as it is and report FAILED" in prompt
     assert "defect you were not asked about" in prompt
+
+
+# ------------------------- the check never routes work to the fixer
+
+def test_a_failing_check_never_sends_work_to_the_fixer(tmp_path, monkeypatch):
+    """The check only decides whether to halt. Only the outcome loops."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
+    step = Step(role="backend", task="t", check="factchecker",
+                on_fail="reviewer", max_loops=3)
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        if kw["role"].name == "factchecker":
+            return _Turn("FAIL", "nothing on disk")
+        return _Turn(None, "done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert "reviewer" not in order          # the fixer was never involved
+    assert engine.session.stopping         # it halted instead
+
+
+def test_the_fixer_runs_without_any_check_configured(tmp_path, monkeypatch):
+    """A fixer is about the step's outcome, so it needs no fact check."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "reviewer"])
+    step = Step(role="backend", task="t", check=None, on_fail="reviewer", max_loops=2)
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        first = order.count("backend") == 1
+        return _Turn(None, "x",
+                     outcome=("FAILED", "port already in use") if first else ("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert order == ["backend", "reviewer", "backend"]
+    assert step.status == "done"
+
+
+def test_the_fixer_is_briefed_on_the_outcome_not_the_check(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
+    step = Step(role="backend", task="t", check="factchecker",
+                on_fail="reviewer", max_loops=2)
+    prompts = {}
+
+    def fake(**kw):
+        name = kw["role"].name
+        prompts.setdefault(name, kw["task"])
+        if name == "factchecker":
+            return _Turn("PASS", "files are all there")
+        if name == "backend":
+            first = "backend" not in prompts or len(prompts) < 3
+            return _Turn(None, "tried",
+                         outcome=("FAILED", "the port was already taken") if first
+                         else ("SUCCESS", ""))
+        return _Turn(None, "fixed")
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert "the port was already taken" in prompts["reviewer"]
+    assert "files are all there" not in prompts["reviewer"]

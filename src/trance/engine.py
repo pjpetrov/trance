@@ -247,7 +247,9 @@ class FlowEngine:
 
             # The step reported a problem — that is what opens the loop, whether
             # or not a fact check ran.
-            feedback = reason or attempt.feedback or step.summary
+            # The fixer acts on what the step reported, not on the fact
+            # check — the check only ever decides whether to halt.
+            feedback = reason or step.summary
             if loop >= limit:
                 break
 
@@ -281,7 +283,7 @@ class FlowEngine:
             return
 
         self._emit("fixing", agent=fixer.name, step_id=step.id, payload={
-            "message": (f"{fixer.title} will try to fix what {step.checker} found, "
+            "message": (f"{fixer.title} will try to fix what {step.role} reported, "
                         f"then {step.role} runs again (loop {loop + 1} of {limit})."),
             "loop": loop, "of": limit,
         })
@@ -296,7 +298,7 @@ class FlowEngine:
                 f"## What the step was asked to do\n{step.task}\n\n"
                 f"## What {step.role} reported\n{step.summary}\n\n"
                 f"## Files it changed\n{', '.join(attempt.files_written) or 'none'}\n\n"
-                f"## What {step.checker} objected to\n{feedback}\n\n"
+                f"## What went wrong\n{feedback}\n\n"
                 f"Fix the cause of that objection. Change only what is needed — "
                 f"{step.role} will run again afterwards and the check will be repeated."
             ),

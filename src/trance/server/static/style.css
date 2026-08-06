@@ -458,3 +458,4 @@ input.tiny { width: 62px; min-width: 0; }
 /* The whole folded row opens it — the arrow is a hint, not the only target. */
 .step-card.collapsed .step-head { cursor: pointer; }
 .step-card.collapsed:hover .step-toggle { color: var(--accent); }
+.loop-note.check-note { color: var(--accent); }

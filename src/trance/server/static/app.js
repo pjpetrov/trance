@@ -411,7 +411,8 @@ function stepCard(step, index) {
       check.append(opt);
     });
     check.disabled = !editable;
-    check.title = "Checks that the agent's report is true. A false report halts the run.";
+    check.title = "Independent check that the agent's report is true. It does not decide " +
+                  "the loop — a false report stops the flow outright.";
     check.onchange = () => { step.check = check.value || null; drawGates(); };
 
     const fixer = el("select", "compact");
@@ -424,32 +425,34 @@ function stepCard(step, index) {
       if (r.name === (step.on_fail || "")) opt.selected = true;
       fixer.append(opt);
     });
-    fixer.disabled = !editable || !step.check;
-    fixer.title = "Who tries to fix a failed check before the block runs again";
+    fixer.disabled = !editable;
+    fixer.title = "Who tries to fix the problem when this step reports anything " +
+                  "other than SUCCESS, before it runs again";
     fixer.onchange = () => { step.on_fail = fixer.value || null; drawGates(); };
 
     const loops = el("input", "compact tiny");
     loops.type = "number";
     loops.min = 1;
     loops.value = step.max_loops ?? 2;
-    loops.disabled = !editable || !step.check;
-    loops.title = "Loops allowed before the run is halted";
+    loops.disabled = !editable;
+    loops.title = "How many times this step may run before the flow is halted";
     loops.onchange = () => { step.max_loops = Number(loops.value) || 1; drawGates(); };
 
     row.append(field("check", check), field("on fail", fixer), field("loops", loops));
     gatesBox.append(row);
 
-    if (step.check) {
-      const who = step.on_fail || step.role;
-      gatesBox.append(el("div", "loop-note",
-        `${step.role} reports SUCCESS → ${step.check} confirms → next step · ` +
-        `reports a problem → ${who} fixes → ${step.role} again ` +
-        `(${step.max_loops ?? 2} loops) · claims SUCCESS but ${step.check} disagrees → run halts`));
-    } else {
-      gatesBox.append(el("div", "loop-note muted",
-        `No fact check — ${step.role}'s own report is taken at face value. ` +
-        `A reported problem still loops through ${step.on_fail || step.role}.`));
-    }
+    const who = step.on_fail || step.role;
+    const limit = step.max_loops ?? 2;
+    gatesBox.append(el("div", "loop-note",
+      `${step.role} reports SUCCESS → next step. ` +
+      `Anything else → ${who} fixes it → ${step.role} runs again ` +
+      `(${limit} loop${limit > 1 ? "s" : ""}, then the flow halts).`));
+    gatesBox.append(el("div", step.check ? "loop-note check-note" : "loop-note muted",
+      step.check
+        ? `${step.check} separately checks that the report is true. It never sends work `
+          + `to ${who} — if ${step.role} claims SUCCESS and ${step.check} disagrees, `
+          + `the flow stops.`
+        : `No fact check — ${step.role}'s report of its own outcome is taken at face value.`));
   };
   drawGates();
 
