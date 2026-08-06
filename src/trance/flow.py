@@ -60,8 +60,13 @@ class Attempt:
 
 @dataclass
 class Step:
+    #: The agent that does the work. Ignored when `loop` is set.
     role: str
     task: str
+    #: Run a named loop instead of a single agent. A one-shot task wants an
+    #: agent; anything with a "and check it, and fix it, and check again" shape
+    #: wants a loop, and expressing that with one step's retry never quite fit.
+    loop: str = ""
     id: str = field(default_factory=new_step_id)
     #: Optional reality check run after the work. PASS lets the flow move on;
     #: anything else opens the block's internal loop.
@@ -112,8 +117,13 @@ class Step:
         """Legacy accessor; the UI and traces now use `checker`."""
         return [self.checker] if self.checker else []
 
+    @property
+    def runs_a_loop(self) -> bool:
+        return bool(self.loop)
+
     def to_dict(self) -> dict:
         data = asdict(self)
+        data["runs_a_loop"] = self.runs_a_loop
         data["checks"] = self.checks
         data["checker"] = self.checker
         data["fixer"] = self.fixer
@@ -124,7 +134,7 @@ class Step:
     def from_dict(cls, data: dict) -> "Step":
         data = dict(data)
         data.pop("attempts", None)
-        for derived in ("checks", "checker", "fixer", "loop_limit"):
+        for derived in ("checks", "checker", "fixer", "loop_limit", "runs_a_loop"):
             data.pop(derived, None)
         # Older shapes fold into `check`.
         if not data.get("check"):
@@ -182,12 +192,14 @@ class Flow:
 
             changed = (
                 existing.role != incoming.role
+                or existing.loop != incoming.loop
                 or existing.task != incoming.task
                 or existing.checker != incoming.checker
                 or existing.fixer != incoming.fixer
                 or existing.entry != incoming.entry
             )
             existing.role, existing.task = incoming.role, incoming.task
+            existing.loop = incoming.loop
             existing.check = incoming.checker
             existing.on_fail = incoming.on_fail
             existing.max_loops = incoming.loop_limit

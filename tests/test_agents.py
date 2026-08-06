@@ -3578,3 +3578,270 @@ def test_an_agent_without_the_graph_reads_whole_files(tmp_path):
     (tmp_path / "app.py").write_text(body)
     tools = _tools(tmp_path)                       # no graph tools attached
     assert not tools.call("read_file", {"path": "app.py"}).detail.get("outline")
+
+
+# ============================== loops: a reusable block of agents
+
+def _loop_engine(tmp_path, team, loop):
+    from trance.agents.store import LoopStore
+
+    engine = _engine(tmp_path, team)
+    store = LoopStore(tmp_path / "loops.json", seed=False)
+    store.upsert(loop)
+    engine.loops = store
+    return engine
+
+
+def _tf_loop(**kw):
+    """tester → (fail) → backend → (success) → tester, exit when tests pass."""
+    from trance.loops import (
+        CHECK_FAILED, EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS, Edge, Loop, LoopNode)
+
+    test = LoopNode(id="n_test", role="tester", focus="run the tests",
+                    on={SUCCESS: Edge(EXIT_LOOP), FAILED: Edge("n_fix", max_visits=3)})
+    fix = LoopNode(id="n_fix", role="backend", focus="fix the code under test",
+                   on={SUCCESS: Edge("n_test", max_visits=3), FAILED: Edge(FAIL_LOOP)})
+    return Loop(name="test-and-fix", nodes=[test, fix], start="n_test", **kw)
+
+
+def test_a_loop_walks_from_agent_to_agent_by_outcome(tmp_path, monkeypatch):
+    """The shape people build by hand: tester finds a bug, developer fixes it,
+    tester runs again."""
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    step = Step(role="", loop="test-and-fix", task="make the paddle bounce")
+    order = []
+
+    def fake(**kw):
+        name = kw["role"].name
+        order.append(name)
+        # The tester fails once, the developer fixes, then the tester passes.
+        failing = name == "tester" and order.count("tester") == 1
+        return _Turn(None, "x", outcome=("FAILED", "ball passes through") if failing
+                     else ("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert order == ["tester", "backend", "tester"]
+    assert step.status == "done"
+
+
+def test_each_agent_in_a_loop_gets_the_step_task_and_its_own_focus(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "backend"],
+                          _tf_loop(prompt="This block ends when the tests pass."))
+    engine.session.goal = "A crypto backtester."
+    step = Step(role="", loop="test-and-fix", task="make the paddle bounce")
+    seen = {}
+
+    def fake(**kw):
+        seen[kw["role"].name] = (kw["task"], kw.get("goal", ""))
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    task, goal = seen["tester"]
+    assert "make the paddle bounce" in task        # the step's prompt
+    assert "run the tests" in task                 # and this agent's part in it
+    assert "A crypto backtester." in goal          # the project
+    assert "ends when the tests pass" in goal      # and what the loop is for
+
+
+def test_a_loop_that_will_not_converge_stops(tmp_path, monkeypatch):
+    """max_visits on an edge is what makes a loop finite."""
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    step = Step(role="", loop="test-and-fix", task="t")
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        # Nothing ever gets fixed: the tester always fails, the fixer always
+        # claims success, and the pair would run forever.
+        return _Turn(None, "x", outcome=("FAILED", "still broken")
+                     if kw["role"].name == "tester" else ("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert step.status == "failed"
+    assert engine.session.status == "error"        # it halts rather than moving on
+    assert 4 <= len(order) <= 10                   # bounded, not forever
+    assert any(e.type == "loop_exhausted" for e in engine.bus.history(engine.session.id))
+
+
+def test_an_unrouted_outcome_ends_the_loop_rather_than_guessing(tmp_path, monkeypatch):
+    """A missing exit means the author did not think about it, which is not a
+    reason to invent a destination."""
+    from trance.flow import Step
+    from trance.loops import EXIT_LOOP, SUCCESS, Edge, Loop, LoopNode
+
+    lonely = Loop(name="one-shot", nodes=[LoopNode(
+        id="n1", role="backend", on={SUCCESS: Edge(EXIT_LOOP)})])
+    engine = _loop_engine(tmp_path, ["backend"], lonely)
+    step = Step(role="", loop="one-shot", task="t")
+
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn(None, "x", outcome=("FAILED", "nope")))
+    engine._execute(step)
+    assert step.status == "failed"
+
+
+def test_a_failed_check_routes_differently_from_a_failed_outcome(tmp_path, monkeypatch):
+    """Three exits, not two: the agent said it worked and the checker disagreed
+    is a different situation from the agent saying it failed."""
+    from trance.flow import Step
+    from trance.loops import CHECK_FAILED, EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS, Edge, Loop, LoopNode
+
+    loop = Loop(name="checked", start="n1", nodes=[
+        LoopNode(id="n1", role="backend", check="factchecker",
+                 on={SUCCESS: Edge(EXIT_LOOP), FAILED: Edge(FAIL_LOOP),
+                     CHECK_FAILED: Edge("n2", max_visits=2)}),
+        LoopNode(id="n2", role="reviewer", on={SUCCESS: Edge(EXIT_LOOP),
+                                               FAILED: Edge(FAIL_LOOP)}),
+    ])
+    engine = _loop_engine(tmp_path, ["backend", "factchecker", "reviewer"], loop)
+    step = Step(role="", loop="checked", task="t")
+    order = []
+
+    def fake(**kw):
+        name = kw["role"].name
+        order.append(name)
+        if name == "factchecker":
+            return _Turn("FAIL", "the file is empty")
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert order[:2] == ["backend", "factchecker"]
+    assert "reviewer" in order            # CHECK_FAILED took its own route
+    assert step.status == "done"
+
+
+def test_an_unknown_loop_halts_instead_of_running_nothing(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["backend"], _tf_loop())
+    step = Step(role="", loop="does-not-exist", task="t")
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn(None, "x", outcome=("SUCCESS", "")))
+
+    engine._execute(step)
+    assert step.status == "failed" and "unknown loop" in step.summary
+
+
+def test_a_loop_is_validated_before_it_can_be_saved():
+    """A loop that dead-ends is otherwise discovered halfway through a run,
+    with the work already done."""
+    from trance.loops import EXIT_LOOP, FAILED, SUCCESS, CHECK_FAILED, Edge, Loop, LoopNode, validate
+
+    roles = {"tester", "backend", "factchecker"}
+    verifiers = {"factchecker"}
+
+    ok = Loop(name="fine", nodes=[LoopNode(id="a", role="tester",
+                                           on={SUCCESS: Edge(EXIT_LOOP)})])
+    assert validate(ok, roles, verifiers) is None
+
+    assert "at least one agent" in validate(Loop(name="empty"), roles, verifiers)
+    assert "no spaces" in validate(Loop(name="two words", nodes=ok.nodes), roles, verifiers)
+
+    unknown = Loop(name="x", nodes=[LoopNode(id="a", role="nobody",
+                                             on={SUCCESS: Edge(EXIT_LOOP)})])
+    assert "unknown agent" in validate(unknown, roles, verifiers)
+
+    dangling = Loop(name="x", nodes=[LoopNode(id="a", role="tester",
+                                              on={SUCCESS: Edge(EXIT_LOOP),
+                                                  FAILED: Edge("gone")})])
+    assert "points nowhere" in validate(dangling, roles, verifiers)
+
+    no_exit = Loop(name="x", nodes=[LoopNode(id="a", role="tester",
+                                             on={SUCCESS: Edge("a")})])
+    assert "exits successfully" in validate(no_exit, roles, verifiers)
+
+    bad_check = Loop(name="x", nodes=[LoopNode(id="a", role="tester", check="backend",
+                                               on={SUCCESS: Edge(EXIT_LOOP)})])
+    assert "cannot check work" in validate(bad_check, roles, verifiers)
+
+    impossible = Loop(name="x", nodes=[LoopNode(id="a", role="tester",
+                                                on={SUCCESS: Edge(EXIT_LOOP),
+                                                    CHECK_FAILED: Edge(EXIT_LOOP)})])
+    assert "can never happen" in validate(impossible, roles, verifiers)
+
+
+def test_the_seeded_loop_is_valid_and_describes_the_common_shape(tmp_path):
+    from trance.agents.roles import BUILTIN_ROLES as R
+    from trance.agents.store import LoopStore
+    from trance.loops import validate
+
+    loops = LoopStore(tmp_path / "loops.json").all()
+    assert [l.name for l in loops] == ["test-and-fix"]
+    assert validate(loops[0], set(R), {n for n, r in R.items() if r.verifier}) is None
+    assert loops[0].roles() == ["tester", "backend"]
+
+
+def test_a_flow_step_can_name_a_loop_and_pulls_in_its_agents(tmp_path):
+    """A loop calling an agent the session has never heard of fails at run
+    time, after everything before it has run."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    body = client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "", "loop": "test-and-fix", "task": "make it bounce"}]}).json()
+
+    assert body["steps"][0]["runs_a_loop"] is True
+    team = {r["name"] for r in body["team"]}
+    assert {"tester", "backend"} <= team
+
+    bad = client.put(f"/api/sessions/{sid}/flow",
+                     json={"steps": [{"role": "", "loop": "nope", "task": "t"}]})
+    assert bad.status_code == 400 and "unknown loop" in bad.json()["detail"]
+
+
+def test_a_loop_in_use_cannot_be_deleted(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow",
+               json={"steps": [{"role": "", "loop": "test-and-fix", "task": "t"}]})
+
+    blocked = client.delete("/api/loops/test-and-fix")
+    assert blocked.status_code == 409 and "used by" in blocked.json()["detail"]
+
+
+def test_an_invalid_loop_is_refused_by_the_api(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    response = client.put("/api/loops/broken", json={"nodes": [
+        {"id": "a", "role": "tester", "on": {"SUCCESS": {"target": "a"}}}]})
+    assert response.status_code == 400
+    assert "exits successfully" in response.json()["detail"]

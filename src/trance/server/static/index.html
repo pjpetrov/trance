@@ -14,6 +14,7 @@
   <div class="spacer"></div>
   <button id="open-commands" class="icon-btn" title="Allowed commands">$_</button>
   <button id="open-agents" class="icon-btn" title="Agents &amp; permissions">👥</button>
+  <button id="open-loops" class="icon-btn" title="Loops — reusable blocks of agents">↻</button>
   <button id="open-settings" class="icon-btn" title="Providers &amp; models">⚙</button>
 </header>
 
@@ -185,6 +186,23 @@
       <button id="close-step" class="icon-btn">✕</button>
     </div>
     <div id="step-body"></div>
+  </div>
+</div>
+
+<!-- Loops: reusable blocks of agents, wired by outcome -->
+<div id="loops" class="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>↻ Loops</h2>
+      <button id="close-loops" class="icon-btn">✕</button>
+    </div>
+    <p class="muted small">A loop is a block of agents wired by outcome, saved under a name.
+      A step can run one instead of a single agent — pick it in the Flow. Each agent's
+      <b>SUCCESS</b>, <b>FAILED</b> and <b>CHECK&nbsp;FAILED</b> decides who runs next, or
+      leaves the loop. The number on an arrow is how many times it may be taken before the
+      loop gives up.</p>
+    <div id="loop-list" class="provider-list"></div>
+    <div class="row"><button id="add-loop" class="primary">+ New loop</button></div>
   </div>
 </div>
 

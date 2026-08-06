@@ -18,13 +18,15 @@ from ..agents.approval import ALWAYS, ApprovalBroker, DECISIONS
 from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
 from ..agents.store import (
-    CommandStore, DEFAULT_LIST, PROTECTED, RoleStore, validate as validate_agent,
+    CommandStore, DEFAULT_LIST, LoopStore, PROTECTED, RoleStore,
+    validate as validate_agent,
 )
 from ..agents.tools import ALLOWED_COMMANDS, set_command_lists, set_command_policy
 from ..config import Config
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
 from ..flow import Flow, Step
+from ..loops import EXITS, STOP, Loop, validate as validate_loop
 from ..providers import (
     KIND_DEFAULTS, ModelPreset, ProviderConfig, ProviderStore, abort_inflight,
     client_for,
@@ -44,6 +46,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     providers.seed_presets_from_providers()  # never show an empty model picker
     roles = RoleStore(Path(config.runs_dir) / "agents.json")
     commands = CommandStore(Path(config.runs_dir) / "commands.json")
+    loops = LoopStore(Path(config.runs_dir) / "loops.json")
     set_command_policy(commands.policy)
     set_command_lists(commands.lists)
     config.providers = {p.name: p for p in providers.all()}
@@ -151,7 +154,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         session.error = None
         session.clear_stop()
         FlowEngine(session, config, bus, on_change=lambda: touch(session),
-                   approve=broker_for(session).ask).start()
+                   approve=broker_for(session).ask, loops=loops).start()
         return True
 
     def _start_when_free(session) -> None:
@@ -169,7 +172,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 bus.emit("run_started", session.id, payload={
                     "reason": "the previous run finished unwinding", "steps": 1})
                 FlowEngine(session, config, bus, on_change=lambda: touch(session),
-                           approve=broker_for(session).ask).start()
+                           approve=broker_for(session).ask, loops=loops).start()
 
         session._handover = threading.Thread(
             target=wait_and_start, name=f"handover-{session.id}", daemon=True)
@@ -571,6 +574,41 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "escalation_preset": config.escalation_preset,
                 "escalation_role": config.escalation_role}
 
+    # -------------------------------------------------------------- loops
+
+    def _loop_context():
+        known = {r.name for r in roles.all()}
+        return known, {r.name for r in roles.all() if r.verifier}
+
+    @app.get("/api/loops")
+    def list_loops():
+        return {"loops": [l.to_dict() for l in loops.all()],
+                "outcomes": list(EXITS), "stops": list(STOP),
+                "agents": [r.name for r in roles.all() if r.name != "orchestrator"],
+                "verifiers": [r.name for r in roles.all() if r.verifier]}
+
+    @app.put("/api/loops/{name}")
+    def upsert_loop(name: str, body: dict):
+        loop = Loop.from_dict({**body, "name": name.strip()})
+        known, verifiers = _loop_context()
+        error = validate_loop(loop, known, verifiers)
+        if error:
+            raise HTTPException(400, error)
+        saved = loops.upsert(loop)
+        bus.emit("loops_updated", "system", payload={"name": saved.name})
+        return saved.to_dict()
+
+    @app.delete("/api/loops/{name}")
+    def delete_loop(name: str):
+        used = [s.name for s in store.all()
+                if any(step.loop == name for step in s.flow.steps)]
+        if used:
+            raise HTTPException(409, (
+                f"{name!r} is used by: {', '.join(used)}. Change those steps first."))
+        if not loops.delete(name):
+            raise HTTPException(404, "no such loop")
+        return {"deleted": name}
+
     # ----------------------------------------------------------- sessions
 
     @app.get("/api/workspace")
@@ -779,6 +817,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         session = _need(store, session_id)
         steps = [Step.from_dict(s) for s in body.get("steps", [])]
         for step in steps:
+            if step.loop:
+                # A step naming a loop that does not exist fails at run time,
+                # after everything before it has already run.
+                if loops.get(step.loop) is None:
+                    raise HTTPException(400, f"unknown loop {step.loop!r}")
+                continue
+            if not roles.get(step.role):
+                raise HTTPException(400, f"unknown agent {step.role!r}")
             if step.checker:
                 role = roles.get(step.checker)
                 if role is None:
@@ -792,13 +838,24 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 raise HTTPException(400, f"unknown fixing agent {step.on_fail!r}")
         # Same rule whether or not a run is live: only in-flight steps are
         # immutable. Editing a finished or failed step re-queues it.
+        # Pull in every agent the flow can reach, loops included — otherwise a
+        # loop calls an agent this session has never heard of.
+        wanted = list(session.team)
+        for step in steps:
+            loop = loops.get(step.loop) if step.loop else None
+            for name in (loop.roles() if loop else []):
+                if all(r.name != name for r in wanted) and roles.get(name):
+                    wanted.append(roles.get(name))
+        session.team = roles.resolve_team(wanted)
+
         outcome = session.flow.apply_edits(steps)
         bus.emit("flow_updated", session_id,
                  payload={"flow": session.flow.to_dict(), **outcome})
         touch(session)
         if outcome["requeued"]:
             ensure_running(session)
-        return {**session.flow.to_dict(), **outcome}
+        return {**session.flow.to_dict(), **outcome,
+                "team": [r.to_dict() for r in session.team]}
 
     @app.post("/api/sessions/{session_id}/resume-pending")
     def resume_pending(session_id: str):
@@ -835,7 +892,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(409, "every step is finished — rerun one first")
         session.error = None
         FlowEngine(session, config, bus, on_change=lambda: touch(session),
-                   approve=broker_for(session).ask).start()
+                   approve=broker_for(session).ask, loops=loops).start()
         return session.to_dict()
 
     @app.get("/api/sessions/{session_id}/approvals")

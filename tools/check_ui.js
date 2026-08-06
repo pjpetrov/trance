@@ -45,6 +45,21 @@ const RESPONSES = {
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
                       suggested_dir: "/w/project", state_dir: "/s" },
   "/api/sessions": [],
+  "/api/loops": { loops: [{ name: "test-and-fix", description: "d", prompt: "p",
+                            start: "n_test", max_steps: 10, roles: ["tester", "backend"],
+                            nodes: [{ id: "n_test", role: "tester", focus: "run tests",
+                                      check: null,
+                                      on: { SUCCESS: { target: "exit", max_visits: 3 },
+                                            FAILED: { target: "n_fix", max_visits: 3 } } },
+                                    { id: "n_fix", role: "backend", focus: "fix it",
+                                      check: "factchecker",
+                                      on: { SUCCESS: { target: "n_test", max_visits: 3 },
+                                            CHECK_FAILED: { target: "fail", max_visits: 1 } } }] }],
+                  outcomes: ["SUCCESS", "FAILED", "CHECK_FAILED"], stops: ["exit", "fail"],
+                  agents: ["tester", "backend"], verifiers: ["factchecker"] },
+  "/api/commands": { allowed: ["ls"], shell: true, names: ["default"], default: "default",
+                     lists: { default: { allowed: ["ls"], shell: true } }, defaults: ["ls"],
+                     usage: {}, overrides: {}, agents_with_commands: [] },
   "/api/sessions/s1/memory": { path: "/p/.trance/memory.md", raw: "- **backend**: port 3100",
                                notes: ["- **backend**: port 3100", "- plain note"],
                                prompt_view: "- **backend**: port 3100",
@@ -56,7 +71,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge,applyRefinedFlow,draftFingerprint};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -69,6 +84,7 @@ const session = {
   progress: { total: 1, done: 1 },
 };
 global.state = undefined;
+const flat = (n) => !n ? "" : (n.textContent || "") + (n.children || []).map(flat).join(" ");
 try {
   // state lives inside the module scope; exercise the renderers that read it
   // Render a real session with steps in every status — an empty flow used to
@@ -171,7 +187,6 @@ try {
                                  context_window: 64000 } });
   // The gauge is the one widget whose *text* matters, so assert it rather
   // than only checking that it rendered.
-  const flat = (n) => (n.textContent || "") + (n.children || []).map(flat).join(" ");
   const gauge = api.contextGauge({ tokens: 48000, window: 64000, budget: 59000,
                                    reserved: 4096, percent: 75, estimated: false });
   const text = flat(gauge).replace(/\s+/g, " ").trim();
@@ -191,6 +206,26 @@ try {
   api.renderMemory();
   api.paintMemoryCount();
   api.renderStepSize();
+  // The loops editor: an existing loop, and an empty one being created.
+  api.state.loops = RESPONSES["/api/loops"];
+  api.state.commands = RESPONSES["/api/commands"];
+  api.loopCard(JSON.parse(JSON.stringify(RESPONSES["/api/loops"].loops[0])), false);
+  api.loopCard({ name: "", description: "", prompt: "", nodes: [], start: "",
+                 max_steps: 12 }, true);
+  // A loop step in the flow editor and in the run view.
+  api.state.draftSteps = [{ id: "L1", role: "", loop: "test-and-fix", task: "t",
+                            status: "pending", check: null, on_fail: null, max_loops: 2,
+                            attempts: [], runs_a_loop: true }];
+  api.redrawEditor ? api.redrawEditor() : api.renderFlowEditor();
+
+  const card = api.loopCard(JSON.parse(JSON.stringify(RESPONSES["/api/loops"].loops[0])), false);
+  const loopText = flat(card).replace(/\s+/g, " ");
+  for (const want of ["on SUCCESS", "on FAILED", "on CHECK FAILED", "leave the loop"]) {
+    if (!loopText.includes(want)) {
+      console.log("BROKEN: the loop editor is missing", JSON.stringify(want));
+      process.exit(1);
+    }
+  }
   // The plan is shown before splitting finishes, so both states must render.
   document.getElementById("screen-plan").classList.add("active");
   api.state.splitting = { count: 2, threshold: 5 };

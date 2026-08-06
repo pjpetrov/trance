@@ -30,6 +30,7 @@ from .db import GraphDB
 from .events import EventBus
 from .agents.roles import BUILTIN_ROLES
 from .flow import Attempt, GateResult, Step
+from .loops import CHECK_FAILED, EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS
 from .indexer.service import default_db_path, index_repo
 from .session import Session
 from .agents.tools import stop_background
@@ -85,7 +86,7 @@ def _similar(parent: Path, name: str) -> list[str]:
 
 class FlowEngine:
     def __init__(self, session: Session, config: Config, bus: EventBus, on_change=None,
-                 approve=None):
+                 approve=None, loops=None):
         self.session = session
         self.config = config
         self.bus = bus
@@ -95,6 +96,8 @@ class FlowEngine:
         self.memory = ProjectMemory(self.project)
         #: Asks the user before a refusal becomes final. None = refuse outright.
         self.approve = approve
+        #: The loop library, for steps that run one instead of a single agent.
+        self.loops = loops
 
     # ----------------------------------------------------------------- run
 
@@ -158,6 +161,141 @@ class FlowEngine:
     # ---------------------------------------------------------------- step
 
     def _execute(self, step: Step) -> None:
+        if step.runs_a_loop:
+            return self._execute_loop(step)
+        return self._execute_agent(step)
+
+    # ---------------------------------------------------------------- loops
+
+    def _execute_loop(self, step: Step) -> None:
+        """Walk a named loop: each agent's outcome decides who runs next.
+
+        The step's own retry answers "try again, maybe with a fixer". A loop
+        answers the shape that actually recurs — tester finds a bug, developer
+        fixes it, tester runs again — by naming it once and reusing it.
+        """
+        loop = self.loops.get(step.loop) if self.loops else None
+        if loop is None:
+            step.status = "failed"
+            step.summary = f"unknown loop {step.loop!r}"
+            self._emit("step_failed", step_id=step.id, payload={"reason": step.summary})
+            self._halt(step)
+            return
+
+        node = loop.entry
+        visits: dict[tuple[str, str], int] = {}
+        carry: Handoff | None = None
+        walked = 0
+
+        while node is not None and walked < loop.max_steps:
+            self.session.wait_if_paused()
+            if self.session.stopping:
+                step.status = "pending"
+                return
+
+            role = self.session.role(node.role) or BUILTIN_ROLES.get(node.role)
+            if role is None:
+                step.status = "failed"
+                step.summary = f"the {step.loop} loop names an unknown agent {node.role!r}"
+                self._emit("step_failed", step_id=step.id, payload={"reason": step.summary})
+                self._halt(step)
+                return
+
+            walked += 1
+            step.status = "running"
+            attempt = Attempt(n=len(step.attempts) + 1)
+            step.attempts.append(attempt)
+            self._emit("loop_node", agent=role.name, step_id=step.id, payload={
+                "loop": loop.name, "node": node.id, "role": role.name,
+                "visit": walked, "of": loop.max_steps, "focus": node.focus,
+                "message": f"{loop.name}: {role.name} (block {walked} of at most {loop.max_steps})",
+            })
+            self.on_change()
+
+            steering = list(step.steering)
+            step.steering.clear()
+            if carry and carry.body:
+                steering.append(f"What the previous block did:\n{carry.body}")
+
+            turn = run_agent(
+                role=role,
+                # Three prompts, narrowing: what the project is, what this step
+                # asks for, and what this agent's part in the loop is.
+                task=f"{step.task}\n\n## Your part in this block\n{node.focus or role.description}",
+                project=self.project, config=self.config.for_role(role), bus=self.bus,
+                session_id=self.session.id, step_id=step.id,
+                steering=steering, history=self.session.history,
+                graph_tools=self._graph_tools(role),
+                should_stop=lambda: self.session.stopping,
+                memory=self.memory, project_map=self._project_map(role, step.task),
+                goal=self._loop_goal(loop), placement=self._placement(step),
+                approve=self.approve,
+            )
+            attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
+            attempt.files_written = turn.files_written
+            attempt.refused_paths = list(dict.fromkeys(turn.remit_violations))
+            step.summary = _summarize(turn.text)
+            self._record_history(role.name, step, turn)
+            for command in stop_background():
+                self._emit("background_stopped", agent=role.name, step_id=step.id,
+                           payload={"command": command,
+                                    "message": f"Stopped leftover background process: {command}"})
+            self._reindex()
+
+            outcome, reason = turn.outcome
+            attempt.outcome, attempt.outcome_reason = outcome, reason
+            exit_name = SUCCESS if outcome == OUTCOME_SUCCESS else FAILED
+            if outcome == OUTCOME_SUCCESS and node.check:
+                step.check = node.check          # so _run_check knows who to ask
+                if self._run_check(step, attempt) == "FAIL":
+                    exit_name = CHECK_FAILED
+            self._emit("step_outcome", agent=role.name, step_id=step.id, payload={
+                "outcome": outcome, "reason": reason, "loop": walked,
+                "of": loop.max_steps, "reported": turn.reported_outcome,
+                "exit": exit_name,
+            })
+
+            carry = build_handoff(turn.transcript, turn.text)
+            edge = node.edge(exit_name)
+            if edge.target == EXIT_LOOP:
+                step.status = "done"
+                self._emit("step_finished", agent=role.name, step_id=step.id, payload={
+                    "status": "done", "attempt": attempt.n, "files": turn.files_written,
+                    "summary": step.summary, "usage": turn.usage, "loop": loop.name,
+                    "tool_calls": turn.tool_calls, "outcome": outcome,
+                })
+                return
+            if edge.target == FAIL_LOOP:
+                break
+
+            key = (node.id, exit_name)
+            visits[key] = visits.get(key, 0) + 1
+            if visits[key] > edge.max_visits:
+                self._emit("loop_exhausted", agent=role.name, step_id=step.id, payload={
+                    "loop": loop.name, "edge": f"{node.role} {exit_name}",
+                    "max_visits": edge.max_visits,
+                    "message": (f"{node.role}'s {exit_name} route has been taken "
+                                f"{edge.max_visits} times — the loop is not converging."),
+                })
+                break
+            node = loop.node(edge.target)
+
+        step.status = "failed"
+        last = step.attempts[-1] if step.attempts else None
+        self._emit("step_failed", agent=step.role, step_id=step.id, payload={
+            "reason": (f"the {step.loop} loop ended without success"
+                       + (f" — last: {last.outcome_reason}" if last and last.outcome_reason
+                          else "")),
+            "attempts": len(step.attempts), "halts_flow": True, "loop": step.loop,
+        })
+        self._halt(step)
+
+    def _loop_goal(self, loop) -> str:
+        """The project goal, plus what this loop is for."""
+        parts = [p for p in (self.session.goal, loop.prompt) if p]
+        return "\n\n".join(parts)
+
+    def _execute_agent(self, step: Step) -> None:
         """Run one block, looping worker -> check -> fixer until it passes.
 
         The loop can only be left by succeeding. Exhausting `max_loops` halts

@@ -282,6 +282,9 @@ async function sendChat() {
 /* ───────────────────────── flow editor (plan) ─────────────────────── */
 
 function renderFlowEditor() {
+  // The step picker offers loops, so their names have to be loaded.
+  if (!state.loops) api("/api/loops").then((d) => { state.loops = d; redrawEditor(); })
+                                     .catch(() => { state.loops = { loops: [] }; });
   state.draftSteps = JSON.parse(JSON.stringify(state.session?.flow?.steps || []));
   state.draftBase = draftFingerprint();   // what the server last gave us
   const box = $("flow-editor");
@@ -409,15 +412,36 @@ function stepCard(step, index) {
     return card;
   }
 
+  // One picker for both: a step runs an agent or a loop, never a bit of each.
   const roleSelect = el("select");
   Object.keys(state.roles).forEach((name) => {
     const opt = el("option", null, name);
-    opt.value = name;
-    if (name === step.role) opt.selected = true;
+    opt.value = `agent:${name}`;
+    if (!step.loop && name === step.role) opt.selected = true;
+    roleSelect.append(opt);
+  });
+  ((state.loops && state.loops.loops) || []).forEach((loop) => {
+    const opt = el("option", null, `↻ ${loop.name}`);
+    opt.value = `loop:${loop.name}`;
+    opt.title = loop.description || "";
+    if (step.loop === loop.name) opt.selected = true;
     roleSelect.append(opt);
   });
   roleSelect.disabled = !editable;
-  roleSelect.onchange = () => { step.role = roleSelect.value; };
+  roleSelect.onchange = () => {
+    const [kind, value] = roleSelect.value.split(":");
+    if (kind === "loop") {
+      step.loop = value;
+      // A loop carries its own wiring; the step's check/fixer/limit would be a
+      // second, contradictory answer to the same question.
+      step.check = null;
+      step.on_fail = null;
+    } else {
+      step.loop = "";
+      step.role = value;
+    }
+    redrawEditor();
+  };
 
   head.append(roleSelect);
   if (step.status && step.status !== "pending") {
@@ -462,6 +486,19 @@ function stepCard(step, index) {
   const gatesBox = el("div", "gates");
   const drawGates = () => {
     gatesBox.innerHTML = "";
+    if (step.loop) {
+      const loop = ((state.loops && state.loops.loops) || [])
+        .find((l) => l.name === step.loop);
+      const note = el("div", "row small muted");
+      note.append(el("span", null,
+        `↻ ${step.loop} — ${loop ? loop.roles.join(" → ") : "not found"}. `
+        + "Its own wiring decides who runs and when it stops."));
+      const edit = el("button", "small", "edit loop");
+      edit.onclick = (e) => { e.preventDefault(); openLoops(); };
+      note.append(edit);
+      gatesBox.append(note);
+      return;
+    }
 
     const row = el("div", "row small");
     const field = (label, node) => {
@@ -558,7 +595,7 @@ $("collapse-editor").onchange = () => {
 };
 
 $("add-step").onclick = () => {
-  state.draftSteps.push({ role: "backend", task: "", check: null, on_fail: null,
+  state.draftSteps.push({ role: "backend", loop: "", task: "", check: null, on_fail: null,
                           max_loops: 2, status: "pending" });
   redrawEditor();
   // A new step goes on the end, so put it in view rather than making the user
@@ -884,6 +921,8 @@ function headline(event) {
       return `${p.message || "fixing"}` +
              (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
     case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
+    case "loop_node": return p.message || "";
+    case "loop_exhausted": return p.message || "";
     case "splitting_steps": return p.message;
     case "steps_split":
       return `${p.split.length} step(s) over ${p.threshold} points broken up — `
@@ -1719,8 +1758,9 @@ function renderFlowView() {
     const title = el("div", "flow-title");
     const left = el("div", "row");
     left.append(el("span", "flow-index", `${index + 1}.`));
-    const badge = el("span", "badge role", step.role);
-    if (role) badge.style.background = role.color;
+    const badge = el("span", "badge role", step.loop ? `↻ ${step.loop}` : step.role);
+    if (step.loop) badge.classList.add("loop-badge");
+    else if (role) badge.style.background = role.color;
     left.append(badge);
     if (step.status === "running") left.append(el("span", "spin", "◐"));
     if (compact && finished) {
@@ -1733,13 +1773,21 @@ function renderFlowView() {
     node.append(task);
 
     const meta = el("div", "flow-meta");
-    if (step.checker) {
+    if (step.loop) {
+      const loop = ((state.loops && state.loops.loops) || [])
+        .find((l) => l.name === step.loop);
       meta.append(el("div", "flow-chain",
-        `↳ fact-checked by ${step.checker} · a false report halts the run`));
+        `↻ ${loop ? loop.roles.join(" → ") : step.loop} — the loop's wiring decides `
+        + "who runs next and when it stops"));
+    } else {
+      if (step.checker) {
+        meta.append(el("div", "flow-chain",
+          `↳ fact-checked by ${step.checker} · a false report halts the run`));
+      }
+      meta.append(el("div", "flow-chain",
+        `↻ not success → ${step.fixer} fixes → ${step.role} again ` +
+        `(${step.loop_limit} loop${step.loop_limit > 1 ? "s" : ""})`));
     }
-    meta.append(el("div", "flow-chain",
-      `↻ not success → ${step.fixer} fixes → ${step.role} again ` +
-      `(${step.loop_limit} loop${step.loop_limit > 1 ? "s" : ""})`));
     const attempts = step.attempts || [];
     if (attempts.length) {
       const last = attempts[attempts.length - 1];
@@ -2648,6 +2696,21 @@ function consoleAppend(event) {
       }));
       return;
 
+    case "loop_node":
+      consolePush(consoleEntry({
+        kind: "step", icon: "↻", time, tag: event.agent,
+        label: labelWith([[p.message || "", ""],
+                          [p.focus ? `  ${clip(p.focus, 60)}` : "", "muted"]]),
+      }));
+      return;
+
+    case "loop_exhausted":
+      consolePush(consoleEntry({
+        kind: "cmd", icon: "↻", time, tag: event.agent, failed: true,
+        label: p.message || "the loop is not converging",
+      }));
+      return;
+
     case "splitting_steps":
       consolePush(consoleEntry({
         kind: "step", icon: "✂", time, tag: "orchestrator",
@@ -2820,3 +2883,247 @@ function allowButton(detail) {
   };
   return btn;
 }
+
+/* ═══════════════════════ loops: blocks of agents ═══════════════════ */
+
+/* A loop is a small state machine, and the honest way to edit one is to show
+ * every block with a row per outcome. Each row is "when this happens → go
+ * there, at most N times". No canvas, no dragging: the arrows are the data, and
+ * a dropdown cannot point somewhere that does not exist. */
+
+const OUTCOME_LABEL = {
+  SUCCESS: "on SUCCESS",
+  FAILED: "on FAILED",
+  CHECK_FAILED: "on CHECK FAILED",
+};
+
+$("open-loops").onclick = openLoops;
+$("close-loops").onclick = () => $("loops").classList.remove("open");
+$("loops").onclick = (e) => {
+  if (e.target.id === "loops") e.currentTarget.classList.remove("open");
+};
+
+async function openLoops() {
+  $("loops").classList.add("open");
+  await renderLoops();
+}
+
+async function renderLoops() {
+  const data = await api("/api/loops");
+  state.loops = data;
+  const box = $("loop-list");
+  box.innerHTML = "";
+  if (!data.loops.length) {
+    box.append(el("p", "muted small", "No loops yet."));
+  }
+  data.loops.forEach((loop) => box.append(loopCard(structuredClone(loop), false)));
+}
+
+function loopCard(loop, isNew) {
+  const card = el("div", "provider-card loop-card");
+  const meta = state.loops || { agents: [], verifiers: [], outcomes: [] };
+
+  const head = el("div", "provider-grid");
+  const name = el("input", "compact");
+  name.value = loop.name || "";
+  name.placeholder = "e.g. test-and-fix";
+  name.disabled = !isNew;
+  const description = el("input", "compact");
+  description.value = loop.description || "";
+  description.placeholder = "what this loop is for";
+  const steps = el("input", "compact");
+  steps.type = "number";
+  steps.value = loop.max_steps || 12;
+  steps.title = "Hard ceiling on how many blocks run, whatever the arrows say";
+  const field = (label, node, hint) => {
+    const l = el("label", null, label);
+    l.append(node);
+    if (hint) l.append(el("span", "hint", hint));
+    return l;
+  };
+  head.append(field("Name", name), field("Description", description),
+              field("Max blocks", steps, "safety ceiling"));
+
+  const prompt = el("textarea");
+  prompt.rows = 2;
+  prompt.value = loop.prompt || "";
+  prompt.placeholder = "Given to every agent in this loop, on top of the step's own task.";
+
+  const blocks = el("div", "loop-blocks");
+  const redraw = () => {
+    blocks.innerHTML = "";
+    if (!loop.nodes.length) {
+      blocks.append(el("p", "muted small",
+        "Empty. Add the first agent — its outcomes become the slots you fill in."));
+    }
+    loop.nodes.forEach((node, index) => blocks.append(blockCard(loop, node, index, redraw)));
+
+    const add = el("button", null, "+ agent");
+    add.onclick = () => {
+      const id = `n_${Math.random().toString(36).slice(2, 8)}`;
+      // A new block exits successfully by default: the commonest wiring, and it
+      // keeps the loop valid so it can be saved at any point.
+      loop.nodes.push({ id, role: meta.agents[0] || "backend", focus: "", check: null,
+                        on: { SUCCESS: { target: "exit", max_visits: 3 } } });
+      if (!loop.start) loop.start = id;
+      redraw();
+    };
+    blocks.append(el("div", "row small").appendChild(add).parentNode);
+  };
+  redraw();
+
+  const actions = el("div", "row small");
+  const save = el("button", "primary", "Save");
+  const result = el("span", "check-result");
+  save.onclick = async () => {
+    const body = {
+      description: description.value.trim(),
+      prompt: prompt.value,
+      max_steps: Number(steps.value) || 12,
+      start: loop.start,
+      nodes: loop.nodes,
+    };
+    try {
+      await api(`/api/loops/${encodeURIComponent(name.value.trim())}`,
+                { method: "PUT", body });
+    } catch (_) { return; }
+    result.textContent = "saved";
+    result.className = "check-result ok";
+    toast(`Loop “${name.value.trim()}” saved.`);
+    await renderLoops();
+  };
+  actions.append(save, result);
+
+  if (!isNew) {
+    const remove = el("button", "danger", "Delete");
+    remove.onclick = async () => {
+      const ok = await confirmDialog(`Delete the loop “${loop.name}”?`,
+        "Steps using it must be changed first.");
+      if (!ok) return;
+      try {
+        await api(`/api/loops/${encodeURIComponent(loop.name)}`, { method: "DELETE" });
+      } catch (_) { return; }
+      await renderLoops();
+    };
+    actions.append(remove);
+  }
+
+  card.append(head, el("label", "small", "Loop prompt — every agent in the loop sees this"),
+              prompt, blocks, actions);
+  return card;
+}
+
+function blockCard(loop, node, index, redraw) {
+  const meta = state.loops || { agents: [], verifiers: [] };
+  const wrap = el("div", "loop-block");
+  const role = state.roles[node.role];
+  if (role) wrap.style.borderLeftColor = role.color;
+
+  const head = el("div", "row small");
+  head.append(el("span", "flow-index", `${index + 1}.`));
+
+  const who = el("select", "compact");
+  meta.agents.forEach((a) => {
+    const opt = el("option", null, a);
+    opt.value = a;
+    if (a === node.role) opt.selected = true;
+    who.append(opt);
+  });
+  who.onchange = () => { node.role = who.value; redraw(); };
+  head.append(who);
+
+  const check = el("select", "compact");
+  const noCheck = el("option", null, "no check");
+  noCheck.value = "";
+  check.append(noCheck);
+  meta.verifiers.forEach((v) => {
+    const opt = el("option", null, `checked by ${v}`);
+    opt.value = v;
+    if (v === node.check) opt.selected = true;
+    check.append(opt);
+  });
+  check.onchange = () => {
+    node.check = check.value || null;
+    // CHECK FAILED can only happen when there is a check to fail.
+    if (!node.check) delete node.on.CHECK_FAILED;
+    redraw();
+  };
+  head.append(check);
+
+  if (loop.start === node.id) {
+    head.append(el("span", "badge", "starts here"));
+  } else {
+    const makeStart = el("button", "small", "start here");
+    makeStart.onclick = () => { loop.start = node.id; redraw(); };
+    head.append(makeStart);
+  }
+
+  const remove = el("button", "small", "✕");
+  remove.onclick = () => {
+    loop.nodes = loop.nodes.filter((n) => n.id !== node.id);
+    // Anything pointing at the removed block would dangle; fail out instead.
+    loop.nodes.forEach((n) => Object.values(n.on || {}).forEach((edge) => {
+      if (edge.target === node.id) edge.target = "fail";
+    }));
+    if (loop.start === node.id) loop.start = loop.nodes[0] ? loop.nodes[0].id : "";
+    redraw();
+  };
+  head.append(remove);
+
+  const focus = el("textarea");
+  focus.rows = 2;
+  focus.value = node.focus || "";
+  focus.placeholder = "This agent's part in the loop — 'run the tests, do not implement'";
+  focus.oninput = () => { node.focus = focus.value; };
+
+  const exits = el("div", "loop-exits");
+  const outcomes = ["SUCCESS", "FAILED"].concat(node.check ? ["CHECK_FAILED"] : []);
+  outcomes.forEach((outcome) => exits.append(exitRow(loop, node, outcome, redraw)));
+
+  wrap.append(head, focus, exits);
+  return wrap;
+}
+
+function exitRow(loop, node, outcome, redraw) {
+  const row = el("div", "loop-exit");
+  row.append(el("span", `exit-tag ${outcome.toLowerCase()}`, OUTCOME_LABEL[outcome]));
+
+  const edge = node.on[outcome] || { target: "fail", max_visits: 3 };
+  const target = el("select", "compact");
+  [["exit", "leave the loop — step succeeded"],
+   ["fail", "leave the loop — step failed"]].forEach(([v, label]) => {
+    const opt = el("option", null, label);
+    opt.value = v;
+    target.append(opt);
+  });
+  loop.nodes.filter((n) => n.id !== node.id || true).forEach((n, i) => {
+    const opt = el("option", null, `→ ${i + 1}. ${n.role}${n.id === node.id ? " (again)" : ""}`);
+    opt.value = n.id;
+    target.append(opt);
+  });
+  target.value = edge.target;
+
+  const visits = el("input", "compact tiny");
+  visits.type = "number";
+  visits.min = "1";
+  visits.value = edge.max_visits || 3;
+  visits.title = "How many times this arrow may be taken before the loop gives up";
+
+  const sync = () => {
+    node.on[outcome] = { target: target.value, max_visits: Number(visits.value) || 3 };
+    // A number on "leave the loop" means nothing — it is taken once by
+    // definition — so it only shows when the arrow points at a block.
+    visits.hidden = ["exit", "fail"].includes(target.value);
+  };
+  target.onchange = () => { sync(); redraw(); };
+  visits.oninput = sync;
+  sync();
+
+  row.append(target, visits);
+  return row;
+}
+
+$("add-loop").onclick = () => {
+  $("loop-list").prepend(loopCard(
+    { name: "", description: "", prompt: "", nodes: [], start: "", max_steps: 12 }, true));
+};

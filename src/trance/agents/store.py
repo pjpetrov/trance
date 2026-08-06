@@ -18,6 +18,7 @@ import json
 import threading
 from pathlib import Path
 
+from ..loops import SUCCESS, FAILED, EXIT_LOOP, FAIL_LOOP, Edge, Loop, LoopNode
 from .roles import BUILTIN_ROLES, TOOLSETS, AgentRole
 from .tools import ALLOWED_COMMANDS, CommandPolicy
 
@@ -228,3 +229,84 @@ def _policy_from(raw: dict) -> CommandPolicy:
     allowed = sorted({str(c).strip() for c in (raw.get("allowed") or []) if str(c).strip()})
     return CommandPolicy(allowed=allowed or sorted(ALLOWED_COMMANDS),
                          shell=bool(raw.get("shell", True)))
+
+
+class LoopStore:
+    """Reusable loops, persisted to JSON next to the agents.
+
+    Seeded with one: tester → developer → tester is the shape people build by
+    hand every time, and having it there makes the feature legible without
+    reading any documentation.
+    """
+
+    def __init__(self, path: Path, seed: bool = True):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._loops: dict[str, Loop] = {}
+        if self.path.exists():
+            self._load()
+        elif seed:
+            for loop in default_loops():
+                self._loops[loop.name] = loop
+            self._save()
+
+    def _load(self) -> None:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        for item in data.get("loops", []):
+            loop = Loop.from_dict(item)
+            if loop.name:
+                self._loops[loop.name] = loop
+
+    def _save(self) -> None:
+        payload = {"loops": [l.to_dict() for l in self._loops.values()]}
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf8")
+        tmp.replace(self.path)
+
+    def all(self) -> list[Loop]:
+        return sorted(self._loops.values(), key=lambda l: l.name)
+
+    def get(self, name: str | None) -> Loop | None:
+        return self._loops.get(name) if name else None
+
+    def upsert(self, loop: Loop) -> Loop:
+        with self._lock:
+            self._loops[loop.name] = loop
+            self._save()
+        return loop
+
+    def delete(self, name: str) -> bool:
+        with self._lock:
+            removed = self._loops.pop(name, None) is not None
+            if removed:
+                self._save()
+        return removed
+
+
+def default_loops() -> list[Loop]:
+    """The shape people build by hand: test, fix, test again."""
+    test = LoopNode(
+        id="n_test", role="tester", check=None,
+        focus=("Write or run the tests for this task and report what actually happened. "
+               "Do not implement the feature yourself."),
+        on={SUCCESS: Edge(target=EXIT_LOOP),
+            FAILED: Edge(target="n_fix", max_visits=3)},
+    )
+    fix = LoopNode(
+        id="n_fix", role="backend",
+        focus=("A test is failing. Fix the code under test — not the test. The tester "
+               "runs again straight after you."),
+        on={SUCCESS: Edge(target="n_test", max_visits=3),
+            FAILED: Edge(target=FAIL_LOOP)},
+    )
+    return [Loop(
+        name="test-and-fix",
+        description="Tester runs; on a failure the developer fixes and the tester runs again.",
+        prompt=("This block is finished when the tests pass. Nobody leaves it by "
+                "declaring success — the tester's run decides."),
+        nodes=[test, fix], start="n_test", max_steps=10,
+    )]
