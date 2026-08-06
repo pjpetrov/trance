@@ -77,6 +77,21 @@ try {
                       payload: { name: "write_file", ok: true, arguments: {}, result: "",
                                  detail: { kind: "write", path: "a.py", created: true,
                                            added: 2, removed: 0, diff: "+x" } } });
+  // Every console detail kind, so a branch that references an undeclared name
+  // is caught here rather than mid-run.
+  for (const detail of [{ kind: "command", command: "ls", exit_code: 0, seconds: 1, output: "" },
+                        { kind: "command", command: "ls", exit_code: 1, seconds: 1, output: "" },
+                        { kind: "background", command: "node s.js" },
+                        { kind: "command_stopped", command_id: "c1" },
+                        { kind: "truncated", limit: 4096, attempt: 1 },
+                        { kind: "read", path: "a.py" },
+                        { kind: "refused_program", program: "npx", command: "npx vite" },
+                        null]) {
+    api.consoleAppend({ type: "tool_call", agent: "backend", step_id: "st1",
+                        ts: new Date().toISOString(),
+                        payload: { name: "run_command", ok: !detail || detail.kind !== "truncated",
+                                   arguments: {}, result: "out", detail } });
+  }
   api.trackActivity({ type: "model_call", agent: "backend", ts: new Date().toISOString(),
                       payload: { model: "m", tool_calls: [], messages: [], summary: {} } });
   console.log("all render paths ran without a ReferenceError");

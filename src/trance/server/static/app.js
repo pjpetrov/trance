@@ -1816,6 +1816,20 @@ function consoleAppend(event) {
         }));
         return;
       }
+      if (d.kind === "truncated") {
+        // Not a refusal: the model simply ran past its output limit mid-call,
+        // so nothing ran. Say which limit, since raising it is the real fix.
+        consolePush(consoleEntry({
+          kind: "read", icon: ICON.fail, time, failed: true, tag: event.agent,
+          label: labelWith([
+            ["tool call cut off", ""],
+            [`  ${d.limit}-token output limit`, "c-exit-n"],
+          ]),
+          body: () => el("pre", null, p.result || ""),
+          open: true,
+        }));
+        return;
+      }
       if (d.kind === "command_stopped") {
         consolePush(consoleEntry({
           kind: "read", icon: "⏹", time, tag: event.agent,

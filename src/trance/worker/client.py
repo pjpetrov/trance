@@ -46,7 +46,15 @@ class ChatClient:
             with urllib.request.urlopen(request, timeout=self.config.timeout_s) as resp:
                 body = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            raise BackendError(f"{self.endpoint} returned {exc.code}: {exc.read()[:400]!r}") from exc
+            body = exc.read().decode("utf8", errors="replace")
+            if _is_truncated_tool_call(body):
+                # llama.cpp parses tool arguments itself and 500s on a call the
+                # model did not finish writing. That is the same "ran out of
+                # output tokens mid-argument" problem we already handle when the
+                # partial JSON reaches us — recoverable, not fatal to the step.
+                return ChatResponse(text="", finish_reason="length",
+                                    provider_error="truncated_tool_call")
+            raise BackendError(f"{self.endpoint} returned {exc.code}: {body[:400]}") from exc
         except urllib.error.URLError as exc:
             raise BackendError(
                 f"cannot reach {self.endpoint} ({exc.reason}). Is the model server running? "
@@ -54,6 +62,16 @@ class ChatClient:
             ) from exc
 
         return _parse(body)
+
+
+#: A server-side complaint that the model's tool arguments were cut off.
+_TRUNCATED_ARGS = re.compile(
+    r"parse tool call arguments|missing closing quote|unexpected end of input"
+    r"|invalid string.*last read", re.IGNORECASE | re.DOTALL)
+
+
+def _is_truncated_tool_call(body: str) -> bool:
+    return bool(_TRUNCATED_ARGS.search(body or ""))
 
 
 #: Start of something that might be a tool invocation. The extent is found by

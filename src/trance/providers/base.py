@@ -86,6 +86,9 @@ class ChatResponse:
     #: The assistant message to append to the conversation, in whatever shape
     #: the provider expects to receive back.
     raw_message: dict = field(default_factory=dict)
+    #: Set when the *endpoint* failed in a way the agent can recover from,
+    #: rather than a transport error worth aborting the step for.
+    provider_error: str = ""
 
 
 @dataclass

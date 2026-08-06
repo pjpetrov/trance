@@ -1537,3 +1537,110 @@ def test_the_fixer_is_briefed_on_the_outcome_not_the_check(tmp_path, monkeypatch
     engine._execute(step)
     assert "the port was already taken" in prompts["reviewer"]
     assert "files are all there" not in prompts["reviewer"]
+
+
+# ------------------------------------ server-side truncated tool calls
+
+def test_a_server_rejected_truncated_call_is_recognised():
+    """llama.cpp parses tool arguments itself and 500s on a call the model did
+    not finish writing."""
+    from trance.worker.client import _is_truncated_tool_call
+
+    body = ('{"error":{"code":500,"message":"Failed to parse tool call arguments as JSON: '
+            '[json.exception.parse_error.101] parse error at line 1, column 15026: syntax '
+            'error while parsing value - invalid string: missing closing quote; last read"}}')
+    assert _is_truncated_tool_call(body) is True
+    assert _is_truncated_tool_call('{"error":{"message":"out of memory"}}') is False
+
+
+def test_a_truncated_call_500_does_not_abort_the_step(monkeypatch, tmp_path):
+    import urllib.error
+
+    from trance.config import ModelConfig
+    from trance.providers.base import BackendError
+    from trance.worker.client import ChatClient
+
+    import io
+
+    body = b'{"error":{"message":"Failed to parse tool call arguments as JSON"}}'
+
+    def raise_500(*args, **kwargs):
+        raise urllib.error.HTTPError("u", 500, "err", {}, io.BytesIO(body))
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_500)
+    response = ChatClient(ModelConfig()).complete([{"role": "user", "content": "hi"}])
+    assert response.provider_error == "truncated_tool_call"
+    assert response.finish_reason == "length"
+
+
+def test_other_500s_still_raise(monkeypatch):
+    import io
+    import urllib.error
+
+    from trance.config import ModelConfig
+    from trance.providers.base import BackendError
+    from trance.worker.client import ChatClient
+
+    def raise_500(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "u", 500, "err", {}, io.BytesIO(b'{"error":{"message":"out of memory"}}'))
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_500)
+    with pytest.raises(BackendError):
+        ChatClient(ModelConfig()).complete([{"role": "user", "content": "hi"}])
+
+
+def test_repeated_truncation_fails_the_step_with_a_reason(monkeypatch, tmp_path):
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    class AlwaysTruncates:
+        def complete(self, messages, tools=None):
+            return ChatResponse(text="", finish_reason="length",
+                                provider_error="truncated_tool_call")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: AlwaysTruncates())
+    turn = runner.run_agent(
+        role=BUILTIN_ROLES["backend"], task="write a big file", project=tmp_path,
+        config=ModelConfig(max_tokens=4096), bus=EventBus(),
+        session_id="s", step_id="st")
+
+    assert turn.stop_reason == "truncated_tool_calls"
+    assert turn.truncated_calls == 3          # tried, then gave up
+    outcome, reason = turn.outcome
+    assert outcome == "FAILED" and "4096" in reason
+
+
+def test_one_truncated_call_is_retried_not_fatal(monkeypatch, tmp_path):
+    """The step keeps whatever it already did; the agent is told to write less."""
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = []
+
+    class TruncatesOnce:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools=None):
+            self.calls += 1
+            seen.append(messages[-1])
+            if self.calls == 1:
+                return ChatResponse(text="", finish_reason="length",
+                                    provider_error="truncated_tool_call")
+            return ChatResponse(text="OUTCOME: SUCCESS", finish_reason="stop")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: TruncatesOnce())
+    turn = runner.run_agent(
+        role=BUILTIN_ROLES["backend"], task="write a big file", project=tmp_path,
+        config=ModelConfig(max_tokens=4096), bus=EventBus(),
+        session_id="s", step_id="st")
+
+    assert turn.truncated_calls == 1
+    assert turn.outcome[0] == "SUCCESS"
+    # The retry prompt must say what went wrong, or the model repeats it verbatim.
+    assert "cut off" in seen[-1]["content"] and "smaller pieces" in seen[-1]["content"]

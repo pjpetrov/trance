@@ -71,6 +71,7 @@ class AgentTurn:
     rounds: int = 0
     stop_reason: str = "stop"
     salvaged_calls: int = 0
+    truncated_calls: int = 0
     model_event_ids: list[str] = field(default_factory=list)
 
     @property
@@ -193,6 +194,38 @@ def run_agent(
         turn.model_event_ids.append(event.id)
         turn.rounds = round_n
         turn.text = response.text or turn.text
+
+        if response.provider_error == "truncated_tool_call":
+            # The endpoint rejected a call the model never finished writing.
+            # Tell it what happened and let it try a smaller piece; failing the
+            # whole step for this loses everything it did beforehand.
+            turn.truncated_calls += 1
+            bus.emit("tool_call", session_id, agent=role.name, step_id=step_id, payload={
+                "name": "(unfinished)", "arguments": {}, "ok": False,
+                "result": ("The endpoint rejected the call: its arguments were cut off "
+                           f"at the {model_config.max_tokens}-token output limit."),
+                "detail": {"kind": "truncated", "limit": model_config.max_tokens,
+                           "attempt": turn.truncated_calls},
+            })
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"Your last tool call was cut off partway through its arguments — it hit "
+                    f"the {model_config.max_tokens}-token output limit — so the endpoint "
+                    f"rejected it and nothing ran.\n\n"
+                    f"Do not send that call again unchanged; it will be cut off in the same "
+                    f"place. Write the file in smaller pieces: one write_file per file, and "
+                    f"for a large file write it in sections across several calls, appending "
+                    f"as you go. Keep each call's content well under the limit."),
+            })
+            if turn.truncated_calls >= 3:
+                turn.stop_reason = "truncated_tool_calls"
+                turn.text = (turn.text or "") + (
+                    "\n\nOUTCOME: FAILED — every attempt to write the file was cut off at "
+                    f"the {model_config.max_tokens}-token output limit. Raise max_tokens for "
+                    "this agent's model, or split the work into more steps.")
+                break
+            continue
 
         calls = response.tool_calls
         if not calls and specs:
