@@ -1644,3 +1644,32 @@ def test_one_truncated_call_is_retried_not_fatal(monkeypatch, tmp_path):
     assert turn.outcome[0] == "SUCCESS"
     # The retry prompt must say what went wrong, or the model repeats it verbatim.
     assert "cut off" in seen[-1]["content"] and "smaller pieces" in seen[-1]["content"]
+
+
+# ------------------------------------------------ context gauge numbers
+
+def test_context_usage_prefers_what_the_server_reported(monkeypatch, tmp_path):
+    from trance.agents.runner import context_usage
+    from trance.config import ModelConfig
+    from trance.providers.base import ChatResponse
+
+    config = ModelConfig(context_window=64000, max_tokens=8192)
+    messages = [{"role": "user", "content": "x" * 400}]   # ~100 tokens estimated
+    usage = context_usage(messages, ChatResponse(
+        text="", usage={"prompt_tokens": 32000}), config)
+
+    assert usage["tokens"] == 32000 and usage["estimated"] is False
+    assert usage["percent"] == 50.0
+    assert usage["budget"] == config.input_budget   # gauge and trimmer agree
+    assert usage["reserved"] == 8192
+
+
+def test_context_usage_falls_back_to_an_estimate(monkeypatch):
+    from trance.agents.runner import context_usage
+    from trance.config import ModelConfig
+    from trance.providers.base import ChatResponse
+
+    usage = context_usage([{"role": "user", "content": "x" * 4000}],
+                          ChatResponse(text="", usage={}),
+                          ModelConfig(context_window=64000))
+    assert usage["tokens"] == 1000 and usage["estimated"] is True

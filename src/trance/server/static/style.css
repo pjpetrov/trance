@@ -289,6 +289,35 @@ body { overflow-x: hidden; }
 }
 .activity-what { color: var(--fg); }
 .activity-elapsed { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ── context gauge ─────────────────────────────────────────────────────
+   How full the running agent's window is. Colour is the message; the ring
+   is read at a glance and the numbers are there when you look closer. */
+.ctx-gauge {
+  display: inline-flex; align-items: center; gap: 7px; margin-left: auto;
+  padding: 3px 9px 3px 5px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--bg);
+  font-size: 12px; font-variant-numeric: tabular-nums; cursor: default;
+  --ctx: var(--ok);
+}
+.ctx-gauge.warm { --ctx: var(--warn); }
+.ctx-gauge.hot  { --ctx: var(--err); border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
+.ctx-ring { flex: 0 0 auto; display: block; }
+.ctx-track { fill: none; stroke: var(--line); stroke-width: 3; }
+.ctx-fill {
+  fill: none; stroke: var(--ctx); stroke-width: 3; stroke-linecap: round;
+  transition: stroke-dasharray .45s ease, stroke .45s ease;
+}
+/* The point where the runner starts dropping tool results. */
+.ctx-mark { fill: none; stroke: var(--muted); stroke-width: 4; }
+.ctx-pct { color: var(--ctx); font-weight: 700; }
+.ctx-abs { color: var(--muted); }
+.ctx-flag {
+  color: var(--err); border: 1px solid currentColor; border-radius: 5px;
+  padding: 0 4px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px;
+}
+.ctx-gauge.hot .ctx-ring { animation: ctx-pulse 1.6s ease-in-out infinite; }
+@keyframes ctx-pulse { 50% { opacity: .55; } }
 .flow-node.running { animation: none; }
 .flow-node.running .flow-title { position: relative; }
 

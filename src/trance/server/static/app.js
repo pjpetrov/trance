@@ -1583,8 +1583,72 @@ $("cmd-reset").onclick = async () => {
 
 /* ─────────────────── who is working, right now ────────────────────── */
 
-const activity = { agent: null, what: "", since: 0, model: "" };
+const activity = { agent: null, what: "", since: 0, model: "", context: null };
 let activityTimer = null;
+
+/* How full the running agent's window is. The whole point of trance is keeping
+ * this number small, so it belongs on screen while the agent works — not
+ * buried in an event you have to expand. */
+
+function fmtTokens(n) {
+  if (!Number.isFinite(n)) return "?";
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "") + "k";
+  return String(n);
+}
+
+//: Pressure bands. Above `budget` the runner starts dropping tool results, so
+//: that is the line that actually costs the agent something, not 100%.
+function contextLevel(ctx) {
+  const budget = ctx.budget || ctx.window;
+  if (ctx.trimmed || ctx.tokens >= budget) return "hot";
+  if (ctx.tokens >= budget * 0.75) return "warm";
+  return "cool";
+}
+
+function svg(tag, attrs) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, String(v));
+  return node;
+}
+
+function contextGauge(ctx) {
+  const pct = Math.max(0, Math.min(100, ctx.percent ?? 0));
+  const level = contextLevel(ctx);
+  const wrap = el("span", `ctx-gauge ${level}`);
+
+  const R = 8, C = 2 * Math.PI * R;
+  const ring = svg("svg", { class: "ctx-ring", viewBox: "0 0 20 20", width: 20, height: 20 });
+  ring.append(svg("circle", { class: "ctx-track", cx: 10, cy: 10, r: R }));
+  ring.append(svg("circle", {
+    class: "ctx-fill", cx: 10, cy: 10, r: R,
+    "stroke-dasharray": `${(C * pct) / 100} ${C}`,
+    transform: "rotate(-90 10 10)",
+  }));
+  // Where trimming begins, so the ring shows the limit that actually bites.
+  if (ctx.budget && ctx.window) {
+    const mark = (100 * ctx.budget) / ctx.window;
+    ring.append(svg("circle", {
+      class: "ctx-mark", cx: 10, cy: 10, r: R,
+      "stroke-dasharray": `1 ${C}`,
+      "stroke-dashoffset": -(C * mark) / 100,
+      transform: "rotate(-90 10 10)",
+    }));
+  }
+
+  wrap.append(ring);
+  wrap.append(el("b", "ctx-pct", `${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`));
+  wrap.append(el("span", "ctx-abs", `${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.window)}`));
+  if (ctx.trimmed) wrap.append(el("span", "ctx-flag", "trimmed"));
+
+  wrap.title = [
+    `${ctx.tokens.toLocaleString()} of ${(ctx.window || 0).toLocaleString()} tokens` +
+      (ctx.estimated ? " (estimated — the endpoint reported no usage)" : ""),
+    `Trimming starts at ${(ctx.budget || 0).toLocaleString()} ` +
+      `(${(ctx.reserved || 0).toLocaleString()} reserved for the reply).`,
+    ctx.trimmed ? `${ctx.trimmed} tool result(s) dropped to fit.` : "",
+  ].filter(Boolean).join("\n");
+  return wrap;
+}
 
 function setActivity(agent, what, model) {
   if (agent !== activity.agent || what !== activity.what) {
@@ -1597,9 +1661,24 @@ function setActivity(agent, what, model) {
   paintActivity();
 }
 
+function setContext(ctx) {
+  if (!ctx || !ctx.window) return;
+  // A trim happens on the round *before* the call it protected, so carry the
+  // flag forward until the next call reports its own numbers.
+  activity.context = { ...ctx, trimmed: 0 };
+  paintActivity();
+}
+
+function noteTrim(dropped, window) {
+  const prev = activity.context || { tokens: 0, window, budget: 0, percent: 0 };
+  activity.context = { ...prev, trimmed: (prev.trimmed || 0) + (dropped || 0) };
+  paintActivity();
+}
+
 function clearActivity() {
   activity.agent = null;
   activity.what = "";
+  activity.context = null;
   clearInterval(activityTimer);
   activityTimer = null;
   paintActivity();
@@ -1638,6 +1717,7 @@ function paintActivity() {
                  el("span", "activity-what", activity.what),
                  el("span", "activity-elapsed", since));
     if (activity.model) strip.append(el("span", "muted small", shortModel(activity.model)));
+    if (activity.context) strip.append(contextGauge(activity.context));
   }
 }
 
@@ -1645,13 +1725,19 @@ function trackActivity(event) {
   const p = event.payload || {};
   switch (event.type) {
     case "step_started":
+      // Each step starts a fresh conversation, so the old fill is not this
+      // agent's and would read as context it is still carrying.
+      activity.context = null;
       setActivity(event.agent, clip(p.task, 70) || "working"); break;
     case "step_verifying":
       setActivity(p.verifier || event.agent, "verifying the previous step"); break;
     case "model_call":
       setActivity(event.agent, p.tool_calls?.length
         ? `deciding — ${p.tool_calls.map((t) => t.name).join(", ")}`
-        : "thinking", p.model); break;
+        : "thinking", p.model);
+      setContext(p.context); break;
+    case "context_trimmed":
+      noteTrim(p.dropped_tool_results, p.context_window); break;
     case "tool_call":
       setActivity(event.agent, `${p.name}(${Object.values(p.arguments || {})
         .map((v) => clip(String(v), 20)).join(", ")})`); break;

@@ -40,6 +40,30 @@ def _tokens(messages: list[dict]) -> int:
     return total
 
 
+def context_usage(messages: list[dict], response, config: ModelConfig) -> dict:
+    """How full the window is for this call — the number the UI puts on screen.
+
+    The server's own `prompt_tokens` is the truth when it reports one; the
+    char/4 estimate is a fallback so the gauge still moves for endpoints that
+    return no usage. Which one it is travels with the number, because a user
+    deciding whether to raise `context_window` should know if it is a guess.
+    """
+    reported = int((response.usage or {}).get("prompt_tokens") or 0)
+    tokens = reported or _tokens(messages)
+    window = max(1, config.context_window)
+    return {
+        "tokens": tokens,
+        "window": config.context_window,
+        # What the runner actually trims against: the window less the room the
+        # model needs to answer. Passing it means the gauge and the trimmer
+        # cannot tell different stories.
+        "budget": config.input_budget,
+        "reserved": config.max_tokens,
+        "percent": round(100 * tokens / window, 1),
+        "estimated": not reported,
+    }
+
+
 def fit_context(messages: list[dict], budget: int) -> tuple[list[dict], int]:
     """Drop the oldest tool results until the prompt fits.
 
@@ -189,6 +213,7 @@ def run_agent(
                 "finish_reason": response.finish_reason,
                 "usage": response.usage,
                 "summary": summarize_messages(messages),
+                "context": context_usage(messages, response, model_config),
             },
         )
         turn.model_event_ids.append(event.id)

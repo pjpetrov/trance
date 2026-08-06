@@ -23,6 +23,7 @@ const makeEl = (tag = "div") => {
 global.document = {
   getElementById: (id) => { if (!nodes.has(id)) nodes.set(id, makeEl()); return nodes.get(id); },
   createElement: makeEl, createTextNode: (t) => ({ text: t }),
+  createElementNS: (_ns, tag) => makeEl(tag),
   querySelectorAll: () => [], body: makeEl(),
 };
 global.window = { isSecureContext: false };
@@ -42,7 +43,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,contextGauge};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -92,8 +93,39 @@ try {
                         payload: { name: "run_command", ok: !detail || detail.kind !== "truncated",
                                    arguments: {}, result: "out", detail } });
   }
-  api.trackActivity({ type: "model_call", agent: "backend", ts: new Date().toISOString(),
-                      payload: { model: "m", tool_calls: [], messages: [], summary: {} } });
+  api.trackActivity({ type: "step_started", agent: "backend", step_id: "st1",
+                      ts: new Date().toISOString(), payload: { task: "t", attempt: 1 } });
+  // The context gauge, at every pressure band plus the no-usage fallback.
+  for (const ctx of [{ tokens: 900, window: 64000, budget: 59000, reserved: 4096,
+                       percent: 1.4, estimated: false },
+                     { tokens: 48000, window: 64000, budget: 59000, reserved: 4096,
+                       percent: 75, estimated: false },
+                     { tokens: 61000, window: 64000, budget: 59000, reserved: 4096,
+                       percent: 95.3, estimated: true },
+                     null]) {
+    api.trackActivity({ type: "model_call", agent: "backend", ts: new Date().toISOString(),
+                        payload: { model: "m", tool_calls: [], messages: [], summary: {},
+                                   context: ctx } });
+  }
+  api.trackActivity({ type: "context_trimmed", agent: "backend",
+                      ts: new Date().toISOString(),
+                      payload: { dropped_tool_results: 2, budget: 59000,
+                                 context_window: 64000 } });
+  // The gauge is the one widget whose *text* matters, so assert it rather
+  // than only checking that it rendered.
+  const flat = (n) => (n.textContent || "") + (n.children || []).map(flat).join(" ");
+  const gauge = api.contextGauge({ tokens: 48000, window: 64000, budget: 59000,
+                                   reserved: 4096, percent: 75, estimated: false });
+  const text = flat(gauge).replace(/\s+/g, " ").trim();
+  if (!text.includes("75%") || !text.includes("48k / 64k")) {
+    console.log("BROKEN: gauge text is", JSON.stringify(text));
+    process.exit(1);
+  }
+  if (gauge.className !== "ctx-gauge warm") {
+    console.log("BROKEN: gauge level is", gauge.className);
+    process.exit(1);
+  }
+  console.log("context gauge:", text, "·", gauge.className);
   console.log("all render paths ran without a ReferenceError");
   process.exit(0);
 } catch (e) {
