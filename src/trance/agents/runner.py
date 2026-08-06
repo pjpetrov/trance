@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..config import ModelConfig
@@ -44,7 +44,30 @@ _FAILURE_WORDS = frozenset({
 })
 
 #: Marker left in place of a tool result we dropped to stay inside the window.
-TRIMMED = "[trimmed to fit the context window — call the tool again if you still need this]"
+#: It used to end "call the tool again if you still need this", which is an
+#: instruction to refill the window that was just emptied.
+TRIMMED = ("[dropped to fit the context window. Work from what you have already "
+           "learned; only fetch this again if you cannot proceed without it]")
+
+#: Lookups whose answer depends only on their arguments. Repeating one is always
+#: waste; repeating run_command or write_file is not.
+_CACHEABLE = frozenset({
+    "read_file", "get_definition", "get_callers", "get_callees", "search_symbols",
+    "list_files", "check_file", "check_files",
+})
+
+
+def _lookup_key(name: str, arguments: dict, outcome) -> tuple | None:
+    """Identity of a lookup, including what it actually returned.
+
+    The returned size is part of the key so that re-reading a file the agent has
+    since rewritten gives it the new contents rather than a pointer to the old.
+    """
+    if name not in _CACHEABLE:
+        return None
+    detail = outcome.detail or {}
+    signature = tuple(sorted((k, str(v)) for k, v in (arguments or {}).items()))
+    return (name, signature, detail.get("bytes"), detail.get("last_line"))
 
 
 #: Starting guess at characters per token. Prose is about 4; code, JSON and
@@ -226,6 +249,8 @@ class AgentTurn:
     truncated_calls: int = 0
     #: Notes this agent added to the shared memory.
     notes_written: int = 0
+    #: Repeat lookups answered with a pointer instead of the content again.
+    deduped_lookups: int = 0
     model_event_ids: list[str] = field(default_factory=list)
     #: Everything this agent did, in order — the raw material for the handoff
     #: to a fixer. Never fed back to this agent; the conversation already holds
@@ -357,6 +382,9 @@ def run_agent(
     turn = AgentTurn(text="")
     totals = {"input_tokens": 0, "output_tokens": 0}
     asked_to_remember = False
+    #: Lookup key -> the tool message holding its result, so a repeat can point
+    #: at it instead of duplicating it.
+    seen_lookups: dict[tuple, dict] = {}
     # Calibrated from the endpoint's own prompt_tokens after the first call.
     # Trimming against a guess is how a "55k" prompt arrived as 61k and filled
     # the window it was supposed to stay inside.
@@ -520,10 +548,28 @@ def run_agent(
             )
             if (outcome.detail or {}).get("kind") == "memory" and outcome.detail.get("stored"):
                 turn.notes_written += 1
+
+            # The same file read five times in a row is five copies of it in the
+            # window. Point at the copy that is already there — unless it was
+            # trimmed away, in which case fetching it again is the right move.
+            key = _lookup_key(call.name, call.arguments, outcome)
+            earlier = seen_lookups.get(key) if key else None
+            if earlier is not None and earlier.get("content") != TRIMMED:
+                outcome = replace(
+                    outcome,
+                    text=(f"You already ran this exact lookup earlier in this "
+                          f"conversation and the result is still above — reuse it "
+                          f"rather than re-reading. ({call.name})"),
+                    detail={**(outcome.detail or {}), "deduped": True})
+                turn.deduped_lookups += 1
             _record(turn, call.name, call.arguments, outcome.text, outcome.ok, outcome.detail)
-            messages.append({
-                "role": "tool", "tool_call_id": call.id, "name": call.name, "content": outcome.text,
-            })
+            tool_message = {
+                "role": "tool", "tool_call_id": call.id, "name": call.name,
+                "content": outcome.text,
+            }
+            messages.append(tool_message)
+            if key is not None and earlier is None:
+                seen_lookups[key] = tool_message
     else:
         # Out of rounds: force a final answer with tools withheld.
         messages.append({

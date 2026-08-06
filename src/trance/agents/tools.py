@@ -313,8 +313,14 @@ class AgentTools:
         out: list[dict] = []
         if "files" in self.role.toolsets:
             out += [
-                _fn("read_file", "Read a file from the project.",
-                    {"path": {"type": "string", "description": "Path relative to the project root."}}, ["path"]),
+                _fn("read_file",
+                    "Read a file from the project. Large files come back in pages — the "
+                    "header says which lines you got.",
+                    {"path": {"type": "string", "description": "Path relative to the project root."},
+                     "start_line": {"type": "integer",
+                                    "description": ("First line to return, 1-based. Use this to "
+                                                    "continue past a truncated read.")}},
+                    ["path"]),
                 _fn("write_file",
                     "Create or overwrite a file with complete contents. Parent directories "
                     "are created automatically — never call mkdir first.",
@@ -482,19 +488,32 @@ class AgentTools:
             return candidate
         return None  # escaped the project root
 
-    def read_file(self, path: str) -> ToolOutcome:  # noqa: D401
+    def read_file(self, path: str, start_line: int = 1) -> ToolOutcome:  # noqa: D401
         target = self._resolve(path)
         if target is None:
             return ToolOutcome(f"Refused: {path!r} is outside the project directory.", ok=False)
         if not target.is_file():
             return ToolOutcome(f"{path} does not exist. Use list_files to see what does.", ok=False)
         raw = target.read_bytes()
-        data = raw[:MAX_READ_BYTES].decode("utf8", errors="replace")
-        if len(raw) > MAX_READ_BYTES:
-            data += (f"\n… truncated at {MAX_READ_BYTES} bytes of {len(raw)}. "
-                     "Use the graph tools to fetch a specific symbol instead of the whole file.")
-        return ToolOutcome(f"# {path}\n{data}",
-                           detail={"kind": "read", "path": path, "bytes": len(raw)})
+        text = raw.decode("utf8", errors="replace")
+        lines = text.splitlines()
+        start = max(1, int(start_line or 1))
+
+        # A file bigger than the cap used to return its first 24KB and nothing
+        # else, so an agent that needed line 900 could only read the same first
+        # 24KB again. Paging is the way out of that.
+        body = "\n".join(lines[start - 1:])
+        shown = body[:MAX_READ_BYTES]
+        last = start - 1 + len(shown.splitlines())
+        header = f"# {path} (lines {start}-{last} of {len(lines)})"
+        if len(body) > MAX_READ_BYTES:
+            shown += (f"\n… truncated at {MAX_READ_BYTES} bytes. Continue with "
+                      f"read_file(path={path!r}, start_line={last + 1}), or fetch one "
+                      f"symbol with get_definition instead of the whole file.")
+        return ToolOutcome(f"{header}\n{shown}",
+                           detail={"kind": "read", "path": path, "bytes": len(raw),
+                                   "start_line": start, "last_line": last,
+                                   "lines": len(lines)})
 
     def write_file(self, path: str, content: str) -> ToolOutcome:
         return self._put(path, content, append=False)

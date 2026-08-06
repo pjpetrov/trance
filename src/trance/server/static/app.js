@@ -2332,6 +2332,16 @@ function consoleAppend(event) {
                                "list_files"].includes(p.name)) {
         if (!showReads) return;
         const what = d.path || Object.values(p.arguments || {})[0] || "";
+        if (d.deduped) {
+          // Worth seeing: a run full of these means the agent is going in
+          // circles, even though the context cost is now near zero.
+          consolePush(consoleEntry({
+            kind: "read", icon: "⟲", time, tag: event.agent,
+            label: labelWith([[`${p.name} `, ""], [String(what), "c-path"],
+                              ["  already in context", "muted"]]),
+          }));
+          return;
+        }
         consolePush(consoleEntry({
           kind: d.kind === "read" ? "read" : "graph",
           icon: d.kind === "read" ? ICON.read : ICON.graph, time, tag: event.agent,

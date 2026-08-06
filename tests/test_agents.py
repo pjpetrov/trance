@@ -3388,3 +3388,116 @@ def test_the_estimate_is_calibrated_against_the_endpoints_own_count(tmp_path, mo
     # chars/token that is 30000 chars. The last prompt must respect the real
     # ratio, not the 3.5 guess (which would have allowed 52500 chars).
     assert sent[-1] <= 30000 * 1.05
+
+
+# ------------------------- the same lookup, over and over, in one turn
+
+def _reader(monkeypatch, tmp_path, reads, final="OUTCOME: SUCCESS"):
+    """Drive an agent that issues the given read_file calls, one per round."""
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    results = []
+
+    class Repeater:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None):
+            results.append([m for m in messages if m.get("role") == "tool"])
+            if self.n < len(reads):
+                args = reads[self.n]
+                self.n += 1
+                return ChatResponse(text="", tool_calls=[
+                    ToolCall(id=f"c{self.n}", name="read_file", arguments=args)])
+            return ChatResponse(text=final)
+
+    monkeypatch.setattr(runner, "client_for", lambda config: Repeater())
+    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+                            config=ModelConfig(), bus=EventBus(),
+                            session_id="s", step_id="st")
+    return turn, results
+
+
+def test_re_reading_the_same_file_points_at_the_copy_already_in_context(tmp_path, monkeypatch):
+    """Regression: the frontend agent read tests/integration.test.js five times
+    in one minute — five copies of a 24KB page in a 64k window."""
+    (tmp_path / "big.js").write_text("const x = 1;\n" * 2000)
+    turn, rounds = _reader(monkeypatch, tmp_path, [{"path": "big.js"}] * 4)
+
+    assert turn.deduped_lookups == 3          # the first read is the real one
+    contents = [m["content"] for m in rounds[-1]]
+    assert sum("const x = 1;" in c for c in contents) == 1
+    assert sum("already ran this exact lookup" in c for c in contents) == 3
+
+
+def test_a_file_that_changed_is_read_again_in_full(tmp_path, monkeypatch):
+    """Pointing at a stale copy would be worse than the duplication."""
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    path = tmp_path / "server" / "app.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("first version\n")
+
+    class Rewriter:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None):
+            self.n += 1
+            if self.n == 1:
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id="c1", name="read_file", arguments={"path": "server/app.py"})])
+            if self.n == 2:
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id="c2", name="write_file",
+                    arguments={"path": "server/app.py",
+                               "content": "second version, much longer now\n"})])
+            if self.n == 3:
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id="c3", name="read_file", arguments={"path": "server/app.py"})])
+            self.last = messages
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    client = Rewriter()
+    monkeypatch.setattr(runner, "client_for", lambda config: client)
+    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+                            config=ModelConfig(), bus=EventBus(),
+                            session_id="s", step_id="st")
+
+    assert turn.deduped_lookups == 0
+    assert any("second version" in str(m.get("content")) for m in client.last)
+
+
+def test_a_different_page_of_the_same_file_is_not_deduped(tmp_path, monkeypatch):
+    (tmp_path / "big.js").write_text("\n".join(f"line {i}" for i in range(3000)))
+    turn, rounds = _reader(monkeypatch, tmp_path,
+                           [{"path": "big.js"}, {"path": "big.js", "start_line": 900}])
+
+    assert turn.deduped_lookups == 0
+    contents = " ".join(m["content"] for m in rounds[-1])
+    assert "line 0" in contents and "line 900" in contents
+
+
+def test_a_command_is_never_deduped(tmp_path, monkeypatch):
+    """Running the suite twice is a different question, not a repeat."""
+    from trance.agents.runner import _lookup_key
+    from trance.agents.tools import ToolOutcome
+
+    outcome = ToolOutcome("out", detail={"kind": "command"})
+    assert _lookup_key("run_command", {"command": "npm test"}, outcome) is None
+    assert _lookup_key("write_file", {"path": "a.js"}, outcome) is None
+    assert _lookup_key("read_file", {"path": "a.js"}, outcome) is not None
+
+
+def test_a_trimmed_result_may_be_fetched_again(tmp_path, monkeypatch):
+    """Once its copy is gone from the window, re-reading is the right move."""
+    from trance.agents.runner import TRIMMED
+
+    assert "call the tool again" not in TRIMMED       # no longer an invitation
+    assert "only fetch this again if you cannot proceed" in TRIMMED
