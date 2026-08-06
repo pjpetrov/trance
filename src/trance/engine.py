@@ -229,7 +229,7 @@ class FlowEngine:
                 should_stop=lambda: self.session.stopping,
                 memory=self.memory, project_map=self._project_map(role, step.task),
                 goal=self._loop_goal(loop), placement=self._placement(step),
-                approve=self.approve,
+                approve=self.approve, reindex=self._reindex,
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
@@ -356,7 +356,7 @@ class FlowEngine:
                 should_stop=lambda: session.stopping,
                 memory=self.memory, project_map=self._project_map(role, step.task),
                 goal=session.goal, placement=self._placement(step),
-                approve=self.approve,
+                approve=self.approve, reindex=self._reindex,
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
@@ -487,7 +487,7 @@ class FlowEngine:
             should_stop=lambda: self.session.stopping,
             memory=self.memory, project_map=self._project_map(role, step.task),
             goal=self.session.goal, placement=self._placement(step),
-            approve=self.approve,
+            approve=self.approve, reindex=self._reindex,
             steering=[carry.body] if carry and carry.body else None,
         )
         attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
@@ -565,7 +565,7 @@ class FlowEngine:
             should_stop=lambda: self.session.stopping,
             memory=self.memory, project_map=self._project_map(fixer, step.task),
             goal=self.session.goal,
-            approve=self.approve,
+            approve=self.approve, reindex=self._reindex,
         )
         attempt.fix_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
         attempt.fix_summary = _summarize(turn.text)
@@ -668,7 +668,7 @@ class FlowEngine:
                 should_stop=lambda: self.session.stopping,
                 memory=self.memory, project_map=self._project_map(gate, step.task),
                 goal=self.session.goal,
-                approve=self.approve,
+                approve=self.approve, reindex=self._reindex,
             )
             verdict = turn.verdict or "UNKNOWN"
             result = GateResult(

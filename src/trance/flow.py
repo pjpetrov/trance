@@ -60,6 +60,15 @@ class Attempt:
     def failed_gate(self) -> str | None:
         return next((g.gate for g in self.gate_results if g.verdict == "FAIL"), None)
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Attempt":
+        known = {f for f in cls.__dataclass_fields__}
+        clean = {k: v for k, v in (data or {}).items() if k in known}
+        clean["gate_results"] = [GateResult(**{k: v for k, v in (g or {}).items()
+                                               if k in GateResult.__dataclass_fields__})
+                                 for g in (data or {}).get("gate_results") or []]
+        return cls(**clean)
+
 
 @dataclass
 class Step:
@@ -136,7 +145,10 @@ class Step:
     @classmethod
     def from_dict(cls, data: dict) -> "Step":
         data = dict(data)
-        data.pop("attempts", None)
+        # What the step already did, restored. Dropping it meant a restart left
+        # every finished step with no history and no record of what it cost.
+        attempts = [Attempt.from_dict(a) for a in (data.pop("attempts", None) or [])
+                    if isinstance(a, dict)]
         for derived in ("checks", "checker", "fixer", "loop_limit", "runs_a_loop"):
             data.pop(derived, None)
         # Older shapes fold into `check`.
@@ -144,7 +156,9 @@ class Step:
             gates = data.get("gates") or []
             data["check"] = (gates[0] if gates else None) or data.get("verify_with")
         known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        step = cls(**{k: v for k, v in data.items() if k in known})
+        step.attempts = attempts
+        return step
 
 
 @dataclass
@@ -176,8 +190,11 @@ class Flow:
 
         The event trace is append-only regardless; a step is a *plan*, and a
         plan you cannot correct after it failed is not much use. So a failed,
-        blocked or finished step is editable, and changing what it says re-queues
-        it — editing a step you already ran means you want it run again.
+        blocked or finished step is editable, and changing *what it does* —
+        its agent, its loop, its task — re-queues it, because editing work you
+        already ran means you want it run again. Changing how it is checked or
+        how many tries it gets does not: that applies to the next run and is no
+        reason to discard the last one.
         """
         locked = {s.id: s for s in self.steps if s.status in self.LOCKED}
         current = {s.id: s for s in self.steps}
@@ -193,12 +210,15 @@ class Flow:
                 result.append(existing)          # mid-flight: untouchable
                 continue
 
+            # Only a change to the *work* re-queues a finished step. The check,
+            # the retry limit and the fixer describe how the step is run next
+            # time; treating them as edits threw away completed work — a save
+            # after the plan changed server-side put every done step back to
+            # pending and wiped its history.
             changed = (
                 existing.role != incoming.role
                 or existing.loop != incoming.loop
                 or existing.task != incoming.task
-                or existing.checker != incoming.checker
-                or existing.fixer != incoming.fixer
                 or existing.entry != incoming.entry
             )
             existing.role, existing.task = incoming.role, incoming.task

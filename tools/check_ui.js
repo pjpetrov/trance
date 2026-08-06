@@ -31,11 +31,16 @@ const makeEl = (tag = "div") => {
   };
   return el;
 };
+const openModals = [];
+const listeners = {};
 global.document = {
+  addEventListener: (type, fn) => { listeners[type] = fn; },
+  activeElement: null,
   getElementById: (id) => { if (!nodes.has(id)) nodes.set(id, makeEl()); return nodes.get(id); },
   createElement: makeEl, createTextNode: (t) => ({ text: t }),
   createElementNS: (_ns, tag) => makeEl(tag),
-  querySelectorAll: () => [], body: makeEl(),
+  querySelectorAll: (sel) => (sel === ".modal.open" ? openModals : []),
+  body: makeEl(),
 };
 global.window = { isSecureContext: false };
 global.navigator = {};
@@ -310,6 +315,24 @@ try {
   api.state.memory.oversized = true;      // the "over budget" branch
   api.renderMemory();
   console.log("context gauge:", text, "·", gauge.className);
+  // Esc must close the topmost modal, and must not close one over a textarea.
+  const modal = makeEl("div");
+  modal.classList.add("open");
+  openModals.push(modal);
+  listeners.keydown({ key: "Escape", preventDefault() {} });
+  if (modal.classList.contains("open")) {
+    console.log("BROKEN: Escape did not close the open modal");
+    process.exit(1);
+  }
+  modal.classList.add("open");
+  const area = makeEl("textarea");
+  modal.contains = () => true;
+  document.activeElement = area;
+  listeners.keydown({ key: "Escape", preventDefault() {} });
+  if (!modal.classList.contains("open")) {
+    console.log("BROKEN: Escape closed a modal while typing in a textarea");
+    process.exit(1);
+  }
   console.log("all render paths ran without a ReferenceError");
   process.exit(0);
 } catch (e) {

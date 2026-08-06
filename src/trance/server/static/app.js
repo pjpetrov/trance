@@ -1092,6 +1092,21 @@ function clip(text, n) {
   await loadHome();
 })();
 
+/* Esc closes whatever is open, topmost first. Every modal had its own ✕ and
+ * its own backdrop click; none of them had the key everyone reaches for. */
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  const open = Array.from(document.querySelectorAll(".modal.open"));
+  const top = open[open.length - 1];
+  if (!top) return;
+  // Leave a half-written note alone: Esc in a textarea means "undo my typing"
+  // to the browser, and closing the dialog under it loses more than it saves.
+  const active = document.activeElement;
+  if (active && active.tagName === "TEXTAREA" && top.contains(active)) return;
+  top.classList.remove("open");
+  e.preventDefault();
+});
+
 /* ─────────────────────────── settings modal ───────────────────────── */
 
 $("open-settings").onclick = openSettings;
@@ -1723,6 +1738,13 @@ function openStep(step, index) {
   if (step.loop) head.append(el("span", "badge loop-badge", `↻ ${step.loop}`));
   if (step.checker) head.append(el("span", "badge", `check: ${step.checker}`));
   if (step.on_fail) head.append(el("span", "badge", `on fail: ${step.on_fail}`));
+  // What this step cost, where you look when you wonder why it went wrong.
+  const used = lastContext(step);
+  if (used) {
+    const gauge = contextGauge(used);
+    gauge.style.marginLeft = "auto";
+    head.append(gauge);
+  }
   body.append(head);
 
   body.append(rowWithCopy("task", step.task || ""));

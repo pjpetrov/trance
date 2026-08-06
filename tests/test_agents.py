@@ -10,7 +10,7 @@ from trance.agents.roles import BUILTIN_ROLES, AgentRole
 from trance.agents.runner import TRIMMED, fit_context
 from trance.agents.tools import AgentTools
 from trance.config import Config
-from trance.flow import Attempt, Flow, Step
+from trance.flow import Attempt, Flow, GateResult, Step
 from trance.worker.client import salvage_tool_calls
 
 
@@ -189,10 +189,11 @@ def test_editing_a_failed_step_requeues_it():
                   check="tester", attempts=[Attempt(n=1, verdict="FAIL")])
     flow = Flow(steps=[failed])
 
-    outcome = flow.apply_edits([_edit(failed, check="factchecker")])
-    assert outcome["requeued"] == [failed.id]
+    outcome = flow.apply_edits([_edit(failed, task="build it properly",
+                                      check="factchecker")])
+    assert outcome["requeued"] == [failed.id]        # the work changed
     assert flow.steps[0].status == "pending"
-    assert flow.steps[0].checker == "factchecker"
+    assert flow.steps[0].checker == "factchecker"    # and the setting applied too
     assert flow.steps[0].attempts == []       # a re-queued step starts clean
 
 
@@ -4220,3 +4221,110 @@ def test_the_runner_records_the_window_it_last_used(tmp_path, monkeypatch):
 
     assert turn.context["tokens"] == 4321
     assert turn.context["estimated"] is False
+
+
+def test_changing_a_setting_does_not_discard_completed_work():
+    """Regression: after a refresh every done step came back pending. Saving
+    the flow compared the check and the derived fixer, so a plan that had
+    changed server-side re-queued everything and wiped its history."""
+    done = Step(id="a", role="backend", task="build", status="done",
+                check="factchecker", attempts=[Attempt(n=1, outcome="SUCCESS")])
+    flow = Flow(steps=[done])
+
+    # A browser that never saw the server-added check sends it back as none.
+    outcome = flow.apply_edits([Step.from_dict(
+        {"id": "a", "role": "backend", "task": "build", "check": None})])
+
+    assert outcome["requeued"] == []
+    assert flow.steps[0].status == "done"
+    assert len(flow.steps[0].attempts) == 1        # the history survives
+    assert flow.steps[0].check is None             # but the setting is applied
+
+
+def test_what_a_step_did_survives_a_restart(tmp_path):
+    """A restart used to leave every finished step with no history and no
+    record of what it cost."""
+    from trance.session import SessionStore
+
+    store = SessionStore(tmp_path)
+    session = store.create("p", "/tmp/p")
+    session.flow.steps = [Step(role="backend", task="a", status="done")]
+    session.flow.steps[0].attempts = [Attempt(
+        n=1, outcome="SUCCESS", files_written=["server.js"],
+        context={"tokens": 2000, "window": 64000, "percent": 3.1},
+        gate_results=[GateResult(gate="factchecker", verdict="PASS")])]
+    store.save(session)
+
+    back = SessionStore(tmp_path).get(session.id).flow.steps[0]
+    assert back.status == "done" and len(back.attempts) == 1
+    assert back.attempts[0].outcome == "SUCCESS"
+    assert back.attempts[0].files_written == ["server.js"]
+    assert back.attempts[0].context["tokens"] == 2000
+    assert back.attempts[0].gate_results[0].verdict == "PASS"
+
+
+def test_a_symbol_written_this_step_can_be_looked_up(tmp_path):
+    """The index is a snapshot from before the step, so an agent asking about a
+    file it just wrote got "no symbol named …" for something plainly there."""
+    from trance.agents.tools import AgentTools
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import ContextTools
+
+    (tmp_path / "server").mkdir()
+    (tmp_path / "server" / "old.py").write_text("def existing():\n    return 1\n")
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+
+    reindexed = []
+
+    def reindex():
+        reindexed.append(1)
+        index_repo(tmp_path, db)
+
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+                       notify=lambda *a, **k: None, reindex=reindex)
+
+    tools.call("write_file", {"path": "server/app.py",
+                              "content": "def gameLoop():\n    return 2\n"})
+    found = tools.call("get_definition", {"symbol": "server/app.py::gameLoop"})
+
+    assert found.ok is True and "return 2" in found.text
+    assert reindexed == [1]                     # once, not on every miss
+
+
+def test_a_genuine_miss_does_not_reindex_forever(tmp_path):
+    from trance.agents.tools import AgentTools
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import ContextTools
+
+    (tmp_path / "a.py").write_text("def real():\n    pass\n")
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+    calls = []
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+                       notify=lambda *a, **k: None,
+                       reindex=lambda: calls.append(1))
+
+    tools.call("write_file", {"path": "b.py", "content": "x = 1\n"})
+    for _ in range(3):
+        tools.call("get_definition", {"symbol": "nothing_like_this"})
+    assert calls == [1]                         # the write is only worth one retry
+
+
+def test_nothing_is_reindexed_when_nothing_was_written(tmp_path):
+    from trance.agents.tools import AgentTools
+    from trance.db import GraphDB
+    from trance.indexer.service import index_repo
+    from trance.worker.tools import ContextTools
+
+    (tmp_path / "a.py").write_text("def real():\n    pass\n")
+    db = GraphDB(tmp_path / "g.db")
+    index_repo(tmp_path, db)
+    calls = []
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+                       notify=lambda *a, **k: None, reindex=lambda: calls.append(1))
+
+    tools.call("get_definition", {"symbol": "missing"})
+    assert calls == []

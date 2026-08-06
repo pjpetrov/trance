@@ -292,7 +292,8 @@ class ToolOutcome:
 
 class AgentTools:
     def __init__(self, project: Path, role: AgentRole, graph_tools=None, notify=None,
-                 memory=None, approve=None, session_id: str = "", step_id: str = ""):
+                 memory=None, approve=None, session_id: str = "", step_id: str = "",
+                 reindex=None):
         self.project = Path(project).resolve()
         self.role = role
         self.graph = graph_tools
@@ -305,6 +306,10 @@ class AgentTools:
         self._approve = approve
         self.session_id = session_id
         self.step_id = step_id
+        #: Re-reads the repo into the graph. The index is a snapshot from before
+        #: this step, so an agent asking about a file it just wrote gets nothing.
+        self._reindex = reindex
+        self._wrote_since_index = False
         #: Called with (event_type, payload) so a long command is visible while
         #: it runs instead of only when it finishes.
         self.notify = notify or (lambda kind, payload: None)
@@ -462,6 +467,15 @@ class AgentTools:
                     f"{self._usage(name)}", ok=False)
         if self.graph is not None:
             result = self.graph.call(name, arguments)
+            if not result.hit and self._wrote_since_index and self._reindex is not None:
+                # It may be asking about something it wrote a moment ago.
+                # Re-indexing is incremental, so this costs one changed file.
+                try:
+                    self._reindex()
+                except Exception:                  # indexing must never break a tool
+                    pass
+                self._wrote_since_index = False
+                result = self.graph.call(name, arguments)
             # A lookup that found nothing is not a refusal: the tool ran and
             # answered. Saying so lets the UI show a miss as a miss instead of
             # painting it red next to writes that were actually blocked.
@@ -632,6 +646,7 @@ class AgentTools:
         content, stripped = strip_wrappers(content, rel)
         final = previous + content if append else content
         target.write_text(final, encoding="utf8")
+        self._wrote_since_index = True
 
         diff_lines = list(difflib.unified_diff(
             previous.splitlines(), final.splitlines(),

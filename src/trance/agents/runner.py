@@ -328,6 +328,7 @@ def run_agent(
     goal: str = "",
     placement: str = "",
     approve=None,
+    reindex=None,
 ) -> AgentTurn:
     model_config = config
     client = client_for(model_config)
@@ -336,7 +337,8 @@ def run_agent(
 
     memory = memory if memory is not None else ProjectMemory(project)
     tools = AgentTools(project, role, graph_tools, notify=notify, memory=memory,
-                       approve=approve, session_id=session_id, step_id=step_id)
+                       approve=approve, session_id=session_id, step_id=step_id,
+                       reindex=reindex)
     specs = tools.specs()
 
     user_parts = []
