@@ -634,3 +634,11 @@ input.tiny { width: 68px; }
 .step-block-body { padding: 10px 11px 12px; }
 .badge.outcome-ok { color: var(--ok); border-color: var(--ok); }
 .badge.outcome-bad { color: var(--err); border-color: var(--err); }
+
+
+/* ── hint bar ──────────────────────────────────────────────────────────
+   Always there, under the console you are reading when you notice the
+   agent is wrong about something. */
+.hint-bar { display: flex; gap: 8px; margin-top: 10px; flex: 0 0 auto; }
+.hint-bar input { margin-top: 0; }
+.hint-bar button { flex: 0 0 auto; }

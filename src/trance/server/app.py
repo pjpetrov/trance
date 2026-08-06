@@ -986,18 +986,25 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         step_id = body.get("step_id")
         if not note:
             raise HTTPException(400, "note is required")
-        targets = [session.flow.find(step_id)] if step_id else [
-            s for s in session.flow.steps if s.status == "pending"
-        ]
+        if step_id:
+            targets = [session.flow.find(step_id)]
+        else:
+            # The step you are watching is the one you want to correct, and it
+            # is running — which is exactly the case this used to refuse.
+            running = [s for s in session.flow.steps
+                       if s.status in ("running", "verifying")]
+            targets = running or [s for s in session.flow.steps if s.status == "pending"][:1]
         targets = [t for t in targets if t is not None]
         if not targets:
-            raise HTTPException(404, "no pending step to steer")
+            raise HTTPException(404, "nothing running or pending to steer")
         for step in targets:
             step.steering.append(note)
-        bus.emit("steering", session_id, step_id=step_id,
-                 payload={"note": note, "steps": [t.id for t in targets]})
+        live = any(t.status in ("running", "verifying") for t in targets)
+        bus.emit("steering", session_id, step_id=step_id, payload={
+            "note": note, "steps": [t.id for t in targets], "delivering": live,
+        })
         touch(session)
-        return {"steered": [t.id for t in targets]}
+        return {"steered": [t.id for t in targets], "delivering": live}
 
     @app.post("/api/sessions/{session_id}/steps/{step_id}/split")
     async def split_one_step(session_id: str, step_id: str, body: dict | None = None):

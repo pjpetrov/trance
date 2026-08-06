@@ -4523,3 +4523,130 @@ def test_nothing_git_does_can_break_a_run(tmp_path, monkeypatch):
     assert vcs.undo(missing, "deadbeef").ok is False   # a bad sha is
     assert vcs.head(missing) == ""
     assert vcs.log(missing) == []
+
+
+# ------------------------------- hinting an agent that is already working
+
+def test_a_hint_reaches_the_agent_on_its_next_round(tmp_path, monkeypatch):
+    """The moment you notice a wrong assumption is while it is still being
+    acted on; waiting for the block to end is most of the value gone."""
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.flow import Step
+    from trance.providers.base import ChatResponse, ToolCall
+
+    step = Step(role="backend", task="build it")
+    seen = []
+
+    class Worker:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None, **kw):
+            self.n += 1
+            seen.append([m for m in messages if m.get("role") == "user"])
+            if self.n == 1:
+                # The user types a hint while this round is in flight.
+                step.steering.append("the port is 3100, not 3000")
+                return ChatResponse(text="", tool_calls=[
+                    ToolCall(id="c1", name="list_files", arguments={})])
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: Worker())
+    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task=step.task, project=tmp_path,
+                            config=ModelConfig(), bus=EventBus(), session_id="s",
+                            step_id=step.id, steering_inbox=step.take_steering)
+
+    assert turn.steering_received == 1
+    delivered = " ".join(m["content"] for m in seen[-1])
+    assert "the port is 3100" in delivered
+    assert "correcting what you are doing now" in delivered
+    assert step.steering == []                  # taken exactly once
+
+
+def test_a_hint_is_delivered_once_and_not_repeated(tmp_path, monkeypatch):
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.flow import Step
+    from trance.providers.base import ChatResponse, ToolCall
+
+    step = Step(role="backend", task="t")
+    step.steering.append("use fetch, not axios")
+
+    class Worker:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None, **kw):
+            self.n += 1
+            if self.n < 3:
+                return ChatResponse(text="", tool_calls=[
+                    ToolCall(id=f"c{self.n}", name="list_files", arguments={})])
+            self.last = messages
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    client = Worker()
+    monkeypatch.setattr(runner, "client_for", lambda config: client)
+    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+                            config=ModelConfig(), bus=EventBus(), session_id="s",
+                            step_id=step.id, steering_inbox=step.take_steering)
+
+    assert turn.steering_received == 1
+    hints = [m for m in client.last
+             if m.get("role") == "user" and "use fetch" in str(m.get("content"))]
+    assert len(hints) == 1
+
+
+def test_a_running_step_can_be_steered(tmp_path):
+    """Regression: steering only ever targeted pending steps, so the one you
+    were watching go wrong was the one you could not correct."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "backend", "task": "one"}, {"role": "frontend", "task": "two"}]})
+    session = app.state.store.get(sid)
+    session.flow.steps[0].status = "running"
+
+    body = client.post(f"/api/sessions/{sid}/steer",
+                       json={"note": "the port is 3100"}).json()
+
+    assert body["steered"] == [session.flow.steps[0].id]
+    assert body["delivering"] is True                   # it is being worked on now
+    assert session.flow.steps[0].steering == ["the port is 3100"]
+    assert session.flow.steps[1].steering == []         # not sprayed at everything
+
+
+def test_with_nothing_running_a_hint_waits_for_the_next_step(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "backend", "task": "one"}, {"role": "frontend", "task": "two"}]})
+
+    body = client.post(f"/api/sessions/{sid}/steer", json={"note": "mind the port"}).json()
+    session = app.state.store.get(sid)
+
+    assert body["delivering"] is False
+    assert session.flow.steps[0].steering == ["mind the port"]
+    assert session.flow.steps[1].steering == []

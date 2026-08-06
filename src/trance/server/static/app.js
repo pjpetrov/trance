@@ -679,6 +679,37 @@ function renderRun() {
   loadMemory();      // only the count; the notes load when the modal opens
 }
 
+/* ──────────────────── hinting a working agent ─────────────────────── */
+
+/* The moment you notice a wrong assumption is while it is still being acted
+ * on. A hint goes to whatever is running and reaches it on its next round —
+ * no pausing, no picking the exact line it came from. */
+
+async function sendHint() {
+  const box = $("hint-text");
+  const note = box.value.trim();
+  if (!note || !state.session) return;
+  const button = $("hint-send");
+  button.disabled = true;
+  try {
+    const result = await api(`/api/sessions/${state.session.id}/steer`,
+                             { method: "POST", body: { note } });
+    box.value = "";
+    toast(result.delivering
+      ? "Sent — the agent sees it on its next round."
+      : "Queued — it goes in when that step starts.");
+  } catch (_) {
+    // The message says why; leave the text so it is not lost.
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("hint-send").onclick = sendHint;
+$("hint-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendHint();
+});
+
 /* ─────────────── a refusal, asked rather than enforced ─────────────── */
 
 /* The agent's thread is blocked while this is on screen. A remit is a good
@@ -966,6 +997,7 @@ function headline(event) {
              (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
     case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
     case "git": return `${p.message || p.action}${p.sha ? ` (${p.sha.slice(0, 8)})` : ""}`;
+    case "steering_delivered": return `hint delivered: “${clip(p.note, 70)}”`;
     case "loop_node": return p.message || "";
     case "loop_exhausted": return p.message || "";
     case "splitting_steps": return p.message;
@@ -2731,6 +2763,18 @@ function consoleAppend(event) {
       consolePush(consoleEntry({
         kind: "cmd", icon: "↻", time, tag: event.agent, failed: true,
         label: p.message || "the loop is not converging",
+      }));
+      return;
+
+    case "steering":
+    case "steering_delivered":
+      consolePush(consoleEntry({
+        kind: "step", icon: "✎", time, tag: "you",
+        label: labelWith([
+          [event.type === "steering_delivered" ? "hint delivered — " : "hint queued — ", ""],
+          [clip(p.note, 90), ""],
+        ]),
+        open: true,
       }));
       return;
 

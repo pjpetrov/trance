@@ -219,8 +219,7 @@ class FlowEngine:
             })
             self.on_change()
 
-            steering = list(step.steering)
-            step.steering.clear()
+            steering = step.take_steering()
             if carry and carry.body:
                 steering.append(f"What the previous block did:\n{carry.body}")
 
@@ -237,6 +236,7 @@ class FlowEngine:
                 memory=self.memory, project_map=self._project_map(role, step.task),
                 goal=self._loop_goal(loop), placement=self._placement(step),
                 approve=self.approve, reindex=self._reindex,
+                steering_inbox=step.take_steering,
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
@@ -347,8 +347,7 @@ class FlowEngine:
             if bundle_meta:
                 self._emit("context_bundle", agent=role.name, step_id=step.id, payload=bundle_meta)
 
-            steering = list(step.steering)
-            step.steering.clear()
+            steering = step.take_steering()
             if feedback:
                 # A re-run starts a fresh conversation, so this agent has no
                 # memory of its own previous pass either. Hand it back.
@@ -369,6 +368,7 @@ class FlowEngine:
                 memory=self.memory, project_map=self._project_map(role, step.task),
                 goal=session.goal, placement=self._placement(step),
                 approve=self.approve, reindex=self._reindex,
+                steering_inbox=step.take_steering,
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
@@ -505,6 +505,7 @@ class FlowEngine:
             memory=self.memory, project_map=self._project_map(role, step.task),
             goal=self.session.goal, placement=self._placement(step),
             approve=self.approve, reindex=self._reindex,
+            steering_inbox=step.take_steering,
             steering=[carry.body] if carry and carry.body else None,
         )
         attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
@@ -583,6 +584,7 @@ class FlowEngine:
             memory=self.memory, project_map=self._project_map(fixer, step.task),
             goal=self.session.goal,
             approve=self.approve, reindex=self._reindex,
+            steering_inbox=step.take_steering,
         )
         attempt.fix_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
         attempt.fix_summary = _summarize(turn.text)
@@ -686,6 +688,7 @@ class FlowEngine:
                 memory=self.memory, project_map=self._project_map(gate, step.task),
                 goal=self.session.goal,
                 approve=self.approve, reindex=self._reindex,
+                steering_inbox=step.take_steering,
             )
             verdict = turn.verdict or "UNKNOWN"
             result = GateResult(

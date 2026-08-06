@@ -253,6 +253,8 @@ class AgentTurn:
     deduped_lookups: int = 0
     #: Window usage on the last call, for the step to keep after the run moves on.
     context: dict = field(default_factory=dict)
+    #: Hints the user sent while this turn was running.
+    steering_received: int = 0
     model_event_ids: list[str] = field(default_factory=list)
     #: Everything this agent did, in order — the raw material for the handoff
     #: to a fixer. Never fed back to this agent; the conversation already holds
@@ -329,6 +331,7 @@ def run_agent(
     placement: str = "",
     approve=None,
     reindex=None,
+    steering_inbox=None,
 ) -> AgentTurn:
     model_config = config
     client = client_for(model_config)
@@ -398,6 +401,19 @@ def run_agent(
         if should_stop and should_stop():
             turn.stop_reason = "cancelled"
             break
+
+        # A hint typed while the agent is working reaches it on the next round
+        # rather than after the step. Noticing a wrong assumption and having to
+        # wait for the block to finish is most of the value gone.
+        for note in (steering_inbox() if steering_inbox else []):
+            turn.steering_received += 1
+            messages.append({
+                "role": "user",
+                "content": ("The user is watching you work and says:\n\n" + note
+                            + "\n\nTake this as correcting what you are doing now."),
+            })
+            bus.emit("steering_delivered", session_id, agent=role.name, step_id=step_id,
+                     payload={"note": note, "round": round_n})
 
         messages, trimmed = fit_context(messages, model_config.input_budget, chars_per_token)
         if trimmed:
@@ -517,7 +533,16 @@ def run_agent(
             turn.stop_reason = response.finish_reason
             break
 
-        messages.append(response.raw_message)
+        # A provider that returned no assistant message would otherwise put an
+        # empty dict in the conversation — a message with no role, which some
+        # endpoints reject and none can read.
+        messages.append(response.raw_message or {
+            "role": "assistant", "content": response.text or "",
+            "tool_calls": [{"id": c.id, "type": "function",
+                            "function": {"name": c.name,
+                                         "arguments": json.dumps(c.arguments)}}
+                           for c in calls],
+        })
         for call in calls:
             if call.malformed:
                 # Almost always the model ran out of output tokens partway

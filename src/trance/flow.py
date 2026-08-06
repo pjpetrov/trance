@@ -114,8 +114,13 @@ class Step:
     entry: str = ""
     status: StepStatus = "pending"
     attempts: list[Attempt] = field(default_factory=list)
-    #: User steering notes queued for this step's next prompt.
+    #: User steering notes waiting to reach this step's agent.
     steering: list[str] = field(default_factory=list)
+
+    def take_steering(self) -> list[str]:
+        """Hand over every waiting note, exactly once."""
+        notes, self.steering = list(self.steering), []
+        return notes
     summary: str = ""
 
     @property
