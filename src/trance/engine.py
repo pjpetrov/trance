@@ -21,7 +21,7 @@ import traceback
 from pathlib import Path
 
 from .agents.handoff import Handoff, build as build_handoff
-from .agents.memory import COMPACT_PROMPT, ProjectMemory
+from .agents.memory import COMPACT_PROMPT, ProjectMemory, write_plan
 from .agents.runner import run_agent
 from .config import Config
 from .providers import client_for
@@ -116,6 +116,7 @@ class FlowEngine:
             # agent of a run never had a graph to query, and on a fresh project
             # was not even given the graph tools.
             self._reindex()
+            self._write_plan()
             while True:
                 session.wait_if_paused()
                 if session.stopping:
@@ -140,6 +141,7 @@ class FlowEngine:
                                payload={"reason": step.summary,
                                         "traceback": traceback.format_exc()})
                 self._compact_memory()
+                self._write_plan()      # keep the ticks in step with the run
                 self.on_change()
         except Exception as exc:  # noqa: BLE001 - surface everything to the UI
             session.status = "error"
@@ -210,6 +212,7 @@ class FlowEngine:
                 graph_tools=self._graph_tools(role),
                 should_stop=lambda: session.stopping,
                 memory=self.memory, project_map=self._project_map(role, step.task),
+                goal=session.goal, placement=self._placement(step),
             )
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
@@ -336,6 +339,7 @@ class FlowEngine:
             graph_tools=self._graph_tools(fixer),
             should_stop=lambda: self.session.stopping,
             memory=self.memory, project_map=self._project_map(fixer, step.task),
+            goal=self.session.goal,
         )
         attempt.fix_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
         attempt.fix_summary = _summarize(turn.text)
@@ -420,6 +424,7 @@ class FlowEngine:
                 graph_tools=self._graph_tools(gate),
                 should_stop=lambda: self.session.stopping,
                 memory=self.memory, project_map=self._project_map(gate, step.task),
+                goal=self.session.goal,
             )
             verdict = turn.verdict or "UNKNOWN"
             result = GateResult(
@@ -502,6 +507,9 @@ class FlowEngine:
             return None
         return ContextTools(GraphDB(db_path), self.project)
 
+    def _write_plan(self) -> None:
+        write_plan(self.project, self.session.goal, self.session.flow.steps)
+
     def _compact_memory(self) -> None:
         """Keep the shared memory small enough to belong in every prompt.
 
@@ -521,6 +529,37 @@ class FlowEngine:
 
         result = self.memory.compact(rewrite)
         self._emit("memory_compacted", agent="orchestrator", payload=result)
+
+    def _placement(self, step: Step) -> str:
+        """Where this step sits, and — deliberately — what comes after it.
+
+        Hiding the next step does not stop an agent running ahead; it only
+        stops it knowing what its output has to serve, so it invents an
+        interface the next agent cannot use. Naming the next step and saying
+        whose it is turns "I may as well add this too" into a boundary, which
+        is the same reason the remit is stated rather than merely enforced.
+        """
+        steps = self.session.flow.steps
+        try:
+            index = steps.index(step)
+        except ValueError:
+            return ""
+
+        lines = [f"This is step {index + 1} of {len(steps)}."]
+        following = steps[index + 1:index + 3]
+        if following:
+            lines.append("After you, in order:")
+            lines += [f"  {i + index + 2}. {s.role} — {s.task}" for i, s in enumerate(following)]
+            lines.append(
+                f"That work belongs to {', '.join(sorted({s.role for s in following}))}, not "
+                f"to you. Do not start it. What you should take from it is what your work "
+                f"has to expose so the next step can build on it — if you are choosing a "
+                f"name, a route or a format they will have to match, write it down with "
+                f"remember.")
+        else:
+            lines.append("This is the last step: nothing runs after it, so leave the "
+                         "project in a finished state rather than a handover.")
+        return "\n".join(lines)
 
     def _project_map(self, role, task: str = "") -> str:
         """What is indexed, for a role that can query it."""

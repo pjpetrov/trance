@@ -538,6 +538,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
         if result["proposal"]:
             proposal = result["proposal"]
+            session.goal = proposal.get("summary") or session.goal
             session.team = roles.resolve_team(proposal["team"])
             session.flow = Flow(steps=[Step.from_dict(s) for s in proposal["steps"]])
             session.status = "ready"

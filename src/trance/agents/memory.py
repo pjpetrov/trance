@@ -178,3 +178,36 @@ class ProjectMemory:
         if dropped:
             body = f"({dropped} older note(s) omitted)\n{body}"
         return body
+
+
+def write_plan(project, goal: str, steps: list) -> Path | None:
+    """Write the plan to `.trance/PLAN.md`, for the person watching.
+
+    Not README.md: that is the project's own documentation and belongs to
+    whoever ends up reading the repo, not to the machinery that built it.
+    Not the agents' prompts either — they are given the goal and the two steps
+    after theirs, which is orientation; the full list is an invitation to do
+    someone else's step. This file exists so a human can see, at a glance and
+    after the fact, what the run was trying to do.
+    """
+    path = Path(project) / ".trance" / "PLAN.md"
+    lines = ["# Plan", ""]
+    if goal:
+        lines += ["## Goal", "", goal, ""]
+    lines += ["## Steps", ""]
+    for i, step in enumerate(steps, 1):
+        mark = {"done": "x", "failed": "!", "skipped": "-"}.get(step.status, " ")
+        bits = [f"{step.role}"]
+        if step.points:
+            bits.append(f"{step.points} pts")
+        if step.checker:
+            bits.append(f"checked by {step.checker}")
+        lines.append(f"{i}. [{mark}] **{' · '.join(bits)}** — {step.task}")
+    lines.append("")
+    lines.append("_Written by trance. Edits here do not change the flow; edit that in the UI._")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines), encoding="utf8")
+    except OSError:
+        return None
+    return path

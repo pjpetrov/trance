@@ -193,6 +193,8 @@ def run_agent(
     should_stop=None,
     memory=None,
     project_map: str = "",
+    goal: str = "",
+    placement: str = "",
 ) -> AgentTurn:
     model_config = config
     client = client_for(model_config)
@@ -203,7 +205,14 @@ def run_agent(
     tools = AgentTools(project, role, graph_tools, notify=notify, memory=memory)
     specs = tools.specs()
 
-    user_parts = [f"## Task\n{task}"]
+    user_parts = []
+    if goal:
+        # The goal comes before the task on purpose: an agent reads the task as
+        # an instruction and the goal as the thing the instruction is for.
+        user_parts.append("## What this project is\n" + goal)
+    user_parts.append(f"## Your task — this and nothing else\n{task}")
+    if placement:
+        user_parts.append("## Where your step sits\n" + placement)
     # Derived from the tool layer, so what the agent is told always matches what
     # the tool layer will actually allow.
     user_parts.append("## Your permissions (enforced by the system)\n" + permissions_brief(role))

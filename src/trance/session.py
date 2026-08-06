@@ -32,6 +32,10 @@ class Session:
     project_dir: str
     id: str = field(default_factory=lambda: f"s_{uuid.uuid4().hex[:10]}")
     status: str = "planning"
+    #: What the whole project is, in the orchestrator's words. Every agent gets
+    #: this: one that does not know the goal makes locally sensible, globally
+    #: wrong choices — an API shape nothing downstream can use.
+    goal: str = ""
     chat: list[ChatMessage] = field(default_factory=list)
     team: list[AgentRole] = field(default_factory=default_team)
     flow: Flow = field(default_factory=Flow)
@@ -88,6 +92,7 @@ class Session:
             "name": self.name,
             "project_dir": self.project_dir,
             "status": self.status,
+            "goal": self.goal,
             "paused": self.paused,
             "chat": [vars(m) for m in self.chat],
             "team": [r.to_dict() for r in self.team],
@@ -112,7 +117,7 @@ class Session:
         session = cls(
             id=data["id"], name=data["name"], project_dir=data["project_dir"],
             status=data.get("status", "planning"), created_at=data.get("created_at", ""),
-            history=data.get("history", []),
+            history=data.get("history", []), goal=data.get("goal", ""),
         )
         session.chat = [ChatMessage(**m) for m in data.get("chat", [])]
         session.team = [AgentRole.from_dict(r) for r in data.get("team", [])] or default_team()

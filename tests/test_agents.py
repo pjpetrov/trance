@@ -2576,3 +2576,101 @@ def test_the_user_is_told_splitting_is_still_running(tmp_path, monkeypatch):
         assert notice.payload["count"] == 1 and notice.payload["threshold"] == 5
     finally:
         done.set()
+
+
+# ------------------------------- orientation: the goal and what comes next
+
+def test_an_agent_is_told_the_goal_and_what_its_task_is_not(tmp_path, monkeypatch):
+    """An agent that does not know the goal makes locally sensible, globally
+    wrong choices — an API shape nothing downstream can use."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "frontend", "tester"])
+    engine.session.goal = "A crypto backtester with TradingView charts."
+    engine.session.flow.steps = [
+        Step(role="backend", task="write the OHLC loader", id="s1"),
+        Step(role="frontend", task="draw the chart", id="s2"),
+        Step(role="tester", task="test the loader", id="s3"),
+    ]
+    prompts = {}
+
+    def fake(**kw):
+        prompts[kw["role"].name] = (kw.get("goal", ""), kw.get("placement", ""))
+        return _Turn(None, "done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(engine.session.flow.steps[0])
+
+    goal, placement = prompts["backend"]
+    assert "crypto backtester" in goal
+    assert "step 1 of 3" in placement
+    assert "draw the chart" in placement          # it knows what it must serve
+    assert "not\nto you" in placement or "not to you" in placement.replace("\n", " ")
+    assert "Do not start it" in placement
+
+
+def test_the_last_step_is_told_it_is_the_last(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])
+    engine.session.flow.steps = [Step(role="backend", task="finish it", id="s1")]
+    seen = {}
+
+    def fake(**kw):
+        seen["placement"] = kw.get("placement", "")
+        return _Turn(None, "done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(engine.session.flow.steps[0])
+    assert "last step" in seen["placement"]
+    assert "finished state" in seen["placement"]
+
+
+def test_only_the_next_two_steps_are_shown(tmp_path, monkeypatch):
+    """The whole list is an invitation to do someone else's step; the next
+    couple is orientation."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])
+    engine.session.flow.steps = [
+        Step(role="backend", task=f"task {i}", id=f"s{i}") for i in range(6)]
+    seen = {}
+
+    def fake(**kw):
+        seen["placement"] = kw.get("placement", "")
+        return _Turn(None, "done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(engine.session.flow.steps[0])
+
+    assert "task 1" in seen["placement"] and "task 2" in seen["placement"]
+    assert "task 3" not in seen["placement"]
+
+
+def test_the_goal_survives_a_restart(tmp_path):
+    from trance.session import SessionStore
+
+    store = SessionStore(tmp_path)
+    session = store.create("p", "/tmp/p")
+    session.goal = "A crypto backtester."
+    store.save(session)
+    assert SessionStore(tmp_path).get(session.id).goal == "A crypto backtester."
+
+
+def test_the_plan_is_written_where_a_person_can_read_it(tmp_path):
+    from trance.agents.memory import write_plan
+    from trance.flow import Step
+
+    path = write_plan(tmp_path, "A crypto backtester.", [
+        Step(role="backend", task="write the loader", points=3, check="factchecker",
+             status="done"),
+        Step(role="frontend", task="draw the chart", points=5),
+    ])
+    text = path.read_text()
+
+    assert path.name == "PLAN.md" and path.parent.name == ".trance"
+    assert "A crypto backtester." in text
+    assert "[x]" in text and "write the loader" in text     # progress is visible
+    assert "checked by factchecker" in text
+    # Never the project's own README: that belongs to whoever reads the repo.
+    assert not (tmp_path / "README.md").exists()
