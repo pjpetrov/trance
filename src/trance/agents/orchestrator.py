@@ -268,8 +268,16 @@ def chat(
     workers = [r for r in roles if r.name != "orchestrator"]
 
     system = role.system_prompt + (
-        "\n\nAgents you can assign work to:\n"
-        + "\n".join(f"- {r.name}: {r.description}" for r in workers)
+        # The remit, not just the description. A step assigned to an agent that
+        # cannot write the files it names is refused at the tool boundary and
+        # fails the run — and nothing in a one-line description says that
+        # backend cannot create package.json.
+        "\n\nAgents you can assign work to, and what each may write:\n"
+        + "\n".join(_describe_agent(r) for r in workers)
+        + "\n\nA write outside an agent's remit is REFUSED by the system, so a step "
+          "whose files no agent owns cannot succeed no matter how many times it runs. "
+          "Assign each step to the agent that owns the files it touches, and split a "
+          "task that spans two remits into two steps."
         + "\n\nOnly these agents can CHECK another agent's work:\n"
         + ("\n".join(f"- {r.name}: {r.description}" for r in verifiers) or "- (none)")
         + "\n\nNever name any other agent as a check — an agent that cannot inspect a "
@@ -390,6 +398,11 @@ def _normalize(arguments: dict, roles: list) -> dict:
         "summary": arguments.get("summary", ""), "team": team, "steps": steps,
         "dropped_checks": dropped,
     }
+
+
+def _describe_agent(role) -> str:
+    where = ", ".join(role.paths) if role.paths else "nothing — it cannot write files"
+    return f"- {role.name}: {role.description}\n    may write: {where}"
 
 
 def _points(raw) -> int:

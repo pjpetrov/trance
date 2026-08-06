@@ -2674,3 +2674,90 @@ def test_the_plan_is_written_where_a_person_can_read_it(tmp_path):
     assert "checked by factchecker" in text
     # Never the project's own README: that belongs to whoever reads the repo.
     assert not (tmp_path / "README.md").exists()
+
+
+# --------------------------- files that belong to nobody: the devops agent
+
+def test_the_scaffolding_files_have_an_owner():
+    """Regression: a step asked backend to create package.json and .gitignore.
+    Neither was in any agent's remit, so every write was refused and the run
+    halted after burning its loop limit."""
+    devops = BUILTIN_ROLES["devops"]
+    for path in ["package.json", ".gitignore", "README.md", "Dockerfile",
+                 "tsconfig.json", "requirements.txt", ".github/workflows/ci.yml"]:
+        assert devops.may_write(path), path
+
+
+def test_devops_does_not_become_a_way_around_every_remit():
+    """A role that may write anything is a bypass the orchestrator will reach
+    for the moment a step is awkward."""
+    devops = BUILTIN_ROLES["devops"]
+    for path in ["server/routes/data.js", "src/App.tsx", "services/binance.js",
+                 "tests/test_api.py"]:
+        assert not devops.may_write(path), path
+
+
+def test_the_orchestrator_is_told_what_each_agent_may_write(tmp_path, monkeypatch):
+    """It cannot plan around a remit it cannot see — which is how a scaffolding
+    task got assigned to backend."""
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    captured = {}
+
+    class FakeClient:
+        def complete(self, messages, tools=None):
+            captured["system"] = messages[0]["content"]
+            return ChatResponse(text="ok")
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
+    orchestrator.chat(messages=[{"role": "user", "content": "build a node app"}],
+                      project_dir=tmp_path, config=ModelConfig(), bus=EventBus(),
+                      session_id="s")
+
+    assert "may write: package.json" in captured["system"]
+    assert "REFUSED by the system" in captured["system"]
+    assert "devops" in captured["system"]
+
+
+def test_a_step_refused_by_the_remit_says_who_owns_the_files(tmp_path, monkeypatch):
+    """'Raise the loop limit' is the wrong advice when the writes are refused
+    rather than failing — no number of loops makes them land."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "devops"])
+    step = Step(role="backend", task="create package.json and .gitignore", max_loops=2)
+
+    def fake(**kw):
+        turn = _Turn(None, "could not write them", outcome=("FAILED", "refused"))
+        turn.remit_violations = ["package.json", ".gitignore"]
+        return turn
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert step.status == "failed"
+    halted = next(e for e in engine.bus.history(engine.session.id)
+                  if e.type == "run_halted")
+    assert "package.json" in halted.payload["message"]
+    assert "devops owns" in halted.payload["hint"]
+    assert "Looping cannot fix this" in halted.payload["hint"]
+
+
+def test_the_owner_is_found_even_when_it_is_not_on_the_team(tmp_path, monkeypatch):
+    """Answering 'unassigned' when the answer is 'add devops' helps nobody."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend"])          # no devops on this team
+    assert engine._owner_of(".gitignore") == "devops"
+    assert engine._owner_of("server/app.js") == "backend"
+    assert engine._owner_of("nothing/owns/this.weird") is None
+
+
+def test_a_manifest_has_exactly_one_owner():
+    """Two owners for package.json is how a dependency gets added by one agent
+    and overwritten by the other."""
+    owners = [name for name, role in BUILTIN_ROLES.items() if role.may_write("package.json")]
+    assert owners == ["devops"]

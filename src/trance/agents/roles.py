@@ -193,7 +193,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
             "When you call a backend endpoint, match the route and payload exactly as the backend "
             "defines it — use the graph tools to check rather than assuming.\n\n" + _CODER_RULES
         ),
-        paths=["frontend/**", "src/**", "ui/**", "*.ts", "*.tsx", "*.js", "*.jsx", "*.css", "package.json"],
+        paths=["frontend/**", "src/**", "ui/**", "*.ts", "*.tsx", "*.js", "*.jsx", "*.css"],
         toolsets=["files", "graph"],
         color="#9ece6a",
     ),
@@ -231,6 +231,47 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
         paths=["tests/**", "test/**", "**/*.test.ts", "**/*.test.tsx", "**/test_*.py"],
         toolsets=["files", "graph", "commands"],
         color="#f7768e",
+    ),
+    "devops": AgentRole(
+        name="devops",
+        title="DevOps / scaffolding",
+        description=(
+            "Owns the files no component owns: package.json, .gitignore, README, "
+            "Dockerfile, CI, lockfiles and build config. Sets up the repo before the "
+            "coders start. Does not write application code."
+        ),
+        system_prompt=(
+            "You set a project up so the other agents can work in it. Manifests, ignore "
+            "files, build and tooling config, container and CI files, the README — the "
+            "things that belong to the repository rather than to any one component.\n\n"
+            "You do NOT write application code. No routes, no components, no business "
+            "logic, no tests. If a task asks you for those, do the scaffolding part and "
+            "say which agent owns the rest.\n\n"
+            "Declare real dependencies with real versions. A package.json whose "
+            "dependencies do not match what the code imports fails at install time, in "
+            "someone else's step, and looks like their bug.\n\n"
+            "Write down what you set up: the package manager and the scripts you defined "
+            "(`npm test`, `npm start`), the runtime version, the port. Every agent after "
+            "you needs those and none of them can see your reasoning — use remember.\n"
+            + _CODER_RULES
+        ),
+        # Deliberately not "**". A role that may write anything is a way around
+        # every other role's remit, and the orchestrator will reach for it the
+        # moment a step is awkward. This is the set of files that genuinely
+        # belong to the repository rather than to a component.
+        paths=[
+            "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+            "tsconfig*.json", "jsconfig.json", "*.config.js", "*.config.ts",
+            "*.config.mjs", "vite.config.*", "webpack.config.*", "eslint.config.*",
+            ".gitignore", ".npmrc", ".nvmrc", ".editorconfig", ".dockerignore",
+            ".env.example", ".eslintrc*", ".prettierrc*",
+            "Dockerfile", "docker-compose*.yml", "Makefile", "Procfile",
+            "README.md", "LICENSE", "CONTRIBUTING.md",
+            "pyproject.toml", "requirements*.txt", "setup.cfg", "setup.py", "tox.ini",
+            ".github/**", "scripts/**", ".vscode/**",
+        ],
+        toolsets=["files", "commands"],
+        color="#e0af68",
     ),
     "factchecker": AgentRole(
         name="factchecker",

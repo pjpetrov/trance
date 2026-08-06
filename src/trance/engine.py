@@ -28,6 +28,7 @@ from .providers import client_for
 from .curator.walker import CuratorConfig, curate
 from .db import GraphDB
 from .events import EventBus
+from .agents.roles import BUILTIN_ROLES
 from .flow import Attempt, GateResult, Step
 from .indexer.service import default_db_path, index_repo
 from .session import Session
@@ -218,6 +219,7 @@ class FlowEngine:
             attempt.files_written = turn.files_written
             step.summary = _summarize(turn.text)
 
+            attempt.refused_paths = list(dict.fromkeys(turn.remit_violations))
             if turn.remit_violations:
                 self._supervise(step, role, turn.remit_violations)
             self._record_history(role.name, step, turn)
@@ -368,6 +370,23 @@ class FlowEngine:
             )
             hint = ("Raise the loop limit, change the fixing agent, or edit the step "
                     "and re-run it.")
+            # A step asking for files its agent may not write cannot succeed at
+            # any loop limit. Say so, and name who can, instead of suggesting
+            # the user retry something that is impossible by construction.
+            refused = [p for a in step.attempts for p in a.refused_paths]
+            if refused:
+                owners: dict[str, list[str]] = {}
+                for path in dict.fromkeys(refused):
+                    owners.setdefault(self._owner_of(path) or "no agent", []).append(path)
+                who = "; ".join(f"{name} owns {', '.join(paths)}"
+                                for name, paths in owners.items())
+                self.session.error += (
+                    f" It was refused writes outside its remit: "
+                    f"{', '.join(dict.fromkeys(refused))}.")
+                hint = (f"Looping cannot fix this — the writes are refused by the system, "
+                        f"not failing. {who}. Reassign this step, or split off the part "
+                        f"{step.role} does own. Add the owning agent to the team in "
+                        f"👥 Agents if it is not there.")
         self._emit("run_halted", agent=step.role, step_id=step.id, payload={
             "message": self.session.error, "hint": hint, "lied": lied,
         })
@@ -479,12 +498,22 @@ class FlowEngine:
 
     # --------------------------------------------------------- supervision
 
+    def _owner_of(self, path: str) -> str | None:
+        """Which agent may write this path — on the team, or in the library.
+
+        Looking only at the team is how "nobody owns .gitignore" became
+        "unassigned" when the answer was "add devops to the team".
+        """
+        on_team = next((r.name for r in self.session.team if r.may_write(path)), None)
+        if on_team:
+            return on_team
+        return next((name for name, role in BUILTIN_ROLES.items() if role.may_write(path)), None)
+
     def _supervise(self, step: Step, role, violations: list[str]) -> None:
         """An agent tried to write outside its remit — say who should own it."""
         owners: dict[str, str] = {}
         for path in violations:
-            owner = next((r.name for r in self.session.team if r.may_write(path)), None)
-            owners[path] = owner or "unassigned"
+            owners[path] = self._owner_of(path) or "unassigned"
         self._emit(
             "supervision", agent="orchestrator", step_id=step.id,
             payload={

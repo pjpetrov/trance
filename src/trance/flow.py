@@ -45,6 +45,10 @@ class Attempt:
     #: What the fixing agent did, when one ran.
     fix_event_id: str | None = None
     fix_summary: str = ""
+    #: Writes the tool layer refused because they were outside the remit. Kept
+    #: because a step that failed for this reason is fixed by reassigning it,
+    #: not by looping — and only these paths say which agent to reassign it to.
+    refused_paths: list[str] = field(default_factory=list)
     #: The step's own outcome, as reported by the agent that did the work.
     outcome: str = ""
     outcome_reason: str = ""
