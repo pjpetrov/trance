@@ -5988,3 +5988,123 @@ def test_an_agent_can_write_to_a_rooted_path(tmp_path):
     assert (root / "src" / "scene.js").read_text() == "export const a = 1;\n"
     # And the remit is judged on the real path, not the one as typed.
     assert tools.write_file("/server/app.py", "x").ok is False
+
+
+def test_a_providers_reasoning_goes_back_exactly_as_it_came():
+    """DeepSeek's thinking mode validates that an earlier assistant turn comes
+    home with its `reasoning_content`. Checked against the endpoint: `null` is
+    accepted, an empty string is accepted, and *absent* is a 400 —
+
+        "The `reasoning_content` in the thinking mode must be passed back."
+
+    So this is not ours to tidy, summarise or drop, even when it is empty."""
+    from trance.worker.client import _parse as parse_response
+
+    message = {
+        "role": "assistant", "content": "",
+        "reasoning_content": "a long private deliberation",
+        "tool_calls": [{"id": "c1", "type": "function",
+                        "function": {"name": "read_file",
+                                     "arguments": '{"path": "src/main.js"}'}}],
+    }
+    response = parse_response(
+        {"choices": [{"message": message, "finish_reason": "tool_calls"}], "usage": {}})
+
+    assert "a long private deliberation" in response.reasoning     # shown to you
+    assert response.replay() == message                            # and sent back whole
+
+
+def test_a_rebuilt_message_still_carries_what_must_round_trip():
+    """The paths that build an assistant message themselves — a salvaged tool
+    call, or a provider that returned none — are where the field went missing,
+    and a null one has to be kept rather than skipped as empty."""
+    from trance.providers.base import ChatResponse, ToolCall
+
+    response = ChatResponse(
+        text="I will read it", finish_reason="stop",
+        raw_message={"role": "assistant", "content": "printed the call instead",
+                     "reasoning_content": None})
+
+    salvaged = response.replay(text="I will read it")
+    assert "reasoning_content" in salvaged           # present, not dropped as empty
+    assert salvaged["reasoning_content"] is None
+    assert salvaged["content"] == "I will read it"
+
+    call = ToolCall(id="c1", name="read_file", arguments={"path": "a.js"})
+    rebuilt = ChatResponse(text="", finish_reason="tool_calls").replay(calls=[call])
+    assert rebuilt["tool_calls"][0]["function"]["name"] == "read_file"
+
+
+def test_a_null_reasoning_is_never_sent_back():
+    """DeepSeek returns `"reasoning_content": null` on a turn it spent no
+    thought on, and then rejects that same null on the next request:
+
+        400 — "The `reasoning_content` in the thinking mode must be passed
+        back to the API."
+
+    Checked against the endpoint: absent is accepted, a string is accepted,
+    null is the one shape that fails. So a null is filled in rather than
+    echoed."""
+    from trance.worker.client import _parse as parse_response
+
+    body = {"choices": [{"message": {
+        "role": "assistant", "content": "<think>brief</think>Reading it.",
+        "reasoning_content": None,
+        "tool_calls": [{"id": "c1", "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"}}],
+    }, "finish_reason": "tool_calls"}], "usage": {}}
+    replayed = parse_response(body).replay()
+
+    assert replayed["reasoning_content"] == "brief"     # the thinking it did do
+    assert replayed["tool_calls"][0]["id"] == "c1"
+
+    # Nothing to fill it with: an empty string, still never null.
+    quiet = {"choices": [{"message": {"role": "assistant", "content": "Done.",
+                                      "reasoning_content": None},
+                          "finish_reason": "stop"}], "usage": {}}
+    assert parse_response(quiet).replay()["reasoning_content"] == ""
+
+
+def test_a_provider_that_sends_no_reasoning_field_is_left_alone():
+    """llama.cpp and OpenAI do not use the field; inventing one for them would
+    be a change to a request that was working."""
+    from trance.worker.client import _parse as parse_response
+
+    body = {"choices": [{"message": {"role": "assistant", "content": "Done."},
+                         "finish_reason": "stop"}], "usage": {}}
+    assert "reasoning_content" not in parse_response(body).replay()
+
+
+def test_a_page_that_cannot_run_as_files_says_which_import_stops_it(tmp_path):
+    """"Needs a build step" guessed from a config file is a guess. Whether the
+    page works as files is answerable by looking, so it is looked at."""
+    from trance import preview
+
+    site = tmp_path / "site"
+    (site / "src").mkdir(parents=True)
+    (site / "index.html").write_text('<script type="module" src="/src/main.js">')
+    (site / "src" / "main.js").write_text(
+        "import * as THREE from 'three';\nimport { a } from './local.js';\n")
+    (site / "src" / "local.js").write_text("export const a = 1;\n")
+
+    found = preview.bare_imports(site)
+    assert [(f["file"], f["specifier"], f["line"]) for f in found] == [
+        ("src/main.js", "three", 1)]          # the relative import is fine
+
+
+def test_a_project_that_only_uses_relative_imports_is_not_flagged(tmp_path):
+    """A vite.config.js is not evidence: plenty of projects have one and still
+    serve perfectly well as files."""
+    from trance import preview
+
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "vite.config.js").write_text("export default {}")
+    (site / "playwright.config.js").write_text("import { x } from '@playwright/test';")
+    (site / "tests").mkdir()
+    (site / "tests" / "e2e.js").write_text("import { test } from '@playwright/test';")
+    (site / "app.js").write_text("import { a } from './lib.js';\n")
+
+    # Config and test files import packages by name and always have — they are
+    # not evidence about the page, so citing one would be the wrong reason.
+    assert preview.bare_imports(site) == []

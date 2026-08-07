@@ -15,6 +15,7 @@ than a base_url swap.
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
@@ -79,6 +80,12 @@ class ToolCall:
     malformed: bool = False
 
 
+#: Fields a provider attaches to its assistant message that must be sent back
+#: with it. They are not ours to summarise or drop: the endpoint validates that
+#: they came home.
+ROUND_TRIP = ("reasoning_content", "reasoning_details", "thinking", "thought_signature")
+
+
 @dataclass
 class ChatResponse:
     text: str
@@ -91,6 +98,34 @@ class ChatResponse:
     #: The assistant message to append to the conversation, in whatever shape
     #: the provider expects to receive back.
     raw_message: dict = field(default_factory=dict)
+
+    def replay(self, *, text: str | None = None, calls=None) -> dict:
+        """This turn as a message to send back on the next request.
+
+        The provider's own message is returned untouched whenever there is one,
+        because parts of it have to come back exactly as they left. DeepSeek's
+        thinking mode rejects a conversation whose earlier assistant turns
+        arrive without `reasoning_content` — `null` is accepted, *absent* is a
+        400 — so a rebuilt message has to carry those fields even when they are
+        empty. Rebuilding is only for the paths where there is no usable message
+        to return: a salvaged tool call, or a provider that sent none.
+        """
+        if self.raw_message and text is None:
+            return self.raw_message
+
+        rebuilt: dict = {"role": "assistant",
+                         "content": text if text is not None else (self.text or "")}
+        if calls is not None:
+            rebuilt["tool_calls"] = [
+                {"id": c.id, "type": "function",
+                 "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
+                for c in calls]
+        elif self.raw_message.get("tool_calls"):
+            rebuilt["tool_calls"] = self.raw_message["tool_calls"]
+        for key in ROUND_TRIP:
+            if key in self.raw_message:
+                rebuilt[key] = self.raw_message[key]
+        return rebuilt
     #: Set when the *endpoint* failed in a way the agent can recover from,
     #: rather than a transport error worth aborting the step for.
     provider_error: str = ""

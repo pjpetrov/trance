@@ -27,6 +27,7 @@ Deliberately narrow:
 from __future__ import annotations
 
 import http.server
+import re
 import socket
 import threading
 from dataclasses import dataclass
@@ -187,3 +188,46 @@ def web_root_for(project: Path, path: str) -> Path:
     if target is None:                       # escapes the project: serve nothing else
         return Path(project).resolve()
     return target.parent if target.is_file() else target
+
+
+#: `import * as THREE from 'three'` — a specifier that is not a path. Only a
+#: bundler or an import map can say which file it means, so a static server
+#: serves a page that loads and then dies on its first import.
+_BARE = re.compile(
+    r"""(?:^|[\s;{])(?:import|export)\s+(?:[^'"]*?\sfrom\s+)?['"]([^'"./][^'"]*)['"]""",
+    re.MULTILINE)
+_SCRIPTS = (".js", ".mjs", ".jsx", ".ts", ".tsx")
+#: Build and test files import packages by name too, and always have. They are
+#: not evidence about the page, so citing one as the reason would be wrong.
+_NOT_THE_PAGE = ("test", "tests", "spec", "__tests__", "e2e", "scripts")
+
+
+def bare_imports(folder: Path, limit: int = 3, max_files: int = 400) -> list[dict]:
+    """Imports in this folder that a static server cannot resolve.
+
+    The question "will this page work as files?" is answerable by looking, so
+    it is looked at rather than guessed from the presence of a config file: a
+    project with a vite.config.js and no bare imports serves perfectly well.
+    """
+    root, found, seen = Path(folder), [], 0
+    for path in sorted(root.rglob("*")):
+        if len(found) >= limit or seen >= max_files:
+            break
+        if path.suffix.lower() not in _SCRIPTS or not path.is_file():
+            continue
+        parts = path.relative_to(root).parts
+        if any(part in HIDDEN or part in _NOT_THE_PAGE for part in parts):
+            continue
+        if path.name.endswith(".config.js") or path.name.endswith(".config.ts"):
+            continue
+        seen += 1
+        try:
+            text = path.read_text(encoding="utf8", errors="ignore")
+        except OSError:
+            continue
+        for match in _BARE.finditer(text):
+            found.append({"file": path.relative_to(root).as_posix(),
+                          "specifier": match.group(1),
+                          "line": text[:match.start()].count("\n") + 1})
+            break                      # one example per file is enough to explain
+    return found[:limit]

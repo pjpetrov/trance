@@ -133,7 +133,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -675,6 +675,19 @@ try {
       console.log("BROKEN: per-file line counts are back in the tree");
       process.exit(1);
     }
+    // A page that cannot run as files explains itself before opening.
+    api.warnAboutBuild({ root: "/p", build_command: "npm run dev", needs_build: true,
+                         url: "http://192.168.10.59:44817/",
+                         blocked_by: [{ file: "src/main.js", specifier: "three", line: 1 }] });
+    const warning = flat(document.getElementById("preview-warning-body"))
+                      .replace(/\s+/g, " ");
+    for (const want of ["src/main.js:1", "'three'", "npm run dev"]) {
+      if (!warning.includes(want)) {
+        console.log(`BROKEN: the build warning does not say ${want}:`, warning.slice(0, 200));
+        process.exit(1);
+      }
+    }
+
     // A dev server reports its own URL, not a port trance picked.
     api.renderPreviewStatus(RESPONSES["/api/sessions/s1/preview"]);
     const status = flat(document.getElementById("files-status")).replace(/\s+/g, " ");

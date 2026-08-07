@@ -511,7 +511,10 @@ def run_agent(
                 bus.emit("tool_calls_salvaged", session_id, agent=role.name, step_id=step_id,
                          payload={"count": len(calls), "model": model_config.model,
                                   "names": [c.name for c in calls]})
-                response.raw_message = {"role": "assistant", "content": response.text}
+                # Rebuilt, because the printed call is not in `tool_calls` where
+                # the next turn expects it — but through replay(), so whatever
+                # the provider needs back still comes back.
+                response.raw_message = response.replay(text=response.text)
 
         if not calls:
             # It thinks it is finished. Before letting it go, make it decide once
@@ -525,8 +528,7 @@ def run_agent(
                                   "asked_to_remember": True,
                                   "messages": [], "response_text": response.text,
                                   "tool_calls": [], "usage": {}, "summary": {}})
-                messages.append(response.raw_message or
-                                {"role": "assistant", "content": response.text})
+                messages.append(response.replay())
                 messages.append({"role": "user",
                                  "content": _remember_prompt(turn, memory)})
                 continue
@@ -536,13 +538,7 @@ def run_agent(
         # A provider that returned no assistant message would otherwise put an
         # empty dict in the conversation — a message with no role, which some
         # endpoints reject and none can read.
-        messages.append(response.raw_message or {
-            "role": "assistant", "content": response.text or "",
-            "tool_calls": [{"id": c.id, "type": "function",
-                            "function": {"name": c.name,
-                                         "arguments": json.dumps(c.arguments)}}
-                           for c in calls],
-        })
+        messages.append(response.replay(calls=calls))
         for call in calls:
             if call.malformed:
                 # Almost always the model ran out of output tokens partway

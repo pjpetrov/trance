@@ -764,21 +764,25 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         # phone on the same network gets a link that works from where it is.
         here = served.at(request.url.hostname) + page
 
-        # A Vite or webpack app imports bare module names that a static server
-        # cannot resolve, so the page will load and then fail. Say so — but
-        # starting its dev server is the user's call, not trance's.
+        # Whether this page works as files is answerable by looking, so it is
+        # looked at: a bare `import ... from "three"` is a specifier only a
+        # bundler can resolve, and the page will load and then die on it.
+        # Saying so is the whole of trance's business here — starting the dev
+        # server is the user's call.
         dev = preview.dev_command(root, web_root)
-        needs_build = bool(dev and dev["needed"])
+        blockers = preview.bare_imports(web_root)
+        needs_build = bool(blockers)
         bus.emit("preview", session_id, agent="you", payload={
             "url": here, "root": served.root, "port": served.port,
             "message": (f"Serving {Path(served.root).name}/ at {here} "
                         f"(on the network at {served.url})"
-                        + (f" — this project builds with `{dev['command']}`, which "
-                           f"a static server does not do." if needs_build else "")),
+                        + (f" — but {blockers[0]['file']} imports "
+                           f"'{blockers[0]['specifier']}', which only a build step "
+                           f"can resolve." if needs_build else "")),
         })
         return {**served.to_dict(), "open": here, "network": served.url + page,
-                "needs_build": needs_build,
-                "build_command": dev["command"] if needs_build else ""}
+                "needs_build": needs_build, "blocked_by": blockers,
+                "build_command": (dev or {}).get("command", "")}
 
     @app.delete("/api/sessions/{session_id}/preview")
     def stop_preview(session_id: str):

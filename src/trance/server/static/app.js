@@ -3282,6 +3282,9 @@ const OUTCOME_LABEL = {
 
 $("open-loops").onclick = openLoops;
 $("close-loops").onclick = () => $("loops").classList.remove("open");
+for (const id of ["close-preview-warning", "preview-cancel"]) {
+  $(id).onclick = () => $("preview-warning").classList.remove("open");
+}
 $("loops").onclick = (e) => {
   if (e.target.id === "loops") e.currentTarget.classList.remove("open");
 };
@@ -3975,20 +3978,60 @@ function renderReviewStatus() {
 }
 
 async function openPreview(path) {
-  toast("Starting…");
   let served;
   try {
     served = await api(`/api/sessions/${state.session.id}/preview`,
                        { method: "POST", body: { path } });
   } catch (_) { return; }
+
+  // Opening a page that cannot possibly work, and leaving the reason in a
+  // toast that has already gone, is how you end up debugging the wrong thing.
+  if (served.needs_build) {
+    warnAboutBuild(served);
+    renderPreviewStatus(served);
+    return;
+  }
+  showPage(served);
+}
+
+function showPage(served) {
   // A new tab rather than an iframe: the page gets its own origin, its own
   // console and its own devtools, which is what you need to judge it.
   window.open(served.open, "_blank", "noopener");
-  toast(served.needs_build
-    ? `Serving ${served.root.split("/").pop()}/ as files. This project builds with `
-      + `\`${served.build_command}\` — run that yourself for the built version.`
-    : `Serving ${served.root.split("/").pop()}/ — on this network at ${served.url}`);
+  toast(`Serving ${served.root.split("/").pop()}/ — on this network at ${served.url}`);
   renderPreviewStatus(served);
+}
+
+function warnAboutBuild(served) {
+  const box = $("preview-warning-body");
+  box.innerHTML = "";
+  const first = (served.blocked_by || [])[0];
+  box.append(el("p", null,
+    "trance serves this folder as files. It does not build or run anything — "
+    + "that stays yours to start."));
+  if (first) {
+    box.append(el("p", "muted small",
+      `${first.file}:${first.line} imports '${first.specifier}', which is a package `
+      + `name rather than a path. Only a bundler or an import map can say which `
+      + `file that is, so the page will load and then stop at this import.`));
+  }
+  if (served.build_command) {
+    const cmd = el("pre", "cmd", `cd ${served.root}\n${served.build_command}`);
+    cmd.title = "Click to copy";
+    cmd.onclick = () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(served.build_command);
+      toast("Copied.");
+    };
+    box.append(cmd);
+  }
+  box.append(el("p", "muted small",
+    "Opening it anyway is still useful for checking markup and CSS."));
+
+  $("preview-anyway").onclick = () => {
+    $("preview-warning").classList.remove("open");
+    showPage(served);
+  };
+  $("preview-warning").classList.add("open");
 }
 
 function renderPreviewStatus(served) {

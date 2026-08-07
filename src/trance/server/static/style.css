@@ -767,3 +767,15 @@ input.tiny { width: 68px; }
   padding: 2px 9px; border-radius: 999px; border: 1px solid var(--ok);
 }
 .preview-note a { color: var(--ok); text-decoration: none; font-family: var(--mono); }
+
+/* The build warning: a short dialog, so the reason is still on screen when you
+   go looking at the page it is about. */
+.modal-card.narrow { max-width: 520px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+#preview-warning-body p { margin: 0 0 10px; line-height: 1.45; }
+#preview-warning-body .cmd {
+  background: var(--panel-2, #1b1f27); border: 1px solid var(--line, #2a2f3a);
+  border-radius: 6px; padding: 8px 10px; margin: 0 0 10px;
+  font-family: ui-monospace, monospace; font-size: 12px; cursor: pointer;
+  white-space: pre-wrap; word-break: break-all;
+}

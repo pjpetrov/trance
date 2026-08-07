@@ -308,11 +308,21 @@ def _parse(body: dict) -> ChatResponse:
     reasoning = "\n\n".join(
         part for part in (message.get("reasoning_content") or "", inline_reasoning) if part
     )
+
+    # A turn the model spent no thought on comes back as `"reasoning_content":
+    # null`, and DeepSeek then rejects that same null on the next request:
+    # "the `reasoning_content` in the thinking mode must be passed back to the
+    # API". Checked against the endpoint — absent is accepted, a string is
+    # accepted, null is the one shape that 400s. So a null is filled in with
+    # whatever thinking there was, and an empty string when there was none.
+    if "reasoning_content" in message and message["reasoning_content"] is None:
+        message = {**message, "reasoning_content": reasoning}
     return ChatResponse(
         text=visible,
         tool_calls=tool_calls,
         finish_reason=choice.get("finish_reason", "stop"),
         usage=body.get("usage", {}) or {},
         reasoning=reasoning,
+        # Kept whole, deliberately: see ChatResponse.replay().
         raw_message=message,
     )
