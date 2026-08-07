@@ -243,3 +243,64 @@ def abort_inflight(token: str) -> int:
         except Exception:                       # a race with a finished call
             continue
     return aborted
+
+
+# ------------------------------------------------------------- discovery
+
+#: Response shapes seen in the wild, in the order they are tried:
+#:   {"data": [{"id": ...}]}     OpenAI, Ollama's /v1, OpenCode Zen
+#:   {"models": [{"name": ...}]} llama-server's native listing
+#:   {"data": [{"id": ...}]}     Anthropic, behind its own headers
+def list_models(kind: str, base_url: str, api_key: str | None = None,
+                timeout_s: float = 8.0) -> tuple[list[str], str]:
+    """Ask an endpoint what it can run. Returns (models, note).
+
+    An empty list with a note is the normal answer for a server that does not
+    offer a listing, and is not an error: the model id stays free text, which
+    is the only thing that works for an endpoint that will not say.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return [], "no endpoint to ask"
+
+    if kind == "anthropic":
+        url = f"{base}/v1/models" if not base.endswith("/v1") else f"{base}/models"
+        headers = {"anthropic-version": "2023-06-01"}
+        if api_key:
+            headers["x-api-key"] = api_key
+    else:
+        url = f"{base}/models"
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    try:
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            body = _json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return [], f"{url} returned {exc.code}"
+    except (urllib.error.URLError, OSError) as exc:
+        return [], f"cannot reach {url}: {getattr(exc, 'reason', exc)}"
+    except (ValueError, _json.JSONDecodeError):
+        return [], f"{url} did not answer with JSON"
+
+    entries = body.get("data") if isinstance(body, dict) else None
+    if entries is None and isinstance(body, dict):
+        entries = body.get("models")
+    if not isinstance(entries, list):
+        return [], f"{url} answered in a shape I do not recognise"
+
+    names: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            name = entry
+        elif isinstance(entry, dict):
+            name = entry.get("id") or entry.get("name") or entry.get("model") or ""
+        else:
+            continue
+        if name and name not in names:
+            names.append(str(name))
+    return sorted(names), (f"{len(names)} from {url}" if names else f"{url} listed none")

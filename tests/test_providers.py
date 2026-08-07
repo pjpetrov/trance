@@ -701,3 +701,98 @@ def test_a_failed_model_test_says_which_url_it_called(tmp_path):
     body = client.post("/api/presets/zen/check").json()
     assert body["ok"] is False
     assert body["endpoint"] == "https://127.0.0.1:9/zen/v1/responses/chat/completions"
+
+
+# --------------------------------- asking an endpoint what it can run
+
+def test_models_are_discovered_where_the_endpoint_lists_them(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    monkeypatch.setattr(app_module, "list_models",
+                        lambda kind, url, key=None, **kw: (["a-model", "b-model"],
+                                                           f"2 from {url}"))
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    body = client.post("/api/models/discover", json={
+        "kind": "openai", "base_url": "https://example/v1", "api_key": "sk-x"}).json()
+    assert body["listed"] is True and body["models"] == ["a-model", "b-model"]
+
+
+def test_an_endpoint_that_will_not_say_leaves_it_free_text(tmp_path, monkeypatch):
+    """A model id has to stay typeable: a listing that misses a model would
+    otherwise lock it out."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    monkeypatch.setattr(app_module, "list_models",
+                        lambda kind, url, key=None, **kw: ([], f"{url}/models returned 404"))
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    body = client.post("/api/models/discover",
+                       json={"kind": "openai", "base_url": "https://example/v1"}).json()
+    assert body["listed"] is False and body["models"] == []
+    assert "404" in body["note"]
+
+
+def test_discovery_uses_the_stored_key_when_the_form_shows_dots(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    seen = {}
+    monkeypatch.setattr(app_module, "list_models",
+                        lambda kind, url, key=None, **kw: (seen.update(key=key) or ([], "x")))
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    client.put("/api/presets/claude", json={"kind": "anthropic", "model": "claude-opus-5",
+                                            "api_key": "sk-real"})
+
+    client.post("/api/models/discover", json={"name": "claude", "kind": "anthropic",
+                                              "base_url": "https://api.anthropic.com",
+                                              "api_key": "***"})
+    assert seen["key"] == "sk-real"
+
+
+def test_the_two_listing_shapes_are_both_understood():
+    """OpenAI-style {"data":[{"id"}]} and llama-server's {"models":[{"name"}]}."""
+    import json as _json
+    import urllib.request
+    from unittest.mock import patch
+
+    from trance.providers.base import list_models
+
+    class Fake:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def read(self):
+            return _json.dumps(self.payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    with patch.object(urllib.request, "urlopen",
+                      lambda *a, **k: Fake({"data": [{"id": "gpt-5"}, {"id": "gpt-4"}]})):
+        assert list_models("openai", "https://x/v1")[0] == ["gpt-4", "gpt-5"]
+
+    with patch.object(urllib.request, "urlopen",
+                      lambda *a, **k: Fake({"models": [{"name": "qwen:27b"}]})):
+        assert list_models("llamacpp", "http://localhost:12345/v1")[0] == ["qwen:27b"]
+
+    with patch.object(urllib.request, "urlopen", lambda *a, **k: Fake({"nope": 1})):
+        models, note = list_models("openai", "https://x/v1")
+        assert models == [] and "do not recognise" in note

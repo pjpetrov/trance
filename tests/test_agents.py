@@ -4898,12 +4898,25 @@ def test_the_edit_tools_are_offered_and_explained(tmp_path):
 
 # ================================ the files view and the review it produces
 
-def _files_client(tmp_path, with_git=True):
+def _files_client(tmp_path, with_git=True, monkeypatch=None):
     from fastapi.testclient import TestClient
 
     from trance import vcs
     from trance.config import Config
     from trance.server import app as app_module
+
+    if monkeypatch is not None:
+        # Sending a review starts the flow. A real engine racing the assertions
+        # is a test problem, not a product one.
+        class FakeEngine:
+            def __init__(self, session, config, bus, on_change=None, **kwargs):
+                self.session = session
+
+            def start(self):
+                self.session.status = "running"
+                return None
+
+        monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
 
     project = tmp_path / "proj"
     (project / "server").mkdir(parents=True)
@@ -4955,8 +4968,8 @@ def test_your_own_edit_is_saved_and_committed(tmp_path):
     assert any("you: edited server/app.js" in c["subject"] for c in vcs.log(project))
 
 
-def test_review_comments_become_a_step_the_flow_runs(tmp_path):
-    app, client, sid, _ = _files_client(tmp_path)
+def test_review_comments_become_a_step_the_flow_runs(tmp_path, monkeypatch):
+    app, client, sid, _ = _files_client(tmp_path, monkeypatch=monkeypatch)
     client.post(f"/api/sessions/{sid}/review", json={
         "path": "server/app.js", "line": 1, "code": "const PORT = 3000;",
         "note": "read the port from the environment"})
@@ -4990,10 +5003,10 @@ def test_a_note_can_be_taken_back_before_it_is_sent(tmp_path):
     assert app.state.store.get(sid).review == []
 
 
-def test_what_was_done_about_a_review_comes_from_git(tmp_path):
+def test_what_was_done_about_a_review_comes_from_git(tmp_path, monkeypatch):
     from trance import vcs
 
-    app, client, sid, project = _files_client(tmp_path)
+    app, client, sid, project = _files_client(tmp_path, monkeypatch=monkeypatch)
     client.post(f"/api/sessions/{sid}/review", json={
         "path": "server/app.js", "line": 1, "note": "read the port from the environment"})
     client.post(f"/api/sessions/{sid}/review/finish")
@@ -5013,8 +5026,8 @@ def test_what_was_done_about_a_review_comes_from_git(tmp_path):
     assert body["before"] and body["after"] and body["before"] != body["after"]
 
 
-def test_changes_are_empty_while_the_review_step_is_still_running(tmp_path):
-    _, client, sid, _ = _files_client(tmp_path)
+def test_changes_are_empty_while_the_review_step_is_still_running(tmp_path, monkeypatch):
+    _, client, sid, _ = _files_client(tmp_path, monkeypatch=monkeypatch)
     client.post(f"/api/sessions/{sid}/review",
                 json={"path": "server/app.js", "line": 1, "note": "fix it"})
     client.post(f"/api/sessions/{sid}/review/finish")

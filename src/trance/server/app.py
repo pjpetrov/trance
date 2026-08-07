@@ -29,6 +29,7 @@ from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
 from ..flow import Flow, Step
 from ..loops import EXITS, STOP, Loop, validate as validate_loop
+from ..providers.base import list_models
 from ..providers import (
     KIND_DEFAULTS, ModelPreset, ProviderConfig, ProviderStore, abort_inflight,
     client_for,
@@ -533,6 +534,28 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(404, "no such model")
         _sync()
         return {"deleted": name}
+
+    @app.post("/api/models/discover")
+    def discover_models(body: dict):
+        """Ask an endpoint what it can run, so the model id can be a list.
+
+        Takes the fields as typed rather than a saved model, so the list is
+        there before anything is saved. A stored key is used when the form
+        still holds the redacted placeholder.
+        """
+        kind = (body.get("kind") or "").strip()
+        base_url = (body.get("base_url") or "").strip()
+        if not base_url and kind in KIND_DEFAULTS:
+            base_url = KIND_DEFAULTS[kind]["base_url"]
+
+        key = body.get("api_key")
+        if not key or key == "***":
+            stored = providers.preset((body.get("name") or "").strip())
+            key = stored.api_key if stored else None
+
+        models, note = list_models(kind, base_url, key)
+        return {"models": models, "note": note, "endpoint": base_url,
+                "listed": bool(models)}
 
     @app.post("/api/presets/{name}/check")
     def check_preset(name: str):

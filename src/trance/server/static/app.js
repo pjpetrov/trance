@@ -1299,9 +1299,47 @@ function presetCard(preset, isNew) {
   key.placeholder = preset.has_key ? "saved — leave to keep" : "none needed locally";
   key.title = "Sent as the API key. Leave the dots alone to keep the stored one.";
 
+  // A list where the endpoint offers one, free text where it does not. Never
+  // a closed dropdown: a listing that misses a model would then lock it out.
   const model = el("input", "compact");
   model.value = preset.model || "";
   model.placeholder = "model id";
+  const suggestions = el("datalist");
+  suggestions.id = `models-${preset.name || "new"}-${Math.random().toString(36).slice(2, 7)}`;
+  model.setAttribute("list", suggestions.id);
+  const modelNote = el("span", "hint", "");
+
+  let discovering = null;
+  const discover = async () => {
+    const body = {
+      name: preset.name, kind: kind.value, base_url: baseUrl.value.trim(),
+      ...(key.value && key.value !== "***" ? { api_key: key.value.trim() } : {}),
+    };
+    const signature = JSON.stringify(body);
+    if (discovering === signature) return;
+    discovering = signature;
+    modelNote.textContent = "asking the endpoint what it can run…";
+    let found;
+    try {
+      found = await api("/api/models/discover", { method: "POST", body });
+    } catch (_) {
+      modelNote.textContent = "could not ask — type the model id";
+      return;
+    }
+    suggestions.innerHTML = "";
+    (found.models || []).forEach((id) => {
+      const option = el("option");
+      option.value = id;
+      suggestions.append(option);
+    });
+    modelNote.textContent = found.listed
+      ? `${found.models.length} available — start typing, or pick from the list`
+      : `this endpoint does not list its models (${found.note}) — type the id`;
+    // One model and nothing chosen yet is not a choice worth making by hand.
+    if (found.listed && !model.value && found.models.length === 1) {
+      model.value = found.models[0];
+    }
+  };
 
   const wrap = (label, node) => {
     const l = el("label", null, label);
@@ -1339,14 +1377,33 @@ function presetCard(preset, isNew) {
       baseUrl.value = "";
     }
     ctx.placeholder = spec.context_window ? String(spec.context_window) : "default";
+    discover();
   };
+  // Typing a URL or pasting a key changes the answer, so ask again — once the
+  // typing stops, not on every keystroke.
+  let discoverTimer;
+  const rediscover = () => {
+    clearTimeout(discoverTimer);
+    discoverTimer = setTimeout(discover, 600);
+  };
+  baseUrl.addEventListener("input", rediscover);
+  key.addEventListener("input", rediscover);
+
+  // Held as a variable rather than found by position: the discovery note and
+  // the suggestion list both live in this label.
+  const modelField = wrap("Model id", model);
+  modelField.append(suggestions, modelNote);
 
   grid.append(wrap("Name (agents pick this)", name), wrap("API", kind),
               wrapHint("Base URL", baseUrl, "the root — /chat/completions is added"),
               wrap("API key", key),
-              wrap("Model id", model), wrap("Context window", ctx),
+              modelField, wrap("Context window", ctx),
               wrap("Max output", out));
-  kind.onchange();
+
+  const spec = (state.kinds || {})[kind.value] || {};
+  baseUrl.placeholder = spec.base_url || "default for this API";
+  ctx.placeholder = spec.context_window ? String(spec.context_window) : "default";
+  discover();
 
   const actions = el("div", "row small");
   const probe = el("button", null, "Test");

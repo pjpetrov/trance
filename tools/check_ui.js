@@ -53,6 +53,8 @@ const RESPONSES = {
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
                       suggested_dir: "/w/project", state_dir: "/s" },
   "/api/sessions": [],
+  "/api/models/discover": { models: ["claude-opus-5", "claude-sonnet-5"], listed: true,
+                            note: "2 from https://y/models", endpoint: "https://y" },
   "/api/presets": { presets: [
     { name: "Qwen3.6-llama.cpp", kind: "llamacpp", model: "qwen", base_url: "http://x/v1",
       context_window: 64000, max_tokens: 0, has_key: false, self_contained: true },
@@ -300,6 +302,12 @@ try {
     const shown = flat(document.getElementById("preset-list")).replace(/\s+/g, " ");
     if (!shown.includes("Qwen3.6-llama.cpp") || !shown.includes("claude")) {
       console.log("BROKEN: the models list is empty when settings opens");
+      process.exit(1);
+    }
+    // Discovery runs on render; the suggestions land under the model field.
+    await new Promise((r) => setTimeout(r, 0));
+    if (!shown.includes("model id")) {
+      console.log("BROKEN: the model field lost its placeholder");
       process.exit(1);
     }
     const orch = flat(document.getElementById("orchestrator-settings")).replace(/\s+/g, " ");
