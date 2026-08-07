@@ -27,6 +27,25 @@ from .base import BackendError, ChatResponse, ToolCall
 REFUSAL_STOP_REASON = "refusal"
 
 
+#: Where the Messages API lives, before the SDK adds its own path.
+ANTHROPIC_HOST = "https://api.anthropic.com"
+
+
+def anthropic_base(base_url: str) -> str:
+    """A base URL the Anthropic SDK will actually work with, or "" for default.
+
+    The SDK appends `/v1/messages` itself, so a URL ending in `/v1` — which is
+    what every other provider here wants, and therefore what gets typed — asks
+    for `/v1/v1/messages` and comes back 404 "Not found". That is a confusing
+    thing to debug from an error that mentions neither the URL nor the version,
+    so the suffix is dropped rather than passed on.
+    """
+    trimmed = (base_url or "").strip().rstrip("/")
+    if trimmed.endswith("/v1"):
+        trimmed = trimmed[:-len("/v1")]
+    return "" if not trimmed or trimmed == ANTHROPIC_HOST else trimmed
+
+
 class AnthropicClient:
     def __init__(self, config):
         try:
@@ -40,8 +59,9 @@ class AnthropicClient:
             kwargs["api_key"] = config.api_key
         # A custom base_url supports gateways/proxies; the SDK default is fine
         # for api.anthropic.com, so only pass it when it's been changed.
-        if config.base_url and config.base_url.rstrip("/") != "https://api.anthropic.com":
-            kwargs["base_url"] = config.base_url
+        base = anthropic_base(config.base_url)
+        if base:
+            kwargs["base_url"] = base
         self.client = anthropic.Anthropic(**kwargs)
         self.config = config
         self.model = config.model

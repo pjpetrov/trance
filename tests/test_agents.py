@@ -6710,3 +6710,48 @@ def test_clearing_the_plan_keeps_only_what_is_mid_flight(tmp_path):
         {"role": "backend", "task": "b", "status": "failed"}]})
     client.put(f"/api/sessions/{other}/flow", json={"steps": []})
     assert client.get(f"/api/sessions/{other}").json()["flow"]["steps"] == []
+
+
+def test_an_anthropic_url_ending_in_v1_still_works():
+    """Every other provider here wants a base URL ending in /v1, so that is
+    what gets typed. The Anthropic SDK appends /v1/messages itself, so it then
+    asks for /v1/v1/messages and comes back:
+
+        404 - {'type': 'not_found_error', 'message': 'Not found'}
+
+    which mentions neither the URL nor the version. The suffix is dropped."""
+    from trance.providers.anthropic_client import anthropic_base
+
+    # The default host, however it was written: let the SDK decide.
+    assert anthropic_base("https://api.anthropic.com/v1") == ""
+    assert anthropic_base("https://api.anthropic.com/v1/") == ""
+    assert anthropic_base("https://api.anthropic.com") == ""
+    assert anthropic_base("") == ""
+
+    # A gateway is still honoured — minus the suffix that would double up.
+    assert anthropic_base("https://gw.internal/anthropic/v1") == "https://gw.internal/anthropic"
+    assert anthropic_base("https://gw.internal/anthropic") == "https://gw.internal/anthropic"
+
+
+def test_the_anthropic_client_does_not_pass_a_doubled_version(monkeypatch):
+    from trance.config import ModelConfig
+    from trance.providers import anthropic_client
+
+    seen = {}
+
+    class FakeSDK:
+        class Anthropic:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", FakeSDK)
+    anthropic_client.AnthropicClient(ModelConfig(
+        kind="anthropic", model="claude-sonnet-5", api_key="k",
+        base_url="https://api.anthropic.com/v1"))
+    assert "base_url" not in seen           # the SDK's own default is correct
+
+    seen.clear()
+    anthropic_client.AnthropicClient(ModelConfig(
+        kind="anthropic", model="claude-sonnet-5", api_key="k",
+        base_url="https://gw.internal/anthropic/v1"))
+    assert seen["base_url"] == "https://gw.internal/anthropic"
