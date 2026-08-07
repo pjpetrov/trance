@@ -6570,33 +6570,25 @@ def test_an_index_already_committed_is_untracked_not_deleted(tmp_path):
     assert (project / ".trance" / "graph.db").exists()  # still on disk, still usable
 
 
-def test_the_review_history_is_every_review_newest_first(tmp_path):
-    """One review is a moment; the history is what you actually want when you
-    are deciding whether the last round of comments landed."""
-    from fastapi.testclient import TestClient
+def test_the_review_history_is_every_review_newest_first(tmp_path, monkeypatch):
+    """One review is a moment; the history is what you want when you are
+    deciding whether the last round of comments landed.
 
+    Takes the fixture's fake engine deliberately: sending a review starts the
+    flow, and a real engine checkpointing the same repository commits the very
+    change this test is about to commit — which fails about one run in three.
+    """
     from trance import vcs
-    from trance.config import Config
-    from trance.server import app as app_module
 
-    config = Config.load(tmp_path / "none.toml")
-    config.runs_dir = str(tmp_path / "runs")
-    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "a.js").write_text("const PORT = 3000;\n")
-    vcs.ensure_repo(project)
-    vcs.commit_all(project, "start")
-    sid = client.post("/api/sessions",
-                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    _, client, sid, project = _files_client(tmp_path, monkeypatch=monkeypatch)
 
     assert client.get(f"/api/sessions/{sid}/reviews").json()["reviews"] == []
 
-    client.post(f"/api/sessions/{sid}/review", json={"path": "a.js", "line": 1,
-                                                     "note": "read the port from env"})
+    client.post(f"/api/sessions/{sid}/review",
+                json={"path": "server/app.js", "line": 1, "note": "read the port from env"})
     client.post(f"/api/sessions/{sid}/review/finish", json={})
-    (project / "a.js").write_text("const PORT = process.env.PORT;\n")
-    vcs.commit_all(project, "backend: did that")
+    (project / "server" / "app.js").write_text("const PORT = process.env.PORT;\n")
+    assert vcs.commit_all(project, "backend: did that").ok
 
     client.post(f"/api/sessions/{sid}/review", json={"note": "unusable on a phone"})
     client.post(f"/api/sessions/{sid}/review/finish", json={})
