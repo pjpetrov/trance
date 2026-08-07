@@ -752,8 +752,37 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(404, "no such file")
 
         web_root = preview.web_root_for(root, (body or {}).get("path") or "")
+        page = target.name if target.is_file() else ""
+
+        # A Vite or webpack app imports bare module names that only its own dev
+        # server can resolve. Serving the folder statically would give a page
+        # that loads and then fails, which looks like the code is broken.
+        dev = preview.dev_command(root, web_root)
+        if dev and dev["needed"]:
+            existing = previews.get(session_id)
+            if existing is not None and getattr(existing, "command", None) == dev["command"] \
+                    and existing.running:
+                started = existing
+            else:
+                if existing is not None:
+                    existing.stop()
+                started = preview.start_dev(Path(dev["dir"]), dev["command"])
+                previews[session_id] = started
+            if not started.url:
+                raise HTTPException(502, (
+                    f"`{dev['command']}` did not report a URL"
+                    + (". It exited — is `npm install` done?" if not started.running
+                       else " within 20s. Its output is in the console.")))
+            bus.emit("preview", session_id, agent="you", payload={
+                "url": started.url, "command": dev["command"], "root": started.root,
+                "message": f"Running `{dev['command']}` — {started.url}",
+            })
+            return {**started.to_dict(), "open": started.url, "kind": "dev",
+                    "port": 0, "command": dev["command"]}
+
         existing = previews.get(session_id)
-        if existing is not None and existing.root == str(web_root):
+        if existing is not None and getattr(existing, "root", None) == str(web_root) \
+                and hasattr(existing, "port"):
             served = existing
         else:
             if existing is not None:
@@ -761,12 +790,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             served = preview.serve(web_root)
             previews[session_id] = served
 
-        page = target.name if target.is_file() else ""
         bus.emit("preview", session_id, agent="you", payload={
             "url": served.url + page, "root": served.root, "port": served.port,
             "message": f"Serving {Path(served.root).name}/ at {served.url}",
         })
-        return {**served.to_dict(), "open": served.url + page}
+        return {**served.to_dict(), "open": served.url + page, "kind": "static"}
 
     @app.delete("/api/sessions/{session_id}/preview")
     def stop_preview(session_id: str):
@@ -780,7 +808,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     def preview_status(session_id: str):
         _need(store, session_id)
         served = previews.get(session_id)
-        return served.to_dict() if served else {"root": "", "port": 0, "url": ""}
+        if served is None:
+            return {"root": "", "port": 0, "url": ""}
+        return {"port": 0, **served.to_dict()}
 
     # ------------------------------------------------------------- review
 

@@ -86,9 +86,9 @@ const RESPONSES = {
     totals: [{ ext: "js", files: 1, lines: 80, bytes: 2048 },
              { ext: "html", files: 1, lines: 30, bytes: 900 },
              { ext: "md", files: 1, lines: 12, bytes: 300 }] },
-  "/api/sessions/s1/preview": { root: "/p/server/public", port: 44817,
-                                url: "http://127.0.0.1:44817/",
-                                open: "http://127.0.0.1:44817/index.html" },
+  "/api/sessions/s1/preview": { root: "/p", command: "npm run dev", kind: "dev",
+                                url: "http://localhost:3001/", port: 0,
+                                open: "http://localhost:3001/" },
   "/api/sessions/s1/file?path=server%2Fapp.js": {
     path: "server/app.js", content: "const PORT = 3000;\napp.listen(PORT);\n",
     bytes: 40, lines: 2 },
@@ -127,7 +127,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -654,6 +654,17 @@ try {
     }
     if (!tree.includes("▷")) {
       console.log("BROKEN: no way to open a page from the tree");
+      process.exit(1);
+    }
+    if (/\d+L/.test(tree)) {
+      console.log("BROKEN: per-file line counts are back in the tree");
+      process.exit(1);
+    }
+    // A dev server reports its own URL, not a port trance picked.
+    api.renderPreviewStatus(RESPONSES["/api/sessions/s1/preview"]);
+    const status = flat(document.getElementById("files-status")).replace(/\s+/g, " ");
+    if (!status.includes("npm run dev") || !status.includes("localhost:3001")) {
+      console.log("BROKEN: the running preview is not shown:", status.slice(0, 100));
       process.exit(1);
     }
     const view = flat(document.getElementById("file-view")).replace(/\s+/g, " ");

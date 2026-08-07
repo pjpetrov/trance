@@ -3694,11 +3694,12 @@ function renderFileTree() {
       // it exists, and running it tells you whether the thing works.
       if (/\.(html?|svg)$/i.test(file.path)) {
         const open = el("button", "file-open", "▷");
-        open.title = "Serve this folder and open the page in a new tab";
+        open.title = "Open this page in a new tab. A project with a build step is "
+                     + "started with its own dev server; anything else is served "
+                     + "straight from its folder.";
         open.onclick = (e) => { e.stopPropagation(); openPreview(file.path); };
         row.append(open);
       }
-      row.append(el("span", "muted small", `${file.lines || "?"}L`));
       row.onclick = () => openFile(file.path);
       group.append(row);
     });
@@ -3904,6 +3905,7 @@ function renderReviewStatus() {
 }
 
 async function openPreview(path) {
+  toast("Starting…");
   let served;
   try {
     served = await api(`/api/sessions/${state.session.id}/preview`,
@@ -3912,7 +3914,9 @@ async function openPreview(path) {
   // A new tab rather than an iframe: the page gets its own origin, its own
   // console and its own devtools, which is what you need to judge it.
   window.open(served.open, "_blank", "noopener");
-  toast(`Serving ${served.root.split("/").pop()}/ on port ${served.port}.`);
+  toast(served.kind === "dev"
+    ? `Running \`${served.command}\` — ${served.url}`
+    : `Serving ${served.root.split("/").pop()}/ on port ${served.port}.`);
   renderPreviewStatus(served);
 }
 
@@ -3920,14 +3924,14 @@ function renderPreviewStatus(served) {
   const box = $("files-status");
   const existing = box.querySelector(".preview-note");
   if (existing && existing.remove) existing.remove();
-  if (!served || !served.port) return;
+  if (!served || !served.url) return;
 
   const note = el("span", "preview-note");
-  const link = el("a", null, `:${served.port}`);
+  const link = el("a", null, served.url.replace(/^https?:\/\//, ""));
   link.href = served.url;
   link.target = "_blank";
   link.rel = "noopener";
-  note.append(el("span", "muted small", "serving"), link);
+  note.append(el("span", "muted small", served.command || "serving"), link);
   const stop = el("button", "small", "stop");
   stop.onclick = async () => {
     await api(`/api/sessions/${state.session.id}/preview`, { method: "DELETE" });
