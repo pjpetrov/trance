@@ -642,3 +642,44 @@ input.tiny { width: 68px; }
 .hint-bar { display: flex; gap: 8px; margin-top: 10px; flex: 0 0 auto; }
 .hint-bar input { margin-top: 0; }
 .hint-bar button { flex: 0 0 auto; }
+
+/* ── files, and reviewing them ─────────────────────────────────────────
+   Reading the code is how you find out whether the agents built what you
+   asked for, so this screen owns the viewport the way the run does. */
+#screen-files.active { display: flex; flex-direction: column; height: calc(100vh - 116px); }
+.files-split { grid-template-columns: 300px 1fr; flex: 1 1 auto; min-height: 0; }
+.files-split > .panel { display: flex; flex-direction: column; min-height: 0; }
+.file-tree { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+.file-group > summary { cursor: pointer; padding: 5px 2px; list-style: none; }
+.file-group > summary::-webkit-details-marker { display: none; }
+.file-row {
+  display: flex; gap: 8px; align-items: baseline; padding: 3px 8px;
+  border-radius: 6px; cursor: pointer; font-size: 12.5px;
+}
+.file-row:hover { background: var(--panel-2); }
+.file-row.open { background: var(--panel-2); border-left: 2px solid var(--accent); }
+.file-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+             white-space: nowrap; font-family: var(--mono); }
+.badge.review-count { background: var(--warn); color: #10121c; border: none; font-weight: 600; }
+
+.file-view, .file-editor {
+  flex: 1 1 auto; min-height: 0; overflow: auto; margin-top: 10px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  font-family: var(--mono); font-size: 12.5px;
+}
+.file-view { padding: 8px 0; }
+.file-editor { padding: 10px; color: var(--fg); resize: none; line-height: 1.5; }
+.code-line { display: flex; gap: 12px; padding: 0 10px; cursor: pointer; }
+.code-line:hover { background: rgba(122,162,247,.08); }
+.code-n {
+  flex: 0 0 auto; width: 42px; text-align: right; color: var(--muted);
+  user-select: none; font-variant-numeric: tabular-nums;
+}
+.code-text { white-space: pre; overflow-x: auto; flex: 1 1 auto; }
+.code-note, .code-compose {
+  display: flex; gap: 8px; align-items: center; margin: 4px 10px 4px 54px;
+  padding: 6px 9px; border-radius: 7px; background: var(--panel-2);
+  border-left: 2px solid var(--warn); font-family: var(--mono); font-size: 12px;
+}
+.code-note span:not(.badge) { flex: 1 1 auto; }
+.code-compose input { margin-top: 0; }

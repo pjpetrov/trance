@@ -4894,3 +4894,130 @@ def test_the_edit_tools_are_offered_and_explained(tmp_path):
     brief = permissions_brief(BUILTIN_ROLES["backend"])
     assert "edit_file" in brief and "size of the edit" in brief
     assert "edit_file" in BUILTIN_ROLES["backend"].system_prompt
+
+
+# ================================ the files view and the review it produces
+
+def _files_client(tmp_path, with_git=True):
+    from fastapi.testclient import TestClient
+
+    from trance import vcs
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    project = tmp_path / "proj"
+    (project / "server").mkdir(parents=True)
+    (project / "server" / "app.js").write_text("const PORT = 3000;\napp.listen(PORT);\n")
+    (project / "node_modules").mkdir()
+    (project / "node_modules" / "junk.js").write_text("x")
+    if with_git:
+        vcs.ensure_repo(project)
+        vcs.commit_all(project, "start")
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    return app, client, sid, project
+
+
+def test_the_file_tree_skips_what_nobody_reviews(tmp_path):
+    _, client, sid, _ = _files_client(tmp_path)
+    body = client.get(f"/api/sessions/{sid}/files").json()
+    paths = [f["path"] for f in body["files"]]
+
+    assert "server/app.js" in paths
+    assert not any("node_modules" in p for p in paths)
+    assert not any(p.startswith(".git/") for p in paths)
+
+
+def test_a_file_opens_and_a_path_that_escapes_does_not(tmp_path):
+    _, client, sid, _ = _files_client(tmp_path)
+
+    body = client.get(f"/api/sessions/{sid}/file", params={"path": "server/app.js"}).json()
+    assert "const PORT = 3000;" in body["content"] and body["lines"] == 2
+
+    escaped = client.get(f"/api/sessions/{sid}/file", params={"path": "../../etc/passwd"})
+    assert escaped.status_code in (400, 404)
+
+
+def test_your_own_edit_is_saved_and_committed(tmp_path):
+    from trance import vcs
+
+    _, client, sid, project = _files_client(tmp_path)
+    body = client.put(f"/api/sessions/{sid}/file", json={
+        "path": "server/app.js", "content": "const PORT = 3100;\napp.listen(PORT);\n"}).json()
+
+    assert body["committed"] is True
+    assert (project / "server" / "app.js").read_text().startswith("const PORT = 3100;")
+    assert any("you: edited server/app.js" in c["subject"] for c in vcs.log(project))
+
+
+def test_review_comments_become_a_step_the_flow_runs(tmp_path):
+    app, client, sid, _ = _files_client(tmp_path)
+    client.post(f"/api/sessions/{sid}/review", json={
+        "path": "server/app.js", "line": 1, "code": "const PORT = 3000;",
+        "note": "read the port from the environment"})
+    client.post(f"/api/sessions/{sid}/review", json={
+        "path": "server/app.js", "line": 2, "note": "log the port on start"})
+
+    body = client.post(f"/api/sessions/{sid}/review/finish").json()
+    session = app.state.store.get(sid)
+    step = session.flow.steps[-1]
+
+    assert body["notes"] and len(body["notes"]) == 2
+    assert step.loop == "test-and-fix"                 # a loop, so a fix gets tested
+    assert "line 1" in step.task and "read the port from the environment" in step.task
+    assert "line 2" in step.task
+    assert "`const PORT = 3000;`" in step.task         # the line it was written on
+    assert session.review == []                        # the pad is cleared
+    assert {"tester", "backend"} <= {r.name for r in session.team}
+
+
+def test_finishing_an_empty_review_is_refused(tmp_path):
+    _, client, sid, _ = _files_client(tmp_path)
+    assert client.post(f"/api/sessions/{sid}/review/finish").status_code == 400
+
+
+def test_a_note_can_be_taken_back_before_it_is_sent(tmp_path):
+    app, client, sid, _ = _files_client(tmp_path)
+    note = client.post(f"/api/sessions/{sid}/review", json={
+        "path": "server/app.js", "line": 1, "note": "actually this is fine"}).json()
+
+    client.delete(f"/api/sessions/{sid}/review/{note['id']}")
+    assert app.state.store.get(sid).review == []
+
+
+def test_what_was_done_about_a_review_comes_from_git(tmp_path):
+    from trance import vcs
+
+    app, client, sid, project = _files_client(tmp_path)
+    client.post(f"/api/sessions/{sid}/review", json={
+        "path": "server/app.js", "line": 1, "note": "read the port from the environment"})
+    client.post(f"/api/sessions/{sid}/review/finish")
+
+    # The agent does the work and the step finishes.
+    (project / "server" / "app.js").write_text(
+        "const PORT = process.env.PORT || 3000;\napp.listen(PORT);\n")
+    vcs.commit_all(project, "backend: address the review [SUCCESS]")
+    session = app.state.store.get(sid)
+    session.flow.steps[-1].status = "done"
+
+    body = client.get(f"/api/sessions/{sid}/review/changes").json()
+
+    assert body["status"] == "done"
+    assert body["files"] == ["server/app.js"]
+    assert "process.env.PORT" in body["diff"]
+    assert body["before"] and body["after"] and body["before"] != body["after"]
+
+
+def test_changes_are_empty_while_the_review_step_is_still_running(tmp_path):
+    _, client, sid, _ = _files_client(tmp_path)
+    client.post(f"/api/sessions/{sid}/review",
+                json={"path": "server/app.js", "line": 1, "note": "fix it"})
+    client.post(f"/api/sessions/{sid}/review/finish")
+
+    body = client.get(f"/api/sessions/{sid}/review/changes").json()
+    assert body["status"] == "pending" and body["diff"] == ""

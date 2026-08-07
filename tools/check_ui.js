@@ -53,6 +53,15 @@ const RESPONSES = {
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
                       suggested_dir: "/w/project", state_dir: "/s" },
   "/api/sessions": [],
+  "/api/sessions/s1/files": { root: "/p", files: [
+    { path: "server/app.js", bytes: 2048 }, { path: "README.md", bytes: 300 }] },
+  "/api/sessions/s1/file?path=server%2Fapp.js": {
+    path: "server/app.js", content: "const PORT = 3000;\napp.listen(PORT);\n",
+    bytes: 40, lines: 2 },
+  "/api/sessions/s1/review/changes": {
+    review: "rev_1", status: "done", before: "aaa", after: "bbb",
+    files: ["server/app.js"], notes: [{ path: "server/app.js", line: 1, note: "use env" }],
+    diff: "--- a/server/app.js\n+++ b/server/app.js\n-const PORT = 3000;\n+const PORT = process.env.PORT;" },
   "/api/loops": { loops: [{ name: "another-loop", description: "d2", prompt: "",
                             start: "n_a", max_steps: 6, roles: ["reviewer"],
                             nodes: [{ id: "n_a", role: "reviewer", focus: "",
@@ -84,7 +93,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,openStep,groupStepEvents,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,openStep,groupStepEvents,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -446,6 +455,34 @@ try {
     console.log("BROKEN: attempts without events produced no sections");
     process.exit(1);
   }
+  // The files screen: tree, a file open, a comment on a line.
+  api.state.session.review = [];
+  await api.openFiles();
+  await api.openFile("server/app.js");
+  {
+    const tree = flat(document.getElementById("file-tree")).replace(/\s+/g, " ");
+    if (!tree.includes("app.js")) {
+      console.log("BROKEN: the file tree did not render");
+      process.exit(1);
+    }
+    const view = flat(document.getElementById("file-view")).replace(/\s+/g, " ");
+    if (!view.includes("const PORT = 3000;") || !view.includes("1")) {
+      console.log("BROKEN: the file view did not render its lines");
+      process.exit(1);
+    }
+  }
+  api.state.session.review = [{ id: "rv_1", path: "server/app.js", line: 1,
+                               note: "read the port from the environment" }];
+  api.renderFileView();
+  api.renderReviewStatus();
+  {
+    const view = flat(document.getElementById("file-view")).replace(/\s+/g, " ");
+    if (!view.includes("read the port from the environment")) {
+      console.log("BROKEN: a review comment is not shown against its line");
+      process.exit(1);
+    }
+  }
+  api.commentOn(2, "app.listen(PORT);");
   console.log("all render paths ran without a ReferenceError");
   process.exit(0);
 } catch (e) {

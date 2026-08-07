@@ -116,6 +116,38 @@
       </div>
     </div>
   </section>
+  <!-- ── Screen 4: the project's files, and reviewing them ─────── -->
+  <section id="screen-files" class="screen">
+    <div class="run-head">
+      <div id="files-status" class="row"></div>
+      <div class="row">
+        <button id="review-finish" class="primary">Review finished</button>
+        <button id="review-changes">What was fixed</button>
+      </div>
+    </div>
+    <div class="split files-split">
+      <div class="panel file-tree-panel">
+        <div class="panel-head">
+          <h2>Files</h2>
+          <input id="file-filter" class="compact" placeholder="filter…">
+        </div>
+        <div id="file-tree" class="file-tree"></div>
+      </div>
+      <div class="panel file-panel">
+        <div class="panel-head">
+          <h2 id="file-name">Pick a file</h2>
+          <div class="row small">
+            <span id="file-meta" class="muted small"></span>
+            <button id="file-edit">Edit</button>
+            <button id="file-save" class="primary" hidden>Save</button>
+            <button id="file-cancel" hidden>Cancel</button>
+          </div>
+        </div>
+        <div id="file-view" class="file-view"></div>
+        <textarea id="file-editor" class="file-editor" spellcheck="false" hidden></textarea>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- Settings: define providers, attach them to agents by shortname -->

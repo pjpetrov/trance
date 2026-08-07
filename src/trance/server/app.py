@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import threading
+from uuid import uuid4
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -33,6 +34,7 @@ from ..providers import (
     client_for,
 )
 from ..session import ChatMessage, SessionStore
+from .. import vcs
 from ..worker.client import BackendError
 
 STATIC = Path(__file__).parent / "static"
@@ -590,6 +592,201 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "escalation_role": config.escalation_role,
                 "git_commits": config.git_commits,
                 "git_auto_init": config.git_auto_init}
+
+    # -------------------------------------------------------------- files
+
+    #: Never listed and never opened. Reading a 40MB lockfile into the browser
+    #: helps nobody, and node_modules is not what anyone came to review.
+    HIDDEN_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".trance",
+                   "dist", "build", ".pytest_cache", ".mypy_cache", ".next"}
+    MAX_FILE_BYTES = 400_000
+
+    def _project_of(session) -> Path:
+        return Path(session.project_dir).expanduser().resolve()
+
+    def _inside(root: Path, relative: str) -> Path | None:
+        """Resolve a path and refuse anything that escapes the project."""
+        target = (root / (relative or "")).resolve()
+        if target != root and root not in target.parents:
+            return None
+        return target
+
+    @app.get("/api/sessions/{session_id}/files")
+    def list_project_files(session_id: str):
+        """The tree, flat, with sizes — the browser builds the shape."""
+        session = _need(store, session_id)
+        root = _project_of(session)
+        if not root.exists():
+            return {"root": str(root), "files": [], "error": "the project directory is gone"}
+
+        found = []
+        for path in sorted(root.rglob("*")):
+            if any(part in HIDDEN_DIRS for part in path.relative_to(root).parts):
+                continue
+            if path.is_dir():
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            found.append({"path": path.relative_to(root).as_posix(), "bytes": size})
+            if len(found) >= 2000:
+                break
+        return {"root": str(root), "files": found}
+
+    @app.get("/api/sessions/{session_id}/file")
+    def read_project_file(session_id: str, path: str):
+        session = _need(store, session_id)
+        root = _project_of(session)
+        target = _inside(root, path)
+        if target is None or not target.is_file():
+            raise HTTPException(404, f"no such file: {path}")
+        size = target.stat().st_size
+        if size > MAX_FILE_BYTES:
+            raise HTTPException(413, f"{path} is {size:,} bytes — too large to open here")
+        try:
+            text = target.read_text(encoding="utf8")
+        except (OSError, UnicodeDecodeError):
+            raise HTTPException(415, f"{path} is not text")
+        return {"path": path, "content": text, "bytes": size,
+                "lines": len(text.splitlines())}
+
+    @app.put("/api/sessions/{session_id}/file")
+    def write_project_file(session_id: str, body: dict):
+        """Your own edit. Committed like an agent's, so it is in the history."""
+        session = _need(store, session_id)
+        root = _project_of(session)
+        target = _inside(root, body.get("path") or "")
+        if target is None:
+            raise HTTPException(400, "that path is outside the project")
+        content = body.get("content")
+        if not isinstance(content, str):
+            raise HTTPException(400, "content is required")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf8")
+
+        result = vcs.commit_all(root, f"you: edited {body['path']}") \
+            if config.git_commits and vcs.is_repo(root) else None
+        bus.emit("file_edited", session_id, agent="you", payload={
+            "path": body["path"], "bytes": len(content),
+            "sha": result.sha if result and result.ok else "",
+            "message": f"You edited {body['path']}.",
+        })
+        return {"path": body["path"], "bytes": len(content),
+                "committed": bool(result and result.ok)}
+
+    # ------------------------------------------------------------- review
+
+    @app.post("/api/sessions/{session_id}/review")
+    def add_review_note(session_id: str, body: dict):
+        """Leave a comment on one line, to be sent as work later."""
+        session = _need(store, session_id)
+        note = (body.get("note") or "").strip()
+        path = (body.get("path") or "").strip()
+        if not note or not path:
+            raise HTTPException(400, "path and note are required")
+        entry = {
+            "id": f"rv_{uuid4().hex[:8]}", "path": path,
+            "line": max(1, int(body.get("line") or 1)),
+            "code": (body.get("code") or "")[:400],
+            "note": note,
+        }
+        session.review.append(entry)
+        touch(session)
+        bus.emit("review_note", session_id, agent="you", payload=entry)
+        return entry
+
+    @app.delete("/api/sessions/{session_id}/review/{note_id}")
+    def drop_review_note(session_id: str, note_id: str):
+        session = _need(store, session_id)
+        before = len(session.review)
+        session.review = [n for n in session.review if n["id"] != note_id]
+        if len(session.review) == before:
+            raise HTTPException(404, "no such note")
+        touch(session)
+        return {"deleted": note_id, "left": len(session.review)}
+
+    @app.post("/api/sessions/{session_id}/review/finish")
+    def finish_review(session_id: str, body: dict | None = None):
+        """Turn the comments into a step the flow will actually run."""
+        session = _need(store, session_id)
+        if not session.review:
+            raise HTTPException(400, "there are no review comments to send")
+
+        by_file: dict[str, list[dict]] = {}
+        for note in session.review:
+            by_file.setdefault(note["path"], []).append(note)
+        rendered = []
+        for path, notes in by_file.items():
+            lines = [f"### {path}"]
+            for note in sorted(notes, key=lambda n: n["line"]):
+                lines.append(f"- line {note['line']}"
+                             + (f" (`{note['code'].strip()}`)" if note.get("code") else "")
+                             + f": {note['note']}")
+            rendered.append("\n".join(lines))
+
+        loop_name = (body or {}).get("loop") or ""
+        if loop_name and loops.get(loop_name) is None:
+            raise HTTPException(400, f"unknown loop {loop_name!r}")
+        if not loop_name:
+            loop_name = next((l.name for l in loops.all()), "")
+
+        task = ("Address this code review. Each comment names a file and a line; make "
+                "the change the comment asks for and nothing else.\n\n"
+                + "\n\n".join(rendered)
+                + "\n\nWhere a comment is a question rather than an instruction, answer "
+                  "it in your report instead of changing code.")
+        step = Step(role="" if loop_name else "backend", loop=loop_name, task=task,
+                    points=3, max_loops=2)
+        session.flow.steps.append(step)
+
+        record = {
+            "id": f"rev_{uuid4().hex[:8]}", "step_id": step.id,
+            "notes": list(session.review),
+            "before": vcs.head(_project_of(session)),
+            "after": "", "files": [],
+        }
+        session.reviews.append(record)
+        session.review = []
+
+        for name in (loops.get(loop_name).roles() if loops.get(loop_name) else [step.role]):
+            if name and all(r.name != name for r in session.team) and roles.get(name):
+                session.team.append(roles.get(name))
+        session.team = roles.resolve_team(session.team)
+
+        touch(session)
+        bus.emit("review_sent", session_id, agent="you", payload={
+            "review": record["id"], "step_id": step.id, "notes": len(record["notes"]),
+            "loop": loop_name,
+            "message": f"Sent {len(record['notes'])} review comment(s) as a step.",
+        })
+        bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
+        started = ensure_running(session)
+        return {**record, "started": started, "flow": session.flow.to_dict()}
+
+    @app.get("/api/sessions/{session_id}/review/changes")
+    def review_changes(session_id: str, review: str = ""):
+        """What was actually done about a review, from git."""
+        session = _need(store, session_id)
+        root = _project_of(session)
+        record = next((r for r in reversed(session.reviews)
+                       if not review or r["id"] == review), None)
+        if record is None:
+            return {"review": None, "files": [], "diff": ""}
+
+        step = session.flow.find(record["step_id"])
+        done = step is not None and step.status in Flow.TERMINAL
+        after = record["after"] or (vcs.head(root) if done else "")
+        if done and not record["after"]:
+            record["after"] = after
+            record["files"] = vcs.changed_between(root, record["before"], after)
+            touch(session)
+        return {
+            "review": record["id"], "status": step.status if step else "gone",
+            "notes": record["notes"], "before": record["before"], "after": after,
+            "files": record["files"] or vcs.changed_between(root, record["before"], after),
+            "diff": vcs.diff(root, record["before"], after) if after else "",
+        }
 
     # -------------------------------------------------------------- loops
 

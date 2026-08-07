@@ -243,7 +243,11 @@ function renderSessionBar() {
   plan.onclick = () => show("plan");
   const run = el("button", null, "Run");
   run.onclick = () => { show("run"); renderRun(); };
-  bar.append(plan, run);
+  const files = el("button", null, "Files");
+  files.onclick = () => openFiles();
+  const pending = (state.session.review || []).length;
+  if (pending) files.append(el("span", "badge review-count", String(pending)));
+  bar.append(plan, run, files);
 }
 
 /* ──────────────────────────────── chat ────────────────────────────── */
@@ -3270,4 +3274,229 @@ $("add-loop").onclick = () => {
   $("loop-summary").textContent = "unsaved";
   box.append(loopCard(
     { name: "", description: "", prompt: "", nodes: [], start: "", max_steps: 12 }, true));
+};
+
+/* ═════════════════════ files, and reviewing them ═══════════════════ */
+
+/* Reading the code is how you find out whether the agents actually built what
+ * you asked for, and the useful thing to do about a line that is wrong is to
+ * say so on that line. A comment here is not a note to yourself: it becomes a
+ * step the flow runs, and git says afterwards what was done about it. */
+
+const fileState = { path: "", content: "", editing: false, files: [] };
+
+async function openFiles() {
+  show("files");
+  await loadFileTree();
+  renderReviewStatus();
+  if (fileState.path) await openFile(fileState.path);
+}
+
+async function loadFileTree() {
+  const data = await api(`/api/sessions/${state.session.id}/files`);
+  fileState.files = data.files || [];
+  renderFileTree();
+}
+
+function renderFileTree() {
+  const box = $("file-tree");
+  box.innerHTML = "";
+  const filter = $("file-filter").value.trim().toLowerCase();
+  const shown = fileState.files.filter((f) => !filter || f.path.toLowerCase().includes(filter));
+  if (!shown.length) {
+    box.append(el("p", "muted small", filter ? "Nothing matches." : "No files yet."));
+    return;
+  }
+
+  // Grouped by directory: a flat list of 200 paths is not a tree, and the
+  // browser can build the shape without the server pretending to.
+  const dirs = new Map();
+  shown.forEach((file) => {
+    const cut = file.path.lastIndexOf("/");
+    const dir = cut === -1 ? "" : file.path.slice(0, cut);
+    if (!dirs.has(dir)) dirs.set(dir, []);
+    dirs.get(dir).push(file);
+  });
+
+  [...dirs.keys()].sort().forEach((dir) => {
+    const group = el("details", "file-group");
+    group.open = true;
+    group.append(el("summary", "muted small", dir || "/"));
+    dirs.get(dir).forEach((file) => {
+      const row = el("div", "file-row");
+      if (file.path === fileState.path) row.classList.add("open");
+      const marks = (state.session.review || []).filter((n) => n.path === file.path).length;
+      row.append(el("span", "file-name", file.path.split("/").pop()));
+      if (marks) row.append(el("span", "badge review-count", String(marks)));
+      row.append(el("span", "muted small", `${Math.ceil(file.bytes / 1024)}k`));
+      row.onclick = () => openFile(file.path);
+      group.append(row);
+    });
+    box.append(group);
+  });
+}
+
+async function openFile(path) {
+  let data;
+  try {
+    data = await api(`/api/sessions/${state.session.id}/file?path=${encodeURIComponent(path)}`);
+  } catch (_) { return; }
+  fileState.path = path;
+  fileState.content = data.content;
+  fileState.editing = false;
+  $("file-name").textContent = path;
+  $("file-meta").textContent = `${data.lines} lines · ${Math.ceil(data.bytes / 1024)}k`;
+  renderFileTree();
+  renderFileView();
+}
+
+function fileEditing(on) {
+  fileState.editing = on;
+  $("file-editor").hidden = !on;
+  $("file-view").hidden = on;
+  $("file-edit").hidden = on;
+  $("file-save").hidden = !on;
+  $("file-cancel").hidden = !on;
+}
+
+function renderFileView() {
+  const box = $("file-view");
+  box.innerHTML = "";
+  fileEditing(false);
+  if (!fileState.path) {
+    box.append(el("p", "muted small", "Pick a file on the left."));
+    return;
+  }
+
+  const notes = (state.session.review || []).filter((n) => n.path === fileState.path);
+  fileState.content.split("\n").forEach((text, i) => {
+    const n = i + 1;
+    const row = el("div", "code-line");
+    const gutter = el("span", "code-n", String(n));
+    const code = el("code", "code-text", text || " ");
+    row.append(gutter, code);
+    // The whole line is the target: hunting for a tiny "+" is the difference
+    // between leaving a comment and not bothering.
+    row.onclick = () => commentOn(n, text);
+    box.append(row);
+
+    notes.filter((note) => note.line === n).forEach((note) => {
+      const card = el("div", "code-note");
+      card.append(el("span", "badge", "you"), el("span", null, note.note));
+      const drop = el("button", "small", "✕");
+      drop.title = "Take this comment back";
+      drop.onclick = async (e) => {
+        e.stopPropagation();
+        await api(`/api/sessions/${state.session.id}/review/${note.id}`, { method: "DELETE" });
+        state.session.review = state.session.review.filter((x) => x.id !== note.id);
+        renderFileView();
+        renderReviewStatus();
+        renderSessionBar();
+      };
+      card.append(drop);
+      box.append(card);
+    });
+  });
+}
+
+function commentOn(line, code) {
+  if (fileState.editing) return;
+  const box = $("file-view");
+  const existing = box.querySelector(".code-compose");
+  if (existing) existing.remove();
+
+  const form = el("div", "code-compose");
+  form.append(el("span", "muted small", `line ${line}`));
+  const input = el("input");
+  input.placeholder = "What is wrong here, or what should it do instead?";
+  const send = el("button", "primary", "Comment");
+  const cancel = el("button", null, "Cancel");
+  cancel.onclick = (e) => { e.stopPropagation(); form.remove(); };
+  send.onclick = async (e) => {
+    e.stopPropagation();
+    const note = input.value.trim();
+    if (!note) return;
+    const saved = await api(`/api/sessions/${state.session.id}/review`, {
+      method: "POST",
+      body: { path: fileState.path, line, code, note },
+    });
+    state.session.review = [...(state.session.review || []), saved];
+    renderFileView();
+    renderReviewStatus();
+    renderSessionBar();
+    renderFileTree();
+  };
+  form.append(input, send, cancel);
+  // Placed after the line it is about, where the eye already is.
+  const rows = box.querySelectorAll(".code-line");
+  const anchor = rows[line - 1];
+  if (anchor && anchor.after) anchor.after(form); else box.append(form);
+  input.focus();
+}
+
+function renderReviewStatus() {
+  const box = $("files-status");
+  box.innerHTML = "";
+  const pending = (state.session?.review || []).length;
+  box.append(el("b", null, "Review"));
+  box.append(el("span", "muted small", pending
+    ? `${pending} comment(s) waiting — “Review finished” sends them as a step`
+    : "Click any line to comment on it."));
+  $("review-finish").disabled = !pending;
+}
+
+$("file-filter").addEventListener("input", renderFileTree);
+
+$("file-edit").onclick = () => {
+  $("file-editor").value = fileState.content;
+  fileEditing(true);
+};
+$("file-cancel").onclick = () => renderFileView();
+$("file-save").onclick = async () => {
+  const content = $("file-editor").value;
+  await api(`/api/sessions/${state.session.id}/file`, {
+    method: "PUT", body: { path: fileState.path, content },
+  });
+  fileState.content = content;
+  renderFileView();
+  toast("Saved, and committed so it is in the history.");
+};
+
+$("review-finish").onclick = async () => {
+  const result = await api(`/api/sessions/${state.session.id}/review/finish`,
+                           { method: "POST" });
+  state.session.review = [];
+  state.session.flow = result.flow;
+  renderReviewStatus();
+  renderFileView();
+  renderSessionBar();
+  toast(result.started
+    ? `Sent ${result.notes.length} comment(s) — the flow is working on them.`
+    : `Sent ${result.notes.length} comment(s) as a step. Press Run to start it.`);
+};
+
+$("review-changes").onclick = async () => {
+  const body = await api(`/api/sessions/${state.session.id}/review/changes`);
+  const box = $("file-view");
+  fileEditing(false);
+  box.innerHTML = "";
+  $("file-name").textContent = "What was done about your review";
+
+  if (!body.review) {
+    box.append(el("p", "muted small", "No review has been sent yet."));
+    return;
+  }
+  $("file-meta").textContent = `${body.status} · ${body.files.length} file(s) changed`;
+  if (!body.diff) {
+    box.append(el("p", "muted small",
+      body.status === "done" ? "The step finished without changing any files."
+        : "The step has not finished yet — this fills in when it does."));
+  }
+  body.notes.forEach((note) => {
+    const row = el("div", "code-note");
+    row.append(el("span", "badge", `${note.path}:${note.line}`),
+               el("span", null, note.note));
+    box.append(row);
+  });
+  if (body.diff) box.append(renderDiff(body.diff));
 };

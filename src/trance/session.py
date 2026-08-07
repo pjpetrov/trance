@@ -41,6 +41,11 @@ class Session:
     flow: Flow = field(default_factory=Flow)
     #: Rolling record of what each step produced, fed to later agents.
     history: list[dict] = field(default_factory=list)
+    #: Line comments the user has left but not yet sent as work.
+    review: list[dict] = field(default_factory=list)
+    #: Reviews already turned into steps, with the commit range that answered
+    #: them — so "what did it do about my comments" has an exact answer.
+    reviews: list[dict] = field(default_factory=list)
     error: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
@@ -100,6 +105,8 @@ class Session:
             "chat": [vars(m) for m in self.chat],
             "team": [r.to_dict() for r in self.team],
             "history": self.history,
+            "review": self.review,
+            "reviews": self.reviews,
             "error": self.error,
             "created_at": self.created_at,
         }
@@ -121,6 +128,7 @@ class Session:
             id=data["id"], name=data["name"], project_dir=data["project_dir"],
             status=data.get("status", "planning"), created_at=data.get("created_at", ""),
             history=data.get("history", []), goal=data.get("goal", ""),
+            review=data.get("review", []), reviews=data.get("reviews", []),
         )
         session.chat = [ChatMessage(**m) for m in data.get("chat", [])]
         session.team = [AgentRole.from_dict(r) for r in data.get("team", [])] or default_team()

@@ -165,3 +165,22 @@ def log(project: Path, limit: int = 20) -> list[dict]:
         if len(parts) == 3:
             entries.append({"sha": parts[0], "subject": parts[1], "when": parts[2]})
     return entries
+
+
+def diff(project: Path, before: str, after: str = "HEAD", path: str = "") -> str:
+    """What changed between two commits, optionally for one file."""
+    if not before:
+        return ""
+    args = ["diff", f"{before}..{after}"]
+    if path:
+        args += ["--", path]
+    code, out = _run(project, *args)
+    return out if code == 0 else ""
+
+
+def changed_between(project: Path, before: str, after: str = "HEAD") -> list[str]:
+    """The files that differ between two commits."""
+    if not before:
+        return []
+    code, out = _run(project, "diff", "--name-only", f"{before}..{after}")
+    return [line.strip() for line in out.splitlines() if line.strip()] if code == 0 else []
