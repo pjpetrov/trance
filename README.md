@@ -93,18 +93,28 @@ one thing to pick.
 | `llamacpp` | OpenAI-compatible, local (llama-server) |
 | `claudecode` | the local `claude` CLI, on its subscription — no key, no endpoint |
 
-**Claude Code as a backend.** `claudecode` runs `claude -p` for each call, so the
-model comes from whatever that CLI is signed in to rather than from an API key.
-Two things are worth knowing. Its own system prompt and tools are turned off
-(`--system-prompt`, `--tools ""`) — left on, every call carries ~13,100 tokens of
-instructions trance did not write; measured, not guessed. And it has no wire
-protocol for *returning* a tool call, since it normally executes them itself, so
-tools are described in the prompt and their calls come back as fenced JSON that
-trance parses. That works — a full step reads, edits and reports through
-trance's own tools, inside the remit — but it is convention rather than
-protocol, so a model that ignores the convention gets a retry rather than a
-clean error. Check that using it this way fits your Claude Code subscription;
-that is a licensing question, not a technical one.
+**Claude Code as a backend, and its limit.** `claudecode` runs `claude -p` for
+each call, so the model comes from whatever that CLI is signed in to rather than
+from an API key. A single step works end to end — read, edit and report through
+trance's own tools, inside the remit — but **it is not usable for a whole run**,
+and the reason is worth stating plainly: the CLI throttles programmatic use
+hard. A burst of calls comes back `is_error` with zero duration, zero cost and
+no request made, and stays that way through four retries over a minute, while
+the same conversation succeeds when left alone. An agent loop makes five or more
+calls per step. Point an agent's *backup* model at it, or use it for a one-off
+step; use an API model for the loop.
+
+The rest, measured rather than guessed: its own system prompt and tools are
+turned off (`--system-prompt`, `--tools ""`), because left on every call carries
+~13,100 tokens of instructions trance did not write, and its built-in tools
+would edit your project behind every remit and counter trance keeps. It has no
+wire protocol for *returning* a tool call — it executes them — so tools are
+described in the prompt and their calls are parsed back out, in either the
+fenced form trance asks for or Claude's own XML syntax, which is what the model
+writes when the habit wins.
+
+Whether using it this way fits your Claude Code subscription is a licensing
+question, not a technical one.
 
 The model id offers what the endpoint says it has — trance asks `/models` and
 handles the OpenAI, llama-server and Anthropic shapes — and stays free text when

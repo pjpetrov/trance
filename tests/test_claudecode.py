@@ -238,7 +238,9 @@ def test_giving_up_says_it_is_the_cli_and_not_you(monkeypatch):
         ClaudeCodeClient(ModelConfig(kind="claudecode")).complete(
             [{"role": "user", "content": "hi"}])
     said = str(raised.value)
-    assert "That is the CLI, not the prompt" in said
+    # It names the cause and what to do, rather than blaming the prompt.
+    assert "throttling programmatic use" in said
+    assert "backup" in said and "no request" in said
 
 
 def test_a_real_failure_is_not_mistaken_for_an_abort():
