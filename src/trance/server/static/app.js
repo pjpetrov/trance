@@ -1245,7 +1245,7 @@ function headline(event) {
   const p = event.payload || {};
   switch (event.type) {
     case "model_call":
-      return `${shortModel(p.model)} · round ${p.round} · ${p.summary?.est_tokens ?? "?"} tok in · ` +
+      return `${shortModel(p.model, p.preset)} · round ${p.round} · ${p.summary?.est_tokens ?? "?"} tok in · ` +
              (p.tool_calls?.length ? `${p.tool_calls.length} tool call(s)` : clip(p.response_text, 90));
     case "tool_call":
       return `${p.name}(${Object.values(p.arguments || {}).map((v) => clip(String(v), 28)).join(", ")})` +
@@ -1383,9 +1383,13 @@ function rowWithCopy(label, text) {
   return row;
 }
 
-function shortModel(model) {
-  if (!model) return "?";
-  const tail = model.split("/").pop();
+/* A model id, shortened. Some backends have none — Claude Code takes whatever
+ * its CLI is signed in to — so the name you gave the model stands in. "?" was
+ * accurate and useless. */
+function shortModel(model, preset) {
+  const name = model || preset || "";
+  if (!name) return "?";
+  const tail = name.split("/").pop();
   return tail.length > 26 ? tail.slice(0, 26) + "…" : tail;
 }
 
@@ -2873,6 +2877,7 @@ function paintActivity() {
                 el("span", "activity-what", clip(activity.what, 52)),
                 el("span", "activity-elapsed", since));
   if (activity.model) header.append(el("span", "muted small", shortModel(activity.model)));
+  else if (activity.preset) header.append(el("span", "muted small", activity.preset));
   if (activity.context) header.append(contextGauge(activity.context));
 }
 
@@ -2887,6 +2892,8 @@ function trackActivity(event) {
     case "step_verifying":
       setActivity(p.verifier || event.agent, "verifying the previous step"); break;
     case "model_call":
+      // The name you gave it, when the backend has no id of its own to report.
+      activity.preset = p.preset || "";
       setActivity(event.agent, p.tool_calls?.length
         ? `deciding — ${p.tool_calls.map((t) => t.name).join(", ")}`
         : "thinking", p.model);
@@ -3195,7 +3202,7 @@ function consoleAppend(event) {
     case "model_call": {
       if (p.asked_for_outcome) {
         consolePush(consoleEntry({
-          kind: "think", icon: "?", time, tag: shortModel(p.model),
+          kind: "think", icon: "?", time, tag: shortModel(p.model, p.preset),
           label: `asked for an outcome → ${clip(p.response_text, 60)}`,
           body: () => el("pre", null, p.response_text || ""),
         }));
@@ -3206,7 +3213,7 @@ function consoleAppend(event) {
         ? `thinking → ${wants.join(", ")}`
         : (clip(p.response_text, 80) || "thinking");
       consolePush(consoleEntry({
-        kind: "think", icon: ICON.think, time, tag: shortModel(p.model),
+        kind: "think", icon: ICON.think, time, tag: shortModel(p.model, p.preset),
         label,
         body: () => {
           const wrap = el("div");
@@ -3341,7 +3348,7 @@ function consoleAppend(event) {
       consolePush(consoleEntry({
         kind: "step", icon: "⇧", time, tag: event.agent,
         label: labelWith([[p.message || "escalating", ""],
-                          [`  ${p.role} on ${shortModel(p.model)}`, "c-path"]]),
+                          [`  ${p.role} on ${shortModel(p.model, p.preset)}`, "c-path"]]),
         open: true,
       }));
       return;

@@ -432,3 +432,61 @@ def test_only_this_backend_is_delegated():
     assert delegate.delegated("claudecode") is True
     for other in ("anthropic", "openai", "ollama", "llamacpp", ""):
         assert delegate.delegated(other) is False
+
+
+def test_the_delegated_agent_is_handed_the_graph(tmp_path, monkeypatch):
+    """The one thing delegating would otherwise lose. Claude Code brings grep
+    and read-the-whole-file; the index is right there and it cannot see it —
+    unless it is offered as an MCP server, which is what MCP is actually for."""
+    from trance import vcs
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.db import GraphDB
+    from trance.events import EventBus
+    from trance.indexer.service import default_db_path, index_repo
+
+    project = tmp_path / "shop"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "cart.js").write_text("export function total(i){ return 1; }\n")
+    index_repo(project, GraphDB(default_db_path(project)))
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+
+    seen: dict = {}
+    delegate = fake_delegate(monkeypatch, "OUTCOME: SUCCESS", capture=seen)
+    delegate.run_delegated(role=BUILTIN_ROLES["frontend"], task="t", project=project,
+                           config=ModelConfig(kind="claudecode"), bus=EventBus(),
+                           session_id="s", step_id="st")
+
+    command = seen["command"]
+    config = json.loads(command[command.index("--mcp-config") + 1])
+    server = config["mcpServers"]["trance"]
+    assert server["args"][:2] == ["-m", "trance.mcp_server"]
+    assert server["args"][2] == str(project)
+    assert "--strict-mcp-config" in command      # only ours, not the user's own
+    assert "mcp__trance__get_definition" in command
+    prompt = command[command.index("-p") + 1]
+    assert "call graph" in prompt and "get_callers" in prompt
+
+
+def test_an_unindexed_project_is_not_offered_a_graph(tmp_path, monkeypatch):
+    """Promising tools that answer "there is no index" would waste a turn."""
+    from trance import vcs
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    project = tmp_path / "fresh"
+    project.mkdir()
+    vcs.ensure_repo(project)
+
+    seen: dict = {}
+    delegate = fake_delegate(monkeypatch, "OUTCOME: SUCCESS", capture=seen)
+    delegate.run_delegated(role=BUILTIN_ROLES["frontend"], task="t", project=project,
+                           config=ModelConfig(kind="claudecode"), bus=EventBus(),
+                           session_id="s", step_id="st")
+
+    command = seen["command"]
+    assert "--mcp-config" not in command
+    assert not any(part.startswith("mcp__trance__") for part in command)
+    assert "call graph" not in command[command.index("-p") + 1]

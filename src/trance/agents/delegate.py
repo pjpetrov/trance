@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -40,6 +41,28 @@ from ..providers.claudecode_client import DEFAULT_TIMEOUT_S, _is_abort, _why
 #: What it may use. Enough to read, edit and run the project's own checks;
 #: nothing that reaches outside the directory it was pointed at.
 TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "TodoWrite"]
+
+#: The index, handed over as an MCP server — this is what MCP is for, and it is
+#: the one thing a delegated agent would otherwise lose. Without it Claude Code
+#: greps and reads whole files, which is the habit this whole project exists to
+#: break.
+GRAPH_TOOLS = ["mcp__trance__get_definition", "mcp__trance__search_symbols",
+               "mcp__trance__get_callers", "mcp__trance__get_callees"]
+
+GRAPH_BRIEF = """
+
+## The project's call graph
+
+This project is indexed. Before reading a file to find something in it, ask:
+
+- `get_definition("handleOrder")` — one symbol's source, or a file's outline
+- `search_symbols("checkout")` — identifiers containing that text
+- `get_callers("total")` — what calls it, before you change its signature
+- `get_callees("total")` — what it calls
+
+A 33KB file is about 8,400 tokens; the function you want is 150. Read whole
+files when you genuinely need them, not to find one thing.
+"""
 
 #: How trance reads the result, the same line every other agent ends with.
 OUTCOME_CONTRACT = """
@@ -70,12 +93,17 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
     binary = _binary()
     before = vcs.head(project)
 
+    indexed = _indexed(project)
     prompt = _prompt(role=role, task=task, goal=goal, placement=placement,
-                     memory=memory, steering=steering or [])
+                     memory=memory, steering=steering or [], indexed=indexed)
+    allowed = TOOLS + (GRAPH_TOOLS if indexed else [])
     command = [binary, "-p", prompt,
                "--output-format", "json",
                "--permission-mode", "acceptEdits",
-               "--allowedTools", *TOOLS]
+               "--allowedTools", *allowed]
+    if indexed:
+        command += ["--mcp-config", json.dumps(_mcp_config(project)),
+                    "--strict-mcp-config"]
     if config.model:
         command += ["--model", config.model]
 
@@ -140,7 +168,27 @@ def _binary() -> str:
     return found
 
 
-def _prompt(*, role, task: str, goal: str, placement: str, memory, steering) -> str:
+def _indexed(project: Path) -> bool:
+    """Is there a graph to offer? A fresh project has none yet."""
+    from ..indexer.service import default_db_path
+
+    return default_db_path(project).exists()
+
+
+def _mcp_config(project: Path) -> dict:
+    """The graph server, described the way Claude Code expects to be told.
+
+    Run with this interpreter rather than whatever `python` resolves to: trance
+    may be in a virtualenv the CLI's environment knows nothing about.
+    """
+    return {"mcpServers": {"trance": {
+        "command": sys.executable,
+        "args": ["-m", "trance.mcp_server", str(project)],
+    }}}
+
+
+def _prompt(*, role, task: str, goal: str, placement: str, memory, steering,
+            indexed: bool = False) -> str:
     """Everything the step needs, in one go — there is no second turn to add to."""
     parts = [role.system_prompt.strip()]
     if goal:
@@ -162,6 +210,8 @@ def _prompt(*, role, task: str, goal: str, placement: str, memory, steering) -> 
         parts.append("## What you may change\nNothing. This step is read-only: "
                      "report what you find, change no files.")
 
+    if indexed:
+        parts.append(GRAPH_BRIEF.strip())
     parts.append(f"## Your task\n{task}")
     for hint in steering:
         parts.append(f"## From the user, while you work\n{hint}")

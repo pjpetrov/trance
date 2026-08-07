@@ -112,11 +112,11 @@ Two things that trade away, stated rather than hidden:
   files itself, so the step runs between two git checkpoints and what it touched
   is read back from the diff. Anything outside the remit fails the step and is
   named — caught, not prevented, with the work still on disk and revertible.
-* **Context is theirs.** trance's prompt goes in, but Claude Code reads what it
-  likes after that and carries ~40,000 tokens of its own preamble and tools.
-  This project's whole argument about context does not apply to this backend; it
-  is here because a subscription is cheaper than an API bill, which is a
-  different saving.
+* **Context is largely theirs.** trance's prompt goes in, but Claude Code reads
+  what it likes after that and carries tens of thousands of tokens of its own
+  preamble and tools. The graph is the exception: it is handed over as an MCP
+  server, so the delegated agent can ask `get_definition` and `get_callers`
+  instead of grepping — which is the one habit worth keeping.
 
 Whether using it this way fits your Claude Code subscription is a licensing
 question, not a technical one.
@@ -336,6 +336,7 @@ adding another `try`.
 ```
 src/trance/
   indexer/     tree-sitter parsing → SQLite symbol + call graph, incremental
+  mcp_server.py  the graph as an MCP server, for a delegated Claude Code
   curator/     N-hop walk → minimal bundle under a token budget
   agents/      roles, tools, runner, memory, approvals, handoff
   providers/   model clients and the registry
