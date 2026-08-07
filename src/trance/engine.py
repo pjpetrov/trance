@@ -371,8 +371,8 @@ class FlowEngine:
                     f"reported:\n{feedback}{replay}"
                 )
 
-            model_config, on_backup = self._model_for(role, step, loop,
-                                                      force_backup=endpoint_down)
+            model_config, on_backup = self._model_for(
+                role, step, loop, force_backup=endpoint_down or step.start_on_backup)
             try:
                 turn = run_agent(
                     role=role, task=step.task, project=self.project,
@@ -441,7 +441,11 @@ class FlowEngine:
                 "reported": turn.reported_outcome,
             })
 
-            integrity = self._run_check(step, attempt)
+            # Only a claim of success is worth checking. The check exists to
+            # ask "is that true?", and an agent that already said it failed has
+            # not made a claim to test — running the checker there costs a model
+            # call to confirm what was just admitted.
+            integrity = self._run_check(step, attempt) if outcome == OUTCOME_SUCCESS else None
 
             if integrity == "FAIL" and outcome == "SUCCESS":
                 # It reported success and the check disagrees. Usually that is
@@ -479,6 +483,8 @@ class FlowEngine:
                 continue
 
             if outcome == "SUCCESS":
+                # Spent: a later ordinary rerun starts on the usual model again.
+                step.start_on_backup = False
                 step.status = "blocked" if integrity == "UNKNOWN" else "done"
                 self._emit("step_finished", agent=role.name, step_id=step.id, payload={
                     "status": step.status, "attempt": loop, "files": turn.files_written,

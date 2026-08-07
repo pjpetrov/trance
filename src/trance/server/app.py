@@ -1303,11 +1303,21 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "flow": session.flow.to_dict()}
 
     @app.post("/api/sessions/{session_id}/steps/{step_id}/rerun")
-    def rerun(session_id: str, step_id: str):
+    def rerun(session_id: str, step_id: str, body: dict | None = None):
         session = _need(store, session_id)
         step = session.flow.find(step_id)
         if step is None:
             raise HTTPException(404, "no such step")
+
+        # "Rerun on the backup" is for when you have watched the usual model
+        # fail and know it will again — working up to the backup would just
+        # spend its tries first.
+        on_backup = bool((body or {}).get("on_backup"))
+        role = session.role(step.role) if step.role else None
+        if on_backup and not step.loop and not (role and role.backup_preset):
+            raise HTTPException(400, (
+                f"{step.role} has no backup model — set one in Agents first."))
+        step.start_on_backup = on_backup
         step.status = "pending"
         step.attempts = []          # a rerun is a fresh attempt, not attempt N+1
         # "Run this step" and "stay paused" cannot both be honoured, and only
@@ -1328,7 +1338,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         pending_on = ("the current model call to finish" if session.stopping
                       else "the running step to finish" if engine_alive(session)
                       else "")
-        return {**step.to_dict(), "restarted": restarted,
+        return {**step.to_dict(), "restarted": restarted, "on_backup": on_backup,
                 "resumed": was_paused, "waiting_for": pending_on,
                 "status_now": session.status}
 

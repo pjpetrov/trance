@@ -800,7 +800,9 @@ def test_a_failed_outcome_sends_the_work_to_the_fixer_then_loops(tmp_path, monke
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert order == ["backend", "factchecker", "reviewer", "backend", "factchecker"]
+    # No check after the first attempt: the agent said it failed, and there is
+    # no claim of success to test.
+    assert order == ["backend", "reviewer", "backend", "factchecker"]
     assert step.status == "done"
     assert "divide() raises on zero" in prompts["reviewer"]
 
@@ -860,7 +862,7 @@ def test_an_admitted_failure_loops_even_if_the_check_also_fails(tmp_path, monkey
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
-    assert order == ["backend", "factchecker", "backend", "factchecker"]
+    assert order == ["backend", "backend", "factchecker"]
     assert step.status == "failed"      # second pass claimed success, check says no
     assert engine.session.stopping
 
@@ -5451,3 +5453,124 @@ def test_a_proposed_step_runs_for_as_long_as_its_agent_allows(tmp_path, monkeypa
     engine._execute(step)
 
     assert used == ["small-model", "small-model", "big-model", "big-model"]
+
+
+def test_a_step_can_be_rerun_straight_onto_the_backup(tmp_path, monkeypatch):
+    """You have watched the usual model fail; spending its tries again is only
+    slower."""
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=2)
+    step = Step(role="backend", task="t", start_on_backup=True)
+    used = []
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        used.append(kw["config"].model) or _Turn(None, "x", outcome=("SUCCESS", ""))))
+    engine._execute(step)
+
+    assert used == ["big-model"]                    # not two tries on the small one
+    assert step.attempts[0].on_backup is True
+    assert step.start_on_backup is False            # spent, not sticky
+
+
+def test_the_rerun_endpoint_takes_the_backup_flag(tmp_path, monkeypatch):
+    import copy
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    class FakeEngine:
+        def __init__(self, session, config, bus, on_change=None, **kwargs):
+            self.session = session
+
+        def start(self):
+            self.session.status = "running"
+            return None
+
+    monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    client.put("/api/presets/clever", json={"kind": "anthropic", "model": "claude-opus-5"})
+    client.put("/api/agents/backend", json={"backup_preset": "clever"})
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [{"role": "backend", "task": "t"}]})
+    session = app.state.store.get(sid)
+    step_id = session.flow.steps[0].id
+
+    body = client.post(f"/api/sessions/{sid}/steps/{step_id}/rerun",
+                       json={"on_backup": True}).json()
+    assert body["on_backup"] is True
+    assert session.flow.steps[0].start_on_backup is True
+
+    # And a plain rerun clears it again.
+    body = client.post(f"/api/sessions/{sid}/steps/{step_id}/rerun", json={}).json()
+    assert body["on_backup"] is False
+    assert session.flow.steps[0].start_on_backup is False
+
+
+def test_asking_for_a_backup_that_is_not_configured_is_refused(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [{"role": "backend", "task": "t"}]})
+    step_id = app.state.store.get(sid).flow.steps[0].id
+
+    response = client.post(f"/api/sessions/{sid}/steps/{step_id}/rerun",
+                           json={"on_backup": True})
+    assert response.status_code == 400
+    assert "no backup model" in response.json()["detail"]
+
+
+def test_the_check_only_runs_on_a_claim_of_success(tmp_path, monkeypatch):
+    """The check asks "is that true?". An agent that already said it failed has
+    made no claim to test, and asking costs a model call to confirm what was
+    just admitted."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker"])
+    step = Step(role="backend", task="t", check="factchecker", max_loops=2)
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        if kw["role"].name == "factchecker":
+            return _Turn("PASS", "it is all there")
+        return _Turn(None, "x", outcome=("FAILED", "could not finish"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert order == ["backend", "backend"]          # the checker was never called
+    assert step.status == "failed"
+    assert all(a.gate_results == [] for a in step.attempts)
+
+
+def test_an_unstated_outcome_is_not_checked_either(tmp_path, monkeypatch):
+    """"I did not say" is not a claim of success."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker"])
+    step = Step(role="backend", task="t", check="factchecker", max_loops=1)
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        return _Turn(None, "no outcome line at all", outcome=("UNSTATED", "nothing said"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert order == ["backend"]

@@ -596,6 +596,21 @@ try {
     console.log("BROKEN: events landed in the wrong block");
     process.exit(1);
   }
+  // A step whose agent has a backup offers a rerun straight onto it. (Roles are
+  // re-set here because opening settings reloads them from /api/config.)
+  api.state.roles = {
+    backend: { name: "backend", color: "#7aa2f7", verifier: false,
+               tries: 2, backup_preset: "claude", backup_tries: 2 },
+    tester: { name: "tester", color: "#f7768e", verifier: true },
+  };
+  api.openStep({ ...loopStep, loop: "", role: "backend" }, 0);
+  {
+    const shown = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
+    if (!shown.includes("rerun on claude")) {
+      console.log("BROKEN: no way to rerun a step on its backup model");
+      process.exit(1);
+    }
+  }
   api.openStep(loopStep, 0);
   const detail = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
   for (const want of ["FAILED", "SUCCESS", "the ball passes through"]) {

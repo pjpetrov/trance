@@ -96,6 +96,10 @@ class Step:
     #: the agent's own count. 0 means "however many tries that agent gets",
     #: which is the usual case — the agent knows what it is worth retrying.
     max_loops: int = 0
+    #: Start on the agent's backup model rather than working up to it. Set by
+    #: "rerun on the backup" — when you already know the usual model cannot do
+    #: this, spending its tries first is only slower.
+    start_on_backup: bool = False
     #: Roll the project back to the checkpoint taken before this step when it
     #: fails. Off by default: throwing away work is not something to do on a
     #: guess, and a half-finished step is often still worth reading.

@@ -2035,19 +2035,40 @@ function openStep(step, index) {
   body.innerHTML = "";
 
   const head = el("div", "row small");
-  const rerun = el("button", null, "rerun");
-  rerun.onclick = async () => {
-    const r = await api(`/api/sessions/${state.session.id}/steps/${step.id}/rerun`, { method: "POST" });
+  const startRerun = async (onBackup) => {
+    let r;
+    try {
+      r = await api(`/api/sessions/${state.session.id}/steps/${step.id}/rerun`,
+                    { method: "POST", body: { on_backup: onBackup } });
+    } catch (_) { return; }
     // A stop only lands when the model call returns, so "nothing happened" is
     // usually "waiting" — say which, or the button reads as broken.
     const resumed = r.resumed ? " Un-paused." : "";
-    toast(r.restarted ? `Re-running ${step.role}…${resumed}`
-          : r.waiting_for ? `${step.role} queued — starts when ${r.waiting_for}.${resumed}`
-          : `${step.role} queued — the running engine will pick it up.${resumed}`);
+    const where = onBackup ? " on the backup model" : "";
+    toast(r.restarted ? `Re-running ${step.role}${where}…${resumed}`
+          : r.waiting_for ? `${step.role} queued${where} — starts when ${r.waiting_for}.${resumed}`
+          : `${step.role} queued${where} — the running engine will pick it up.${resumed}`);
   };
+
+  const rerun = el("button", null, "rerun");
+  rerun.title = "Run this step again from the start, on its usual model";
+  rerun.onclick = () => startRerun(false);
+
+  // Straight to the backup: you have watched the usual model fail and know it
+  // will again, so spending its tries first is only slower.
+  const backupOf = state.roles[step.role]?.backup_preset;
+  if (backupOf && !step.loop) {
+    const rerunBig = el("button", null, `rerun on ${backupOf}`);
+    rerunBig.title = `Skip the tries on ${step.role}'s usual model and start on `
+                     + `${backupOf} straight away`;
+    rerunBig.onclick = () => startRerun(true);
+    head.append(rerun, rerunBig);
+  } else {
+    head.append(rerun);
+  }
   const skip = el("button", null, "skip");
   skip.onclick = () => api(`/api/sessions/${state.session.id}/steps/${step.id}/skip`, { method: "POST" });
-  head.append(rerun, skip);
+  head.append(skip);
   if (step.loop) head.append(el("span", "badge loop-badge", `↻ ${step.loop}`));
   if (step.checker) head.append(el("span", "badge", `check: ${step.checker}`));
   if (step.on_fail) head.append(el("span", "badge", `on fail: ${step.on_fail}`));
