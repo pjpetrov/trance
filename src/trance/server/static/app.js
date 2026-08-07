@@ -434,21 +434,7 @@ function stepCard(step, index) {
       redrawEditor();
     };
     card.append(head);
-    card.addEventListener("dragstart", (e) => {
-      card.classList.add("dragging");
-      e.dataTransfer.setData("text/plain", String(index));
-    });
-    card.addEventListener("dragend", () => card.classList.remove("dragging"));
-    card.addEventListener("dragover", (e) => e.preventDefault());
-    card.addEventListener("drop", (e) => {
-      e.preventDefault();
-      const from = Number(e.dataTransfer.getData("text/plain"));
-      if (Number.isNaN(from) || from === index) return;
-      const [moved] = state.draftSteps.splice(from, 1);
-      state.draftSteps.splice(index, 0, moved);
-      queueFlowSave(true);
-      redrawEditor();
-    });
+    makeDraggable(card, index);
     return card;
   }
 
@@ -637,23 +623,68 @@ function stepCard(step, index) {
 
   card.append(head, task, gatesBox);
 
+  makeDraggable(card, index);
+  return card;
+}
+
+/* Dragging a step used to be a guess: the card you were over got the step, but
+ * "over" says nothing about whether it lands above or below. So the edge it
+ * would land on is drawn as a line, and that same edge is what the drop uses —
+ * one decision, shown and then acted on. */
+function makeDraggable(card, index) {
   card.addEventListener("dragstart", (e) => {
     card.classList.add("dragging");
     e.dataTransfer.setData("text/plain", String(index));
+    e.dataTransfer.effectAllowed = "move";
   });
-  card.addEventListener("dragend", () => card.classList.remove("dragging"));
-  card.addEventListener("dragover", (e) => e.preventDefault());
+  card.addEventListener("dragend", () => {
+    card.classList.remove("dragging");
+    clearDropMarks();
+  });
+  card.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const before = isAboveMiddle(card, e);
+    if (card.classList.contains(before ? "drop-before" : "drop-after")) return;
+    clearDropMarks();
+    card.classList.add(before ? "drop-before" : "drop-after");
+  });
+  card.addEventListener("dragleave", (e) => {
+    // Only when the pointer has really left: moving over a child fires this too.
+    if (!card.contains || !e.relatedTarget || !card.contains(e.relatedTarget)) {
+      card.classList.remove("drop-before", "drop-after");
+    }
+  });
   card.addEventListener("drop", (e) => {
     e.preventDefault();
+    const before = isAboveMiddle(card, e);
+    card.classList.remove("drop-before", "drop-after");   // this one, for certain
+    clearDropMarks();                                      // and any other that stuck
     const from = Number(e.dataTransfer.getData("text/plain"));
-    const to = index;
-    if (Number.isNaN(from) || from === to) return;
+    if (Number.isNaN(from)) return;
+
+    let to = before ? index : index + 1;
+    if (from === to || from === to - 1) return;   // already there
     const [moved] = state.draftSteps.splice(from, 1);
+    if (from < to) to -= 1;                       // the removal shifted everything after it
     state.draftSteps.splice(to, 0, moved);
     queueFlowSave(true);
     redrawEditor();
   });
-  return card;
+}
+
+//: Above the middle of the card means "goes before this one".
+function isAboveMiddle(card, event) {
+  if (!card.getBoundingClientRect) return true;
+  const box = card.getBoundingClientRect();
+  return (event.clientY || 0) < box.top + box.height / 2;
+}
+
+function clearDropMarks() {
+  const box = $("flow-editor");
+  const marked = box && box.querySelectorAll
+    ? box.querySelectorAll(".drop-before, .drop-after") : [];
+  Array.from(marked).forEach((n) => n.classList.remove("drop-before", "drop-after"));
 }
 
 function redrawEditor() {

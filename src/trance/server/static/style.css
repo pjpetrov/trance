@@ -77,6 +77,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .step-card {
   border: 1px solid var(--line); border-left: 4px solid var(--accent);
   border-radius: 8px; padding: 10px; background: var(--panel-2);
+  position: relative;                 /* the drop line hangs off its edges */
 }
 .step-card[draggable="true"] { cursor: grab; }
 .step-card.dragging { opacity: .4; }
@@ -806,3 +807,14 @@ input.tiny { width: 68px; }
   font-variant-numeric: tabular-nums; font-size: 11px;
   border: 1px solid var(--line, #2a2f3a); border-radius: 999px; padding: 1px 8px;
 }
+
+/* Where the dragged step will land. Drawn on the edge it would join, so the
+   line you see is the position you get. */
+.step-card.drop-before::before,
+.step-card.drop-after::after {
+  content: ""; position: absolute; left: 0; right: 0; height: 2px;
+  background: var(--accent, #6ea8fe); border-radius: 2px;
+  box-shadow: 0 0 6px var(--accent, #6ea8fe);
+}
+.step-card.drop-before::before { top: -4px; }
+.step-card.drop-after::after { bottom: -4px; }

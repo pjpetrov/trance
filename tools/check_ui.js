@@ -30,11 +30,33 @@ const makeEl = (tag = "div") => {
     remove: () => {},
     // Returns the child, as a real one does.
     appendChild: (c) => { adopt(el, [c]); return c; },
-    addEventListener: () => {}, removeEventListener: () => {},
+    // Listeners are kept, not dropped on the floor: drag-and-drop is all
+    // listeners, so a stub that forgets them cannot test any of it.
+    _on: {},
+    addEventListener: (type, fn) => { (el._on[type] = el._on[type] || []).push(fn); },
+    removeEventListener: (type, fn) => {
+      el._on[type] = (el._on[type] || []).filter((f) => f !== fn);
+    },
+    fire: (type, event = {}) => {
+      (el._on[type] || []).forEach((fn) => fn({ preventDefault() {}, ...event }));
+    },
     // Null, like a real one that finds nothing. Returning an element made every
     // "is this here?" check pass, which is how a missing .c-head went unseen.
     querySelector: (sel) => el._found[sel] || null,
-    querySelectorAll: () => [],
+    // Enough of a selector engine for ".a, .b", which is what the UI uses to
+    // sweep up markers it left on other elements.
+    querySelectorAll: (sel) => {
+      const wanted = String(sel).split(",").map((x) => x.trim().replace(/^\./, ""));
+      const out = [];
+      const walk = (node) => (node.children || []).forEach((child) => {
+        if (wanted.some((w) => (child.className || "").split(/\s+/).includes(w))) {
+          out.push(child);
+        }
+        walk(child);
+      });
+      walk(el);
+      return out;
+    },
     get innerHTML() { return html; },
     // `box.innerHTML = ""` is how every panel here is emptied. A stub that kept
     // its children answered "is the old project still on screen?" with yes.
@@ -452,6 +474,43 @@ try {
   if (api.state.session.flow.steps[0].id !== "stale") {
     console.log("BROKEN: a live flow_updated was ignored");
     process.exit(1);
+  }
+
+  // Reordering: the line shows which edge the step will join, and the drop has
+  // to land exactly there — a marker that lies is worse than none.
+  {
+    api.state.session.status = "planning";
+    api.state.session.flow = { steps: ["a", "b", "c"].map((id) => ({
+      id, role: "backend", task: id, status: "pending", check: null,
+      on_fail: null, max_loops: 2, attempts: [] })) };
+    api.renderFlowEditor();
+
+    const cards = document.getElementById("flow-editor").children
+                          .filter((n) => (n.className || "").includes("step-card"));
+    if (cards.length !== 3) {
+      console.log("BROKEN: expected three step cards, got", cards.length);
+      process.exit(1);
+    }
+    // Hovering the bottom half of the last card marks its lower edge...
+    const box = { top: 100, height: 40 };
+    cards[2].getBoundingClientRect = () => box;
+    cards[2].fire("dragover", { clientY: 135, preventDefault() {}, dataTransfer: {} });
+    if (!cards[2].classList.contains("drop-after")) {
+      console.log("BROKEN: no drop marker on the edge being hovered");
+      process.exit(1);
+    }
+    // ...and dropping there moves the first step to the end, not before it.
+    cards[2].fire("drop", { clientY: 135, preventDefault() {},
+                            dataTransfer: { getData: () => "0" } });
+    const order = api.state.draftSteps.map((s) => s.id).join("");
+    if (order !== "bca") {
+      console.log("BROKEN: the step landed somewhere other than the marker:", order);
+      process.exit(1);
+    }
+    if (cards[2].classList.contains("drop-after")) {
+      console.log("BROKEN: the drop marker outlived the drop");
+      process.exit(1);
+    }
   }
 
   // Editing saves itself: there is no Save button to press, so an edit that
