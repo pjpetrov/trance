@@ -2473,10 +2473,13 @@ async function paintStepHistory(box, step) {
 
   const paint = (events, waiting) => {
     if (mine !== openedStep) return;             // a different step is open now
-    if (events.length < shown) return;           // never go backwards
-    shown = events.length;
-    box.innerHTML = "";
     const blocks = groupStepEvents(events, step);
+    // Counted in what will be on screen, not in events: a set that groups into
+    // fewer sections is a worse answer however many events it contains.
+    const weight = blocks.reduce((n, b) => n + (b.events || []).length, 0);
+    if (weight < shown) return;                  // never go backwards
+    shown = weight;
+    box.innerHTML = "";
     blocks.forEach((block, i) => box.append(
       blockSection(block, i === blocks.length - 1 && step.status === "running")));
     if (waiting) box.append(el("p", "muted small", waiting));
@@ -2601,7 +2604,13 @@ function blockSection(block, openByDefault) {
     tools.forEach((t) => inner.append(renderEvent(t)));
   }
   if (!inner.children.length) {
-    inner.append(el("p", "muted small", "No calls recorded for this block."));
+    // An attempt with no events is almost never an attempt that did nothing —
+    // it is one whose trace was never written. Saying "no calls" invites a hunt
+    // for a bug in the panel; saying why ends it.
+    inner.append(el("p", "muted small",
+      "Nothing was recorded for this attempt. It ran before this session kept a "
+      + "trace on disk, so its history existed only in the page that was open at "
+      + "the time."));
   }
   wrap.append(inner);
   return wrap;

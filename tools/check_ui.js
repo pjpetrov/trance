@@ -249,7 +249,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,loadConsoleTail,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,presetCard,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,blockSection,loadConsoleTail,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,presetCard,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -1309,6 +1309,20 @@ try {
     }
     if (after.includes("Loading this step")) {
       console.log("BROKEN: still says it is loading after the fetch returned");
+      process.exit(1);
+    }
+  }
+
+  // An attempt with no trace says why. "No calls recorded" reads as a broken
+  // panel; the truth is that the events were never written, and only the
+  // sessions that predate the on-disk trace are affected.
+  {
+    const bare = api.blockSection({ kind: "attempt", label: "1. backend",
+                                    outcome: "SUCCESS", events: [] }, false);
+    const text = flat(bare).replace(/\s+/g, " ");
+    if (!text.includes("ran before this session kept a trace")) {
+      console.log("BROKEN: an attempt with no trace does not say why:",
+                  text.slice(0, 140));
       process.exit(1);
     }
   }
