@@ -312,6 +312,7 @@ function renderFlowEditor() {
                                      .catch(() => { state.loops = { loops: [] }; });
   state.draftSteps = JSON.parse(JSON.stringify(state.session?.flow?.steps || []));
   state.draftBase = draftFingerprint();   // what the server last gave us
+  state.planStale = false;
   const box = $("flow-editor");
   box.innerHTML = "";
   if (!state.draftSteps.length) {
@@ -979,6 +980,23 @@ function isPlanning() {
 /* The plan arrives before splitting finishes, so a refined flow lands while the
  * user is already looking at it. Replacing their edits would be worse than a
  * stale plan, so an edited draft is left alone and told about instead. */
+/* The plan screen holds a draft you may be halfway through editing. An update
+ * from the server is worth taking, but not at the cost of what you have typed:
+ * unsaved edits keep the screen and get told, rather than being overwritten. */
+function refreshPlan() {
+  if (draftFingerprint() === state.draftBase) {
+    const showing = JSON.stringify((state.draftSteps || []).map((s) => s.id));
+    const server = JSON.stringify((state.session?.flow?.steps || []).map((s) => s.id));
+    if (showing !== server) renderFlowEditor();
+    return;
+  }
+  if (!state.planStale) {
+    state.planStale = true;
+    toast("The flow changed — your unsaved edits are still here. Save or "
+          + "discard them to take the new steps.");
+  }
+}
+
 function applyRefinedFlow(payload) {
   state.splitting = null;
   if (!state.session) return;
@@ -1011,6 +1029,11 @@ function connect(sessionId) {
       if (!["running", "paused"].includes(state.session.status)) clearActivity();
       renderRun();
       renderSessionBar();
+      // The run view reads the session directly; the plan screen edits a copy
+      // of it, so a step added elsewhere — a review sent, the orchestrator
+      // finishing — never reached it. Take the new flow when there is nothing
+      // of yours to lose, and say so when there is.
+      if (isPlanning()) refreshPlan();
       return;
     }
     // Replayed history rebuilds the console and nothing else. It describes a

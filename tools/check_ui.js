@@ -142,7 +142,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -446,6 +446,36 @@ try {
   if (api.state.session.flow.steps[0].id !== "stale") {
     console.log("BROKEN: a live flow_updated was ignored");
     process.exit(1);
+  }
+
+  // A step added elsewhere — a review sent, the orchestrator finishing — has to
+  // reach the plan screen, which edits a copy of the flow rather than the flow.
+  {
+    api.state.session.status = "planning";
+    api.state.session.flow = { steps: [{ id: "one", role: "backend", task: "t",
+                                         status: "pending", check: null, on_fail: null,
+                                         max_loops: 2, attempts: [] }] };
+    api.renderFlowEditor();
+    api.state.session.flow.steps.push({ id: "two", role: "", loop: "review-front-end",
+                                        task: "address the review", status: "pending",
+                                        check: null, on_fail: null, max_loops: 2,
+                                        attempts: [], runs_a_loop: true });
+    api.refreshPlan();
+    if ((api.state.draftSteps || []).length !== 2) {
+      console.log("BROKEN: a step added on the server never reached the plan screen");
+      process.exit(1);
+    }
+    // ...but not over the top of something you were in the middle of writing.
+    api.state.draftSteps[0].task = "half-typed edit";
+    api.state.session.flow.steps.push({ id: "three", role: "backend", task: "later",
+                                        status: "pending", check: null, on_fail: null,
+                                        max_loops: 2, attempts: [] });
+    api.refreshPlan();
+    if (api.state.draftSteps.length !== 2 ||
+        api.state.draftSteps[0].task !== "half-typed edit") {
+      console.log("BROKEN: an unsaved edit was overwritten by a server update");
+      process.exit(1);
+    }
   }
 
   api.state.loops = RESPONSES["/api/loops"];
