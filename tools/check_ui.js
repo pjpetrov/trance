@@ -145,6 +145,10 @@ try {
       console.log("BROKEN: the agent card has no backup model picker");
       process.exit(1);
     }
+    if (text.includes("Shown to you, and to the orchestrator")) {
+      console.log("BROKEN: the description hint is back");
+      process.exit(1);
+    }
   }
   {
     // An agent with a backup says so on its header, folded or not.

@@ -1587,12 +1587,20 @@ function agentCard(agent, isNew) {
   }
 
   // --- model -----------------------------------------------------------
-  const grid = el("div", "provider-grid");
+  const grid = el("div", "agent-fields");
   const wrap = (label, node, hint) => {
     const l = el("label", null, label);
     l.append(node);
     if (hint) l.append(el("span", "hint", hint));
     return l;
+  };
+  //: One field per line: a label of fixed width, the control taking the rest,
+  //: and anything trailing kept beside it rather than wrapping under.
+  const rowField = (label, node, trailing) => {
+    const row = el("label", "agent-row");
+    row.append(el("span", "agent-label", label), node);
+    if (trailing) row.append(trailing);
+    return row;
   };
 
   // Only models that exist. "default model" meant an endpoint nobody had
@@ -1617,7 +1625,9 @@ function agentCard(agent, isNew) {
   if (models.length && !models.some((m) => m.name === agent.preset)) {
     preset.value = models[0].name;
   }
-  grid.append(wrap("Model", preset));
+  // Model and backup are the same decision made twice, so they stack rather
+  // than sitting in grid columns that squeeze both into half a name.
+  grid.append(rowField("Model", preset));
 
   // The backup: what this agent moves to when the same model keeps failing.
   const backup = el("select", "compact");
@@ -1639,20 +1649,22 @@ function agentCard(agent, isNew) {
   backupAfter.title = "Tries on the usual model before the backup takes over. Keep it "
                       + "below a step's loop limit, or nothing ever reaches it.";
 
-  const backupField = wrap("Backup model", backup);
-  const afterField = wrap("after N tries", backupAfter);
+  const afterWrap = el("span", "row small after-tries");
+  afterWrap.append(el("span", "muted small", "after"), backupAfter,
+                   el("span", "muted small", "tries"));
+  const backupRow = rowField("Backup model", backup, afterWrap);
   const syncBackup = () => {
-    afterField.hidden = !backup.value;
+    afterWrap.hidden = !backup.value;
     if (backup.value && !backupAfter.value) backupAfter.value = "2";
   };
   backup.onchange = syncBackup;
   syncBackup();
-  grid.append(backupField, afterField);
+  grid.append(backupRow);
 
   const description = el("input", "compact");
   description.value = agent.description || "";
-  description.placeholder = "what this agent is for";
-  grid.append(wrap("Description", description, "Shown to you, and to the orchestrator when it picks a team"));
+  description.placeholder = "what this agent is for — the orchestrator reads this";
+  grid.append(rowField("Description", description));
 
   // --- permissions -----------------------------------------------------
   // Folded by default: it is the longest part of the card and the least often
@@ -1689,7 +1701,7 @@ function agentCard(agent, isNew) {
   perms.append(toolsetRow);
 
   // Commands + where they run — only meaningful with the commands toolset.
-  const cmdRow = el("div", "provider-grid");
+  const cmdRow = el("div", "agent-fields");
   const listSel = el("select", "compact");
   const listNames = (state.commands && state.commands.names) || ["default"];
   listNames.forEach((n) => {
@@ -1725,17 +1737,18 @@ function agentCard(agent, isNew) {
     shellSel.append(opt);
   });
   shellSel.title = "Pipes, redirects and && for this agent";
-  cmdRow.append(wrapField("Command list", listSel, "shared, edited in $_"),
-                wrapField("Own commands", commands, "blank = use the list"),
-                wrapField("Pipes / redirects", shellSel),
-                wrapField("Run commands in", workdir, "blank = project root"));
+  cmdRow.append(rowField("Command list", listSel),
+                rowField("Own commands", commands),
+                rowField("Pipes / redirects", shellSel),
+                rowField("Run commands in", workdir));
   perms.append(cmdRow);
 
   const paths = el("textarea");
   paths.rows = 3;
   paths.value = (agent.paths || []).join("\n");
   paths.placeholder = "backend/**\n*.py";
-  perms.append(el("label", "small", "Remit — one glob per line. Writes outside these are refused."));
+  perms.append(el("div", "muted small",
+                  "Remit — one glob per line. Writes outside these are refused."));
   perms.append(paths);
 
   // --- prompt ----------------------------------------------------------
