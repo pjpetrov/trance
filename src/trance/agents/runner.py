@@ -607,6 +607,17 @@ def run_agent(
                 truncated = response.finish_reason == "length"
                 if truncated:
                     cut_short.append(call)
+                    turn.truncated_calls += 1
+                    # The same announcement as a reply cut outside a call. This
+                    # is the more expensive case, not the lesser one: minutes of
+                    # generation, nothing written, and only a failed tool call
+                    # in the console to show for it.
+                    bus.emit("truncated", session_id, agent=role.name, step_id=step_id,
+                             payload={"limit": model_config.max_tokens,
+                                      "attempt": turn.truncated_calls, "call": call.name,
+                                      "message": (f"{call.name} was cut off at the "
+                                                  f"{model_config.max_tokens}-token output "
+                                                  f"limit and did not run.")})
                 outcome = _malformed_call_outcome(call, truncated, model_config.max_tokens)
                 bus.emit("tool_call", session_id, agent=role.name, step_id=step_id, payload={
                     "name": call.name, "arguments": {}, "ok": False,

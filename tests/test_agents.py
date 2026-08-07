@@ -7014,6 +7014,47 @@ def test_a_reply_cut_at_the_output_limit_is_explained(tmp_path, monkeypatch):
     assert any(e.type == "truncated" for e in seen)
 
 
+def test_a_cut_off_tool_call_is_announced_as_well(tmp_path, monkeypatch):
+    """The expensive case, and the one that was silent: minutes of generation,
+    nothing written, and only a failed tool call in the console to show for it."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import Event, EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    class Cut:
+        def __init__(self):
+            self.round = 0
+
+        def complete(self, messages, tools=None, **kwargs):
+            self.round += 1
+            if self.round == 1:
+                return ChatResponse(text="", finish_reason="length", tool_calls=[
+                    ToolCall(id="big", name="write_file", arguments={},
+                             raw_arguments='{"path": "a.js", "content": "half', 
+                             malformed=True)])
+            return ChatResponse(text="OUTCOME: SUCCESS", finish_reason="stop")
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Cut())
+    project = tmp_path / "proj"
+    project.mkdir()
+    seen: list[Event] = []
+    bus = EventBus()
+    bus.subscribe_sync(seen.append)
+
+    run_agent(role=AgentRole(name="b", title="B", description="d", system_prompt="p",
+                             paths=["**"], toolsets=["files"]),
+              task="t", project=project, config=ModelConfig(max_tokens=8000),
+              bus=bus, session_id="s", step_id="st")
+
+    cut = [e for e in seen if e.type == "truncated"]
+    assert len(cut) == 1
+    assert cut[0].payload["call"] == "write_file"
+    assert cut[0].payload["limit"] == 8000
+    assert "did not run" in cut[0].payload["message"]
+
+
 def test_the_shipped_budgets_match_what_the_roles_actually_use():
     """Set from real runs rather than from intuition. Across the sessions in
     this repo: tester ran out of rounds on 100% of attempts, backend 83%,

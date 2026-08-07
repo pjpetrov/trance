@@ -1141,6 +1141,24 @@ try {
       process.exit(1);
     }
   }
+  // A reply cut at the output limit is the most expensive quiet failure there
+  // is: minutes of generation, nothing written. It has to look like a failure.
+  {
+    api.consoleReset();
+    api.consoleAppend({ type: "truncated", agent: "backend", step_id: "st1",
+                        ts: "2026-08-07T20:29:28+00:00",
+                        payload: { limit: 8000, attempt: 3, call: "write_file",
+                                   message: "write_file was cut off at the 8000-token "
+                                            + "output limit and did not run." } });
+    const shown = flat(document.getElementById("console")).replace(/\s+/g, " ");
+    for (const want of ["cut at the 8000-token limit", "3 in this step", "append_file"]) {
+      if (!shown.includes(want)) {
+        console.log("BROKEN: a cut-off reply is not reported:", shown.slice(0, 180));
+        process.exit(1);
+      }
+    }
+  }
+
   // The console asks for its own tail rather than being sent one, and is told
   // how much it is not seeing.
   {

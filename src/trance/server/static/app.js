@@ -3543,6 +3543,22 @@ function consoleAppend(event) {
       }));
       return;
 
+    // A reply cut at the output limit is the most expensive thing that can go
+    // wrong quietly: minutes of generation, nothing written, and the console
+    // showed a tool call that simply did not appear. Say it, loudly.
+    case "truncated":
+      consolePush(consoleEntry({
+        kind: "cmd", icon: "✂", time, failed: true, tag: event.agent || "system",
+        label: `reply cut at the ${p.limit || "output"}-token limit`
+               + (p.attempt > 1 ? ` (${p.attempt} in this step)` : ""),
+        body: () => el("pre", null,
+          (p.message || "") + "\n\nThe agent was told to write in pieces instead: "
+          + "edit_file for part of a file, replace_symbol for one function, or "
+          + "write_file then append_file."),
+        open: true,
+      }));
+      return;
+
     case "supervision": case "warning": case "error":
       consolePush(consoleEntry({
         kind: "cmd", icon: ICON.fail, time, failed: true, tag: event.agent || "system",
