@@ -3354,50 +3354,110 @@ async function openFile(path) {
   renderFileView();
 }
 
+const CM_MODES = {
+  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+  ts: {name: "javascript", typescript: true}, tsx: {name: "javascript", typescript: true},
+  json: {name: "javascript", json: true},
+  py: "python", css: "css", html: "htmlmixed", htm: "htmlmixed",
+  xml: "xml", svg: "xml", md: "markdown", markdown: "markdown",
+};
+
+function modeFor(path) {
+  return CM_MODES[(path.split(".").pop() || "").toLowerCase()] || null;
+}
+
+/* CodeMirror does the editor — highlighting, selection, brackets, undo — and
+ * its gutter does the reviewing. Clicking a line number is the whole gesture:
+ * a comment appears under that line as a widget, and stays attached to it. */
+let editor = null;
+const lineWidgets = [];
+
 function fileEditing(on) {
   fileState.editing = on;
-  $("file-editor").hidden = !on;
-  $("file-view").hidden = on;
   $("file-edit").hidden = on;
   $("file-save").hidden = !on;
   $("file-cancel").hidden = !on;
+  if (editor) {
+    editor.setOption("readOnly", on ? false : "nocursor");
+    $("file-view").classList.toggle("editing", on);
+    if (on) editor.focus();
+  }
 }
 
 function renderFileView() {
   const box = $("file-view");
-  box.innerHTML = "";
-  fileEditing(false);
   if (!fileState.path) {
+    if (editor) { editor.toDom = null; }
+    box.innerHTML = "";
     box.append(el("p", "muted small", "Pick a file on the left."));
     return;
   }
 
-  const notes = (state.session.review || []).filter((n) => n.path === fileState.path);
-  fileState.content.split("\n").forEach((text, i) => {
-    const n = i + 1;
-    const row = el("div", "code-line");
-    const gutter = el("span", "code-n", String(n));
-    const code = el("code", "code-text", text || " ");
-    row.append(gutter, code);
-    // The whole line is the target: hunting for a tiny "+" is the difference
-    // between leaving a comment and not bothering.
-    row.onclick = () => commentOn(n, text);
-    box.append(row);
+  // No CodeMirror (the test harness, or a browser that failed to load it):
+  // plain numbered lines, still clickable, still reviewable.
+  if (typeof CodeMirror === "undefined") return renderPlainFileView();
 
-    notes.filter((note) => note.line === n).forEach((note) => {
+  box.innerHTML = "";
+  editor = CodeMirror(box, {
+    value: fileState.content,
+    mode: modeFor(fileState.path),
+    theme: "material-darker",
+    lineNumbers: true,
+    lineWrapping: false,
+    readOnly: "nocursor",
+    styleActiveLine: true,
+    matchBrackets: true,
+    gutters: ["CodeMirror-linenumbers", "review-gutter"],
+  });
+  editor.on("gutterClick", (cm, line) => {
+    if (fileState.editing) return;
+    commentOn(line + 1, cm.getLine(line) || "");
+  });
+  fileEditing(false);
+  paintReviewMarks();
+}
+
+function paintReviewMarks() {
+  if (!editor) return;
+  lineWidgets.splice(0).forEach((w) => w.clear());
+  editor.clearGutter("review-gutter");
+
+  (state.session.review || [])
+    .filter((n) => n.path === fileState.path)
+    .forEach((note) => {
+      const line = Math.min(note.line, editor.lineCount()) - 1;
+      editor.setGutterMarker(line, "review-gutter", el("span", "review-dot", "●"));
+
       const card = el("div", "code-note");
       card.append(el("span", "badge", "you"), el("span", null, note.note));
       const drop = el("button", "small", "✕");
       drop.title = "Take this comment back";
-      drop.onclick = async (e) => {
-        e.stopPropagation();
+      drop.onclick = async () => {
         await api(`/api/sessions/${state.session.id}/review/${note.id}`, { method: "DELETE" });
         state.session.review = state.session.review.filter((x) => x.id !== note.id);
-        renderFileView();
+        paintReviewMarks();
         renderReviewStatus();
         renderSessionBar();
+        renderFileTree();
       };
       card.append(drop);
+      lineWidgets.push(editor.addLineWidget(line, card, { coverGutter: false }));
+    });
+}
+
+function renderPlainFileView() {
+  const box = $("file-view");
+  box.innerHTML = "";
+  const notes = (state.session.review || []).filter((n) => n.path === fileState.path);
+  fileState.content.split("\n").forEach((text, i) => {
+    const n = i + 1;
+    const row = el("div", "code-line");
+    row.append(el("span", "code-n", String(n)), el("code", "code-text", text || " "));
+    row.onclick = () => commentOn(n, text);
+    box.append(row);
+    notes.filter((note) => note.line === n).forEach((note) => {
+      const card = el("div", "code-note");
+      card.append(el("span", "badge", "you"), el("span", null, note.note));
       box.append(card);
     });
   });
@@ -3405,36 +3465,45 @@ function renderFileView() {
 
 function commentOn(line, code) {
   if (fileState.editing) return;
-  const box = $("file-view");
-  const existing = box.querySelector(".code-compose");
-  if (existing) existing.remove();
-
   const form = el("div", "code-compose");
   form.append(el("span", "muted small", `line ${line}`));
   const input = el("input");
   input.placeholder = "What is wrong here, or what should it do instead?";
   const send = el("button", "primary", "Comment");
   const cancel = el("button", null, "Cancel");
-  cancel.onclick = (e) => { e.stopPropagation(); form.remove(); };
+
+  let widget = null;
+  const close = () => {
+    if (widget) widget.clear(); else form.remove();
+  };
+  cancel.onclick = (e) => { e.stopPropagation(); close(); };
   send.onclick = async (e) => {
     e.stopPropagation();
     const note = input.value.trim();
     if (!note) return;
     const saved = await api(`/api/sessions/${state.session.id}/review`, {
-      method: "POST",
-      body: { path: fileState.path, line, code, note },
+      method: "POST", body: { path: fileState.path, line, code, note },
     });
     state.session.review = [...(state.session.review || []), saved];
-    renderFileView();
+    close();
+    if (editor) paintReviewMarks(); else renderFileView();
     renderReviewStatus();
     renderSessionBar();
     renderFileTree();
   };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send.onclick(e);
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
+  });
   form.append(input, send, cancel);
-  // Placed after the line it is about, where the eye already is.
-  const rows = box.querySelectorAll(".code-line");
-  const anchor = rows[line - 1];
-  if (anchor && anchor.after) anchor.after(form); else box.append(form);
+
+  if (editor) {
+    widget = editor.addLineWidget(line - 1, form, { coverGutter: false });
+  } else {
+    const rows = $("file-view").querySelectorAll(".code-line");
+    const anchor = rows[line - 1];
+    if (anchor && anchor.after) anchor.after(form); else $("file-view").append(form);
+  }
   input.focus();
 }
 
@@ -3451,13 +3520,10 @@ function renderReviewStatus() {
 
 $("file-filter").addEventListener("input", renderFileTree);
 
-$("file-edit").onclick = () => {
-  $("file-editor").value = fileState.content;
-  fileEditing(true);
-};
+$("file-edit").onclick = () => fileEditing(true);
 $("file-cancel").onclick = () => renderFileView();
 $("file-save").onclick = async () => {
-  const content = $("file-editor").value;
+  const content = editor ? editor.getValue() : fileState.content;
   await api(`/api/sessions/${state.session.id}/file`, {
     method: "PUT", body: { path: fileState.path, content },
   });

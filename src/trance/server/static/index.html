@@ -4,6 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>trance</title>
+  <!-- CodeMirror, vendored rather than pulled from a CDN: this runs on
+       machines with no internet, and the editor is not worth a network
+       dependency. MIT, © Marijn Haverbeke and others. -->
+  <link rel="stylesheet" href="/static/vendor/codemirror.css">
+  <link rel="stylesheet" href="/static/vendor/material-darker.css">
+  <script src="/static/vendor/codemirror.js"></script>
+  <script src="/static/vendor/javascript.js"></script>
+  <script src="/static/vendor/python.js"></script>
+  <script src="/static/vendor/css.js"></script>
+  <script src="/static/vendor/xml.js"></script>
+  <script src="/static/vendor/htmlmixed.js"></script>
+  <script src="/static/vendor/markdown.js"></script>
+  <script src="/static/vendor/matchbrackets.js"></script>
+  <script src="/static/vendor/active-line.js"></script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -144,7 +158,6 @@
           </div>
         </div>
         <div id="file-view" class="file-view"></div>
-        <textarea id="file-editor" class="file-editor" spellcheck="false" hidden></textarea>
       </div>
     </div>
   </section>

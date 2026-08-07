@@ -662,13 +662,26 @@ input.tiny { width: 68px; }
              white-space: nowrap; font-family: var(--mono); }
 .badge.review-count { background: var(--warn); color: #10121c; border: none; font-weight: 600; }
 
-.file-view, .file-editor {
+.file-view {
   flex: 1 1 auto; min-height: 0; overflow: auto; margin-top: 10px;
   background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
   font-family: var(--mono); font-size: 12.5px;
 }
-.file-view { padding: 8px 0; }
-.file-editor { padding: 10px; color: var(--fg); resize: none; line-height: 1.5; }
+
+/* CodeMirror, dressed to match the rest rather than the theme's own chrome. */
+.file-view .CodeMirror {
+  height: 100%; background: var(--bg); font-family: var(--mono); font-size: 12.5px;
+  line-height: 1.55; border-radius: 8px;
+}
+.file-view .CodeMirror-gutters { background: var(--bg); border-right: 1px solid var(--line); }
+.file-view .CodeMirror-linenumber { color: var(--muted); cursor: pointer; }
+.file-view .CodeMirror-linenumber:hover { color: var(--accent); }
+.file-view .CodeMirror-activeline-background { background: rgba(122,162,247,.06); }
+.file-view.editing .CodeMirror { box-shadow: 0 0 0 1px var(--accent) inset; }
+.file-view.editing .CodeMirror-cursor { border-left: 2px solid var(--accent); }
+/* The gutter you click to review, and the mark left where you did. */
+.review-gutter { width: 14px; }
+.review-dot { color: var(--warn); font-size: 10px; }
 .code-line { display: flex; gap: 12px; padding: 0 10px; cursor: pointer; }
 .code-line:hover { background: rgba(122,162,247,.08); }
 .code-n {

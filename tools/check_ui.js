@@ -505,6 +505,12 @@ try {
     }
   }
   api.commentOn(2, "app.listen(PORT);");
+  // With no CodeMirror (this harness, or a browser that failed to load it) the
+  // plain numbered view still shows the file and takes comments.
+  if (typeof CodeMirror !== "undefined") {
+    console.log("BROKEN: the harness unexpectedly has CodeMirror");
+    process.exit(1);
+  }
   console.log("all render paths ran without a ReferenceError");
   process.exit(0);
 } catch (e) {

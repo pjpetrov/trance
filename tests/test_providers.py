@@ -657,3 +657,25 @@ def test_static_assets_are_always_revalidated(tmp_path):
     response = client.get("/static/app.js")
     assert response.status_code == 200
     assert "no-cache" in response.headers.get("cache-control", "")
+
+
+def test_the_editor_is_served_from_here_not_a_cdn(tmp_path):
+    """This runs on machines with no internet, and an editor is not worth a
+    network dependency."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    page = client.get("/").text
+    assert "cdn." not in page and "https://" not in page.split("<body")[0].replace(
+        "https://codemirror.net", "")          # the licence comment is fine
+    for asset in ("codemirror.js", "codemirror.css", "javascript.js", "python.js",
+                  "material-darker.css"):
+        response = client.get(f"/static/vendor/{asset}")
+        assert response.status_code == 200, asset
+        assert len(response.content) > 1000, asset
