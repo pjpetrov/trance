@@ -106,19 +106,19 @@ internal turns for a small edit, in the single call the throttle allows. trance
 still decides which step runs, in what order, with what prompt, and judges the
 result by the same `OUTCOME:` line and the same checks.
 
-Two things that trade away, stated rather than hidden:
+**It is still a trance step.** Claude Code's own file tools are switched off
+(`--tools ""`) and trance's are handed to it over MCP — `read_file`,
+`edit_file`, `write_file`, `run_command`, the graph lookups. So a write outside
+the remit is refused *as it is made*, commands are checked against the
+allowlist, reads are deduplicated, and every call appears in the console while
+the step runs. One measured step: eight calls, three of them graph lookups
+instead of reading a 300-line file, one edit accepted inside the remit and one
+refused outside it.
 
-* **The remit is checked afterwards, not enforced during.** Claude Code writes
-  files itself, so the step runs between two git checkpoints and what it touched
-  is read back from the diff. Anything outside the remit fails the step and is
-  named — caught, not prevented, with the work still on disk and revertible.
-* **Context is largely theirs.** trance's prompt goes in, but Claude Code reads
-  what it likes after that and carries tens of thousands of tokens of its own
-  preamble and tools. The graph is the exception: it is handed over as an MCP
-  server, so the delegated agent can ask `get_definition` and `get_callers`
-  instead of grepping — which is the one habit worth keeping. Those lookups come
-  back through trance and appear in the console, so a step that is otherwise
-  opaque for minutes still shows what it asked the index.
+What it still gives up is **context**: trance's prompt goes in, but Claude Code
+reads what it likes after that and carries tens of thousands of tokens of its
+own preamble. A git check after the step remains as a backstop, in case anything
+reaches the disk another way.
 
 Whether using it this way fits your Claude Code subscription is a licensing
 question, not a technical one.

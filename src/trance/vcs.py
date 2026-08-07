@@ -91,7 +91,10 @@ def ensure_repo(project: Path) -> GitResult:
 #: The graph database in particular is binary and rewritten on every index, so
 #: committing it puts "Binary files differ" in the middle of every diff an agent
 #: made — in a repo whose whole point is being readable afterwards.
-IGNORED = (".trance/graph.db", ".trance/graph.db-shm", ".trance/graph.db-wal")
+IGNORED = (".trance/graph.db", ".trance/graph.db-shm", ".trance/graph.db-wal",
+           # Handed to a delegated step's tool server and read back from it.
+           # Working files, not the project's.
+           ".trance/mcp-calls.jsonl", ".trance/mcp-role.json")
 _IGNORE_BLOCK = "\n".join(("# trance's index — regenerated, not source", *IGNORED))
 
 

@@ -351,7 +351,10 @@ def test_a_delegated_step_runs_in_the_project_with_edits_allowed(tmp_path, monke
     command = seen["command"]
     assert seen["cwd"] == str(project)              # it works where the project is
     assert command[command.index("--permission-mode") + 1] == "acceptEdits"
-    assert "Edit" in command and "Read" in command
+    # trance's tools, not Claude Code's: its own are switched off entirely.
+    assert command[command.index("--tools") + 1] == ""
+    assert "mcp__trance__write_file" in command and "mcp__trance__read_file" in command
+    assert not any(t in command for t in ("Edit", "Write", "Bash"))
     prompt = command[command.index("-p") + 1]
     assert "add stop()" in prompt and "a web app" in prompt
     assert "OUTCOME: SUCCESS" in prompt              # it is told how to report
@@ -481,8 +484,10 @@ def test_the_delegated_agent_is_handed_the_graph(tmp_path, monkeypatch):
     assert "call graph" in prompt and "get_callers" in prompt
 
 
-def test_an_unindexed_project_is_not_offered_a_graph(tmp_path, monkeypatch):
-    """Promising tools that answer "there is no index" would waste a turn."""
+def test_an_unindexed_project_gets_the_tools_but_not_the_graph(tmp_path, monkeypatch):
+    """The file tools always come from trance — that is what makes it a trance
+    step. The graph is offered only when there is one: tools that answer "there
+    is no index" waste a turn."""
     from trance import vcs
     from trance.agents.roles import BUILTIN_ROLES
     from trance.config import ModelConfig
@@ -499,8 +504,8 @@ def test_an_unindexed_project_is_not_offered_a_graph(tmp_path, monkeypatch):
                            session_id="s", step_id="st")
 
     command = seen["command"]
-    assert "--mcp-config" not in command
-    assert not any(part.startswith("mcp__trance__") for part in command)
+    assert "mcp__trance__write_file" in command       # its tools, always
+    assert "mcp__trance__get_definition" not in command
     assert "call graph" not in command[command.index("-p") + 1]
 
 
