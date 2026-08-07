@@ -258,3 +258,71 @@ def test_aborting_an_unknown_session_is_harmless():
 
     assert abort_inflight("never-existed") == 0
     assert abort_inflight("") == 0
+
+
+def test_every_request_identifies_itself(monkeypatch):
+    """urllib's default agent is "Python-urllib/3.x", which Cloudflare refuses
+    outright — a working curl and a failing trance against the same URL,
+    answered with "error code: 1010"."""
+    import io
+    import json
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.worker.client import USER_AGENT, ChatClient
+
+    seen = {}
+
+    def capture(request, timeout=None):
+        seen["headers"] = dict(request.header_items())
+        body = json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+        return io.BytesIO(body).__enter__() if False else _Resp(body)
+
+    class _Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", capture)
+    ChatClient(ModelConfig()).complete([{"role": "user", "content": "hi"}])
+
+    agent = {k.lower(): v for k, v in seen["headers"].items()}["user-agent"]
+    assert agent == USER_AGENT and "trance" in agent
+    assert "urllib" not in agent
+
+
+def test_model_discovery_identifies_itself_too(monkeypatch):
+    import json
+    import urllib.request
+
+    from trance.providers.base import list_models
+    from trance.worker.client import USER_AGENT
+
+    seen = {}
+
+    class _Resp:
+        def read(self):
+            return json.dumps({"data": [{"id": "a"}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def capture(request, timeout=None):
+        seen["headers"] = {k.lower(): v for k, v in request.header_items()}
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", capture)
+    list_models("openai", "https://example/v1", "sk-x")
+    assert seen["headers"]["user-agent"] == USER_AGENT
+    assert seen["headers"]["authorization"] == "Bearer sk-x"

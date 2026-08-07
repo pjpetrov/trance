@@ -44,6 +44,13 @@ class _Abortable:
                 pass
 
 
+#: Sent on every request. urllib's default is "Python-urllib/3.x", which
+#: Cloudflare blocks outright — a working curl and a failing trance against the
+#: same URL, answered with "error code: 1010". Identifying honestly as trance is
+#: both the fix and the right thing to send.
+USER_AGENT = "trance/0.1 (+https://github.com/trance)"
+
+
 class ChatClient:
     def __init__(self, config: ModelConfig):
         self.config = config
@@ -66,6 +73,7 @@ class ChatClient:
             data=json.dumps(payload).encode("utf8"),
             headers={
                 "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
                 **({"Authorization": f"Bearer {self.config.api_key}"} if self.config.api_key else {}),
             },
             method="POST",

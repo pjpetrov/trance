@@ -267,14 +267,20 @@ def list_models(kind: str, base_url: str, api_key: str | None = None,
     if not base:
         return [], "no endpoint to ask"
 
+    # Same reason as the chat client: a default urllib agent is refused
+    # outright by some gateways before the request is even looked at.
+    from ..worker.client import USER_AGENT
+
     if kind == "anthropic":
         url = f"{base}/v1/models" if not base.endswith("/v1") else f"{base}/models"
-        headers = {"anthropic-version": "2023-06-01"}
+        headers = {"anthropic-version": "2023-06-01", "User-Agent": USER_AGENT}
         if api_key:
             headers["x-api-key"] = api_key
     else:
         url = f"{base}/models"
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        headers = {"User-Agent": USER_AGENT}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
     try:
         request = urllib.request.Request(url, headers=headers, method="GET")
