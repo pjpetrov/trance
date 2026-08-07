@@ -37,6 +37,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from functools import partial
@@ -302,18 +303,29 @@ class Tunnel:
     policy: str = ""
     #: Someone else's agent, which trance found and used rather than started.
     adopted: bool = False
+    #: Managed through that agent's API rather than by running our own ngrok.
+    via_agent: bool = False
 
     @property
     def running(self) -> bool:
-        if self.adopted:
+        if self.adopted or self.via_agent:
             return bool(agent_tunnels())     # theirs; ask the agent, do not assume
         return self.proc is not None and self.proc.poll() is None
 
     def to_dict(self) -> dict:
-        return {"url": self.url, "port": self.port, "adopted": self.adopted,
+        return {"url": self.url, "port": self.port,
+                "adopted": self.adopted and not self.via_agent,
                 "protected": bool(self.policy), "running": self.running}
 
     def stop(self) -> None:
+        # Ours through the agent's API: take the tunnel down and leave the agent
+        # — the process belongs to whoever started it.
+        if self.via_agent:
+            try:
+                _agent("/" + AGENT_TUNNEL, method="DELETE")
+            except (urllib.error.URLError, OSError):
+                pass
+            return
         # Nothing to stop for a tunnel we adopted rather than started: it
         # belongs to whoever ran ngrok, and killing it would be a surprise.
         if self.proc is None:
@@ -336,6 +348,63 @@ def agent_tunnels(api: str = NGROK_API, timeout: float = 0.4) -> list[dict]:
         return []
 
 
+#: The name trance gives the tunnels it manages through the agent API.
+AGENT_TUNNEL = "trance-preview"
+
+
+def agent_running(api: str = NGROK_API, timeout: float = 0.4) -> bool:
+    """Is an ngrok agent running at all — tunnels or not?
+
+    Not the same question as `agent_tunnels()`. An agent whose tunnels have all
+    been closed still holds the one session a free account gets, so it still
+    answers its API and still stops a second agent from starting. Asking the
+    wrong one of these two questions spawns an ngrok that cannot connect.
+    """
+    try:
+        with urllib.request.urlopen(api, timeout=timeout) as response:
+            json.load(response)
+            return True
+    except urllib.error.HTTPError:
+        return True                        # answering, however unhappily
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def _agent(path: str = "", method: str = "GET", body: dict | None = None,
+           api: str = NGROK_API, timeout: float = 15.0):
+    """Talk to the local ngrok agent's own API."""
+    request = urllib.request.Request(
+        api + path, method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"content-type": "application/json"} if body is not None else {})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read()
+        return json.loads(raw) if raw else {}
+
+
+def retarget_agent(port: int, policy: str = "") -> str:
+    """Point the running agent at `port`, replacing whatever it was serving.
+
+    Adding a second tunnel does not work on a free account: both claim the same
+    public URL and it starts answering 502. Replacing does — same agent session,
+    same URL, and no process of anyone else's is killed. Which also means the
+    link keeps working when you move from one preview to another.
+    """
+    for existing in agent_tunnels():
+        name = existing.get("name")
+        if name:
+            try:
+                _agent("/" + urllib.parse.quote(name, safe=""), method="DELETE")
+            except (urllib.error.URLError, OSError):
+                pass                      # already gone, or the agent stopped
+
+    body: dict = {"addr": str(port), "proto": "http", "name": AGENT_TUNNEL}
+    if policy:
+        body["traffic_policy"] = Path(policy).read_text(encoding="utf8")
+    added = _agent(method="POST", body=body)
+    return added.get("public_url") or ""
+
+
 class TunnelBusy(RuntimeError):
     """An ngrok agent is already running, and the account allows only one."""
 
@@ -354,6 +423,13 @@ def start_tunnel(port: int, policy: str = "", wait_s: float = 25.0) -> Tunnel:
     still up.
     """
     running = agent_tunnels()
+    if not running and agent_running():
+        # An agent with no tunnels: still holds the session, still blocks a
+        # second one. Hand it the tunnel instead of starting a rival.
+        url = retarget_agent(port, policy)
+        if url:
+            return Tunnel(port=port, url=url, proc=None, policy=policy,
+                          adopted=True, via_agent=True)
     if running:
         mine = [t for t in running
                 if (t.get("config") or {}).get("addr", "").rstrip("/").endswith(f":{port}")]
@@ -363,12 +439,18 @@ def start_tunnel(port: int, policy: str = "", wait_s: float = 25.0) -> Tunnel:
                           if t.get("public_url", "").startswith("https://")), "")
             return Tunnel(port=port, url=https or mine[0]["public_url"],
                           proc=None, policy=policy, adopted=True)
+        # Pointing at something else. One agent at a time is all a free account
+        # allows, so rather than refuse, reuse: the agent is told to serve this
+        # port instead. Its URL does not even change.
+        url = retarget_agent(port, policy)
+        if url:
+            return Tunnel(port=port, url=url, proc=None, policy=policy,
+                          adopted=True, via_agent=True)
         elsewhere = ", ".join(sorted({(t.get("config") or {}).get("addr", "?")
                                       for t in running}))
         raise TunnelBusy(
-            f"An ngrok agent is already tunnelling {elsewhere}, and one agent at a "
-            f"time is all a free ngrok account allows. Stop that one — or open the "
-            f"page it is already serving.")
+            f"An ngrok agent is already tunnelling {elsewhere} and would not give "
+            f"up its tunnel. Stop it and try again.")
 
     binary = shutil.which("ngrok")
     if not binary:

@@ -6284,6 +6284,7 @@ def test_a_missing_ngrok_says_so_rather_than_failing_obscurely(tmp_path, monkeyp
     # No agent running — otherwise this depends on whatever the machine happens
     # to have open, which is how a test starts failing for the wrong reason.
     monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [])
+    monkeypatch.setattr(preview, "agent_running", lambda *a, **k: False)
     monkeypatch.setattr("trance.preview.shutil.which", lambda _: None)
     with pytest.raises(preview.NoTunnelTool) as raised:
         preview.start_tunnel(1234)
@@ -6305,16 +6306,11 @@ def test_an_agent_already_tunnelling_this_port_is_used_as_is(monkeypatch):
     assert same.url == "https://x.ngrok-free.dev"      # https wins
     assert same.adopted is True and same.running is True
     # Not ours to kill: someone else started it.
-    assert same.proc is None
+    assert same.proc is None and same.via_agent is False
     same.stop()
 
-    with pytest.raises(preview.TunnelBusy) as raised:
-        preview.start_tunnel(6000)
-    assert "already tunnelling" in str(raised.value)
-    assert "localhost:5000" in str(raised.value)
 
-
-def test_the_busy_agent_is_a_conflict_not_a_gateway_error(tmp_path, monkeypatch):
+def test_sharing_repoints_a_busy_agent_and_only_fails_if_it_will_not(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from trance import preview
@@ -6322,7 +6318,10 @@ def test_the_busy_agent_is_a_conflict_not_a_gateway_error(tmp_path, monkeypatch)
     from trance.server import app as app_module
 
     monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [
-        {"public_url": "https://x.ngrok-free.dev", "config": {"addr": "http://localhost:1"}}])
+        {"name": "command_line", "public_url": "https://x.ngrok-free.dev",
+         "config": {"addr": "http://localhost:1"}}])
+    monkeypatch.setattr(preview, "retarget_agent",
+                        lambda port, policy="": "https://x.ngrok-free.dev")
 
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
@@ -6334,9 +6333,15 @@ def test_the_busy_agent_is_a_conflict_not_a_gateway_error(tmp_path, monkeypatch)
                       json={"name": "p", "project_dir": str(project)}).json()["id"]
     client.post(f"/api/sessions/{sid}/preview", json={"path": "index.html"})
 
+    shared = client.post(f"/api/sessions/{sid}/share", json={})
+    assert shared.status_code == 200
+    assert shared.json()["url"] == "https://x.ngrok-free.dev"
+
+    # Only when the agent refuses to hand its tunnel over is this a conflict.
+    monkeypatch.setattr(preview, "retarget_agent", lambda port, policy="": "")
+    client.delete(f"/api/sessions/{sid}/share")
     refused = client.post(f"/api/sessions/{sid}/share", json={})
-    assert refused.status_code == 409
-    assert "one agent at a time" in refused.json()["detail"]
+    assert refused.status_code == 409 and "would not give up" in refused.json()["detail"]
 
 
 def test_ngroks_own_complaint_is_what_gets_reported(tmp_path):
@@ -6605,3 +6610,85 @@ def test_the_review_history_is_every_review_newest_first(tmp_path):
 
     # The older one carries the commit that answered it.
     assert any("did that" in c["subject"] for c in history[1]["commits"])
+
+
+def test_a_busy_agent_is_repointed_rather_than_refused(monkeypatch):
+    """Free ngrok allows one agent at a time. Adding a second tunnel does not
+    work either — both claim the same public URL and it answers 502 — so the
+    running agent is told to serve this port instead. Same session, same URL,
+    and nobody's process gets killed."""
+    from trance import preview
+
+    monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [
+        {"name": "command_line", "public_url": "https://x.ngrok-free.dev",
+         "config": {"addr": "http://localhost:5000"}}])
+    asked = {}
+
+    def fake_retarget(port, policy=""):
+        asked["port"], asked["policy"] = port, policy
+        return "https://x.ngrok-free.dev"
+
+    monkeypatch.setattr(preview, "retarget_agent", fake_retarget)
+    monkeypatch.setattr("trance.preview.shutil.which",
+                        lambda _: (_ for _ in ()).throw(AssertionError("spawned ngrok")))
+
+    tunnel = preview.start_tunnel(6000)
+    assert asked == {"port": 6000, "policy": ""}
+    assert tunnel.url == "https://x.ngrok-free.dev"
+    assert tunnel.via_agent is True and tunnel.running is True
+    # Managed by us through the agent, so the UI may offer to stop it.
+    assert tunnel.to_dict()["adopted"] is False
+
+
+def test_an_agent_that_will_not_give_up_its_tunnel_says_so(monkeypatch):
+    from trance import preview
+
+    monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [
+        {"name": "command_line", "public_url": "https://x.ngrok-free.dev",
+         "config": {"addr": "http://localhost:5000"}}])
+    monkeypatch.setattr(preview, "retarget_agent", lambda *a, **k: "")
+
+    with pytest.raises(preview.TunnelBusy) as raised:
+        preview.start_tunnel(6000)
+    assert "would not give up" in str(raised.value)
+
+
+def test_stopping_an_agent_managed_tunnel_leaves_the_agent_alone(monkeypatch):
+    """The ngrok process belongs to whoever started it; only the tunnel is ours."""
+    from trance import preview
+
+    calls = []
+    monkeypatch.setattr(preview, "_agent",
+                        lambda path="", method="GET", **k: calls.append((method, path)))
+
+    preview.Tunnel(port=1, url="u", proc=None, via_agent=True, adopted=True).stop()
+    assert calls == [("DELETE", "/" + preview.AGENT_TUNNEL)]
+
+
+def test_an_agent_with_no_tunnels_still_counts_as_running(monkeypatch):
+    """An agent whose tunnels have all been closed still holds the one session
+    a free account gets. Asking "has it any tunnels?" instead of "is it there?"
+    spawns a second ngrok that cannot connect, and the wait for a URL that will
+    never come is the 25 seconds you then sit through."""
+    from trance import preview
+
+    monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [])
+    monkeypatch.setattr(preview, "agent_running", lambda *a, **k: True)
+    monkeypatch.setattr(preview, "retarget_agent",
+                        lambda port, policy="": "https://x.ngrok-free.dev")
+    monkeypatch.setattr("trance.preview.shutil.which",
+                        lambda _: (_ for _ in ()).throw(AssertionError("spawned ngrok")))
+
+    tunnel = preview.start_tunnel(7000)
+    assert tunnel.url == "https://x.ngrok-free.dev" and tunnel.via_agent is True
+
+
+def test_with_no_agent_at_all_ngrok_is_started(monkeypatch):
+    from trance import preview
+
+    monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [])
+    monkeypatch.setattr(preview, "agent_running", lambda *a, **k: False)
+    monkeypatch.setattr("trance.preview.shutil.which", lambda _: None)
+
+    with pytest.raises(preview.NoTunnelTool):
+        preview.start_tunnel(7000)          # got as far as looking for the binary
