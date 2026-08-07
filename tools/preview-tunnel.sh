@@ -31,11 +31,39 @@ if ! command -v ngrok >/dev/null; then
   echo "ngrok is not on PATH. It was installed to ~/.local/bin/ngrok." >&2
   exit 1
 fi
+# First run: there is no policy yet, and failing here would leave you with the
+# choice between editing YAML and publishing your project folder to the world.
+# So one is written, with a password nobody else has.
 if [ -z "$OPEN" ] && [ ! -f "$POLICY" ]; then
-  echo "No traffic policy at $POLICY — that file is what keeps the tunnel closed" >&2
-  echo "to everyone else. Refusing to publish your project folder without one." >&2
-  echo "Pass --open if you really mean to publish it to anyone with the URL." >&2
-  exit 1
+  case "$POLICY" in
+    *trance-preview.yml)
+      PASS=$(python3 -c 'import secrets; print(secrets.token_urlsafe(15))')
+      mkdir -p "$(dirname "$POLICY")"
+      cat > "$POLICY" <<YAML
+# Access control for the trance preview tunnel. ngrok gives you HTTPS, which is
+# the encryption half; this is the other half. Without it the preview — a static
+# server with no authentication, rooted at your project folder — would be
+# readable by anyone who has or guesses the URL.
+on_http_request:
+  - actions:
+      - type: basic-auth
+        config:
+          realm: trance preview
+          credentials:
+            - "trance:${PASS}"
+YAML
+      chmod 600 "$POLICY"
+      echo "Wrote $POLICY with a new password."
+      echo "  user: trance"
+      echo "  password: ${PASS}"
+      echo
+      ;;
+    *)
+      echo "No traffic policy at $POLICY." >&2
+      echo "That file is what keeps the tunnel closed to everyone else." >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # Which session, and is anything actually being served?

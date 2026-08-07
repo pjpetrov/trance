@@ -779,3 +779,9 @@ input.tiny { width: 68px; }
   font-family: ui-monospace, monospace; font-size: 12px; cursor: pointer;
   white-space: pre-wrap; word-break: break-all;
 }
+
+/* The public link, when a tunnel is up: the one you would send someone. */
+.share-link {
+  border: 1px solid var(--accent, #6ea8fe); border-radius: 999px;
+  padding: 1px 9px; font-size: 11px; text-decoration: none;
+}

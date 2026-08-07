@@ -51,7 +51,9 @@ click a line number to comment on it, and send the review as a step the flow
 runs. When it finishes, "what was fixed" answers from git. A page can be opened
 in a browser from there — trance serves its folder as static files, on your
 network as well as locally so you can look at it on a phone, and never builds or
-runs anything to do it.
+runs anything to do it. If you have an ngrok tunnel pointed at that preview,
+the Files screen offers its public URL as a **share** link; trance never starts
+the tunnel, it only notices one that is already running.
 
 ---
 
@@ -209,7 +211,7 @@ trance serve --host 0.0.0.0         # network-visible; read the warning it print
                                     # (file previews are network-visible either way)
 
 tools/preview-tunnel.sh             # publish the running preview over HTTPS
-                                    # (ngrok; password from a traffic policy)
+                                    # (ngrok; writes a password policy on first run)
 tools/preview-tunnel.sh --open      # ...with no login, to send to someone
 trance serve --runs-dir ~/.trance   # where sessions and settings live
 ```

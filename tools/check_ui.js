@@ -100,6 +100,7 @@ const RESPONSES = {
   "/api/sessions/s1/preview": { root: "/p/server/public", port: 44817,
                                 url: "http://192.168.10.59:44817/", needs_build: false,
                                 local: "http://localhost:44817/", build_command: "",
+                                public: "https://sterilize-unscathed.ngrok-free.dev/",
                                 open: "http://localhost:44817/index.html" },
   "/api/sessions/s1/file?path=server%2Fapp.js": {
     path: "server/app.js", content: "const PORT = 3000;\napp.listen(PORT);\n",
@@ -702,6 +703,11 @@ try {
     // The address shown is the one you can type into a phone.
     if (!status.includes("serving") || !status.includes("192.168.10.59:44817")) {
       console.log("BROKEN: the running preview is not shown:", status.slice(0, 100));
+      process.exit(1);
+    }
+    // With a tunnel up, the link worth sending someone is on screen.
+    if (!status.includes("share")) {
+      console.log("BROKEN: the public link is not offered:", status.slice(0, 120));
       process.exit(1);
     }
     const view = flat(document.getElementById("file-view")).replace(/\s+/g, " ");

@@ -27,9 +27,13 @@ Deliberately narrow:
 from __future__ import annotations
 
 import http.server
+import json
+import os
 import re
 import socket
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -119,11 +123,22 @@ def lan_address() -> str:
         probe.close()
 
 
-def serve(directory: Path, host: str = "0.0.0.0") -> Preview:   # noqa: S104
-    """Start a static server for `directory` on a free port, on every interface."""
+def serve(directory: Path, host: str = "0.0.0.0", port: int = 0) -> Preview:  # noqa: S104
+    """Start a static server for `directory` on every interface.
+
+    `port` asks for a specific one. A preview that comes back on a new port every
+    time breaks anything pointed at the old one — a tunnel, a link someone was
+    sent, a tab left open — so a folder that has been served before is served
+    again at the same address where that is still possible.
+    """
     root = Path(directory).resolve()
     handler = partial(_Handler, directory=str(root))
-    server = http.server.ThreadingHTTPServer((host, 0), handler)
+    try:
+        server = http.server.ThreadingHTTPServer((host, port), handler)
+    except OSError:
+        # Taken by something else in the meantime. A working preview on a new
+        # port beats no preview on the old one.
+        server = http.server.ThreadingHTTPServer((host, 0), handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True,
                               name=f"preview-{root.name}")
@@ -231,3 +246,38 @@ def bare_imports(folder: Path, limit: int = 3, max_files: int = 400) -> list[dic
                           "line": text[:match.start()].count("\n") + 1})
             break                      # one example per file is enough to explain
     return found[:limit]
+
+
+#: Where the ngrok agent describes what it is currently tunnelling. It is a
+#: local API on a fixed port, so asking is cheap and needs no credentials.
+#: Overridable for anyone whose agent runs somewhere else.
+NGROK_API = os.environ.get("TRANCE_NGROK_API", "http://127.0.0.1:4040/api/tunnels")
+
+
+def public_url(port: int, api: str = NGROK_API, timeout: float = 0.4) -> str:
+    """The public URL for a preview, if something is tunnelling that port.
+
+    trance does not start the tunnel — that stays a decision you make in a
+    terminal — but it can see one that is running, and a share link you have to
+    go and find in another window is a share link you will not use.
+
+    Nothing is inferred from the tunnel being up: the port has to match, so a
+    tunnel pointed at something else is not offered as this page's link.
+    """
+    try:
+        with urllib.request.urlopen(api, timeout=timeout) as response:
+            tunnels = json.load(response).get("tunnels") or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return ""                      # no agent running, which is the normal case
+
+    https, plain = "", ""
+    for tunnel in tunnels:
+        addr = (tunnel.get("config") or {}).get("addr") or ""
+        if not addr.rstrip("/").endswith(f":{port}"):
+            continue
+        url = tunnel.get("public_url") or ""
+        if url.startswith("https://"):
+            https = https or url
+        else:
+            plain = plain or url
+    return https or plain              # https for preference; both are offered

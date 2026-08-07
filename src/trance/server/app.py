@@ -733,6 +733,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"path": body["path"], "bytes": len(content),
                 "committed": bool(result and result.ok)}
 
+    #: The port a folder was last served on, so re-opening a page comes back at
+    #: the same address. Anything pointed at the old one — a tunnel, a link you
+    #: sent someone — survives the preview being restarted.
+    preview_ports: dict[tuple, int] = {}
+
     #: One preview server per session, kept until it is stopped or the session
     #: goes. Restarting it for every click would give the browser a new origin
     #: each time and throw away whatever the page had in local storage.
@@ -757,8 +762,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         else:
             if existing is not None:
                 existing.stop()
-            served = preview.serve(web_root)
+            served = preview.serve(
+                web_root, port=preview_ports.get((session_id, str(web_root)), 0))
             previews[session_id] = served
+            preview_ports[(session_id, str(web_root))] = served.port
 
         # Opened at the host this browser already used to reach trance, so a
         # phone on the same network gets a link that works from where it is.
@@ -780,7 +787,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                            f"'{blockers[0]['specifier']}', which only a build step "
                            f"can resolve." if needs_build else "")),
         })
+        # If a tunnel is already pointed at this port, its URL is the one worth
+        # handing to someone else — so it is offered here rather than left to be
+        # found in the terminal window that started it.
+        shared = preview.public_url(served.port)
         return {**served.to_dict(), "open": here, "network": served.url + page,
+                "public": (shared + "/" + page) if shared else "",
                 "needs_build": needs_build, "blocked_by": blockers,
                 "build_command": (dev or {}).get("command", "")}
 
@@ -797,8 +809,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         _need(store, session_id)
         served = previews.get(session_id)
         if served is None:
-            return {"root": "", "port": 0, "url": ""}
-        return {"port": 0, **served.to_dict()}
+            return {"root": "", "port": 0, "url": "", "public": ""}
+        return {"port": 0, **served.to_dict(),
+                "public": preview.public_url(served.port)}
 
     # ------------------------------------------------------------- review
 

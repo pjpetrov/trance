@@ -6108,3 +6108,84 @@ def test_a_project_that_only_uses_relative_imports_is_not_flagged(tmp_path):
     # Config and test files import packages by name and always have — they are
     # not evidence about the page, so citing one would be the wrong reason.
     assert preview.bare_imports(site) == []
+
+
+def test_a_running_tunnel_is_offered_as_the_share_link(tmp_path):
+    """The tunnel is started in a terminal, so its URL lives in that terminal.
+    trance does not start it — but it can see one, and a share link you have to
+    go and find in another window is a share link you will not use."""
+    import http.server
+    import json
+    import threading
+
+    from trance import preview
+
+    payload = json.dumps({"tunnels": [
+        {"public_url": "http://elsewhere.ngrok-free.dev",
+         "config": {"addr": "http://localhost:1111"}},
+        {"public_url": "http://this-one.ngrok-free.dev",
+         "config": {"addr": "http://localhost:2222"}},
+        {"public_url": "https://this-one.ngrok-free.dev",
+         "config": {"addr": "http://localhost:2222"}},
+    ]}).encode()
+
+    class Agent(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    fake = http.server.HTTPServer(("127.0.0.1", 0), Agent)
+    threading.Thread(target=fake.serve_forever, daemon=True).start()
+    api = f"http://127.0.0.1:{fake.server_address[1]}/api/tunnels"
+    try:
+        # The port has to match: a tunnel pointed at something else is not this
+        # page's link, and https wins over plain when both are offered.
+        assert preview.public_url(2222, api=api) == "https://this-one.ngrok-free.dev"
+        assert preview.public_url(1111, api=api) == "http://elsewhere.ngrok-free.dev"
+        assert preview.public_url(3333, api=api) == ""
+    finally:
+        fake.shutdown()
+
+
+def test_no_tunnel_agent_is_the_normal_case(tmp_path):
+    """Almost nobody runs ngrok, so this must cost nothing and never raise."""
+    from trance import preview
+
+    assert preview.public_url(8080, api="http://127.0.0.1:4999/api/tunnels") == ""
+
+
+def test_a_folder_comes_back_on_the_same_port(tmp_path):
+    """A preview that reappears on a new port breaks whatever was pointed at
+    the old one — a tunnel, a link you sent someone, a tab left open."""
+    from trance import preview
+
+    folder = tmp_path / "site"
+    folder.mkdir()
+    (folder / "index.html").write_text("<h1>hi</h1>")
+
+    first = preview.serve(folder)
+    port = first.port
+    first.stop()
+
+    again = preview.serve(folder, port=port)
+    try:
+        assert again.port == port
+    finally:
+        again.stop()
+
+    # And a port that is genuinely taken falls back rather than failing.
+    holder = preview.serve(folder)
+    try:
+        other = preview.serve(folder, port=holder.port)
+        try:
+            assert other.port and other.port != holder.port
+        finally:
+            other.stop()
+    finally:
+        holder.stop()

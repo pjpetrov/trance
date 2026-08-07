@@ -4018,7 +4018,9 @@ function showPage(served) {
   // A new tab rather than an iframe: the page gets its own origin, its own
   // console and its own devtools, which is what you need to judge it.
   window.open(served.open, "_blank", "noopener");
-  toast(`Serving ${served.root.split("/").pop()}/ — on this network at ${served.url}`);
+  toast(served.public
+    ? `Serving ${served.root.split("/").pop()}/ — share ${served.public}`
+    : `Serving ${served.root.split("/").pop()}/ — on this network at ${served.url}`);
   renderPreviewStatus(served);
 }
 
@@ -4069,6 +4071,23 @@ function renderPreviewStatus(served) {
   link.rel = "noopener";
   link.title = "This preview, as reachable from any device on your network";
   note.append(el("span", "muted small", "serving"), link);
+
+  // A tunnel is started in a terminal, so its URL lives in that terminal. This
+  // is the one you would actually send someone, so it belongs next to the page
+  // it serves rather than in a window you have to go and find.
+  if (served.public) {
+    const share = el("a", "share-link", "share");
+    share.href = served.public;
+    share.target = "_blank";
+    share.rel = "noopener";
+    share.title = `${served.public} — click to copy`;
+    share.onclick = (e) => {
+      e.preventDefault();
+      if (navigator.clipboard) navigator.clipboard.writeText(served.public);
+      toast(`Copied ${served.public}`);
+    };
+    note.append(share);
+  }
   const stop = el("button", "small", "stop");
   stop.onclick = async () => {
     await api(`/api/sessions/${state.session.id}/preview`, { method: "DELETE" });
