@@ -661,6 +661,16 @@ try {
   // The files screen: tree, a file open, a comment on a line.
   api.state.session.review = [];
   await api.openFiles();
+  {
+    // Nothing selected: the pane is the comment box straight away, not after a
+    // file has been opened and closed to force it.
+    const pane = flat(document.getElementById("file-view")).replace(/\s+/g, " ");
+    if (!pane.includes("comment about the whole thing")) {
+      console.log("BROKEN: the files screen opened without the comment box:",
+                  pane.slice(0, 150));
+      process.exit(1);
+    }
+  }
   await api.openFile("server/app.js");
   {
     const tree = flat(document.getElementById("file-tree")).replace(/\s+/g, " ");
@@ -758,6 +768,9 @@ try {
   // Switching to another project must not leave the last one's numbers up:
   // "24 files, 6,426 lines" from the project you just left reads as an answer
   // about the project you are now looking at.
+  // openSession() replaces state.session before it resets the files pane, so a
+  // switch means both: a different session, and nothing of the old one left.
+  api.state.session = { ...api.state.session, id: "s2", review: [] };
   api.resetFiles();
   {
     const stats = flat(document.getElementById("file-stats-body")).replace(/\s+/g, " ");
@@ -769,8 +782,13 @@ try {
       console.log("BROKEN: the file tree survived a session change");
       process.exit(1);
     }
-    if (flat(document.getElementById("file-view")).trim()) {
-      console.log("BROKEN: the open file survived a session change");
+    // The pane comes back as the comment box — but with none of the previous
+    // project's file in it, and none of its comments.
+    const pane = flat(document.getElementById("file-view")).replace(/\s+/g, " ");
+    // "unusable on a phone" is also the textarea's placeholder, so the marker
+    // for "a comment came with us" is the list heading, not the text.
+    if (pane.includes("const PORT = 3000;") || pane.includes("Waiting to be sent")) {
+      console.log("BROKEN: the open file survived a session change:", pane.slice(0, 150));
       process.exit(1);
     }
   }

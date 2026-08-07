@@ -3694,6 +3694,7 @@ function resetFiles() {
   if (view) view.innerHTML = "";
   renderFileStats();
   renderPreviewStatus(null);
+  if (view) renderFileView();
 }
 
 async function openFiles() {
@@ -3706,7 +3707,11 @@ async function openFiles() {
   renderReviewStatus();
   api(`/api/sessions/${state.session.id}/preview`)
     .then(renderPreviewStatus).catch(() => {});
+  // Either way the pane gets drawn. Without the else it kept whatever markup
+  // the page was served with, so the comment box only appeared once something
+  // else had forced a re-render — opening a file and closing it again.
   if (fileState.path) await openFile(fileState.path);
+  else renderFileView();
 }
 
 async function loadFileTree() {
@@ -3823,8 +3828,6 @@ function closeFile() {
   fileState.path = "";
   fileState.content = "";
   fileState.editing = false;
-  $("file-name").textContent = "";
-  $("file-meta").textContent = "";
   renderFileTree();
   renderFileView();
 }
@@ -4018,6 +4021,9 @@ function renderReviewStatus() {
  * comments about the whole thing, at the same size and in the same place as the
  * code it is about. */
 function renderGeneralComment(box) {
+  // The header names what the pane is for, and it is not a file right now.
+  $("file-name").textContent = "Review";
+  $("file-meta").textContent = "about the whole thing — or pick a file to comment on lines";
   box.innerHTML = "";
   const wrap = el("div", "general-review");
   wrap.append(el("h3", null, "A comment about the whole thing"));
