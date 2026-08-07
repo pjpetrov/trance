@@ -450,6 +450,7 @@ def run_agent(
             payload={
                 "round": round_n,
                 "model": model_config.model,
+                "preset": model_config.preset,
                 "base_url": model_config.base_url,
                 "duration_ms": elapsed_ms,
                 # Full fidelity — this is the whole point of the inspector.
@@ -622,7 +623,8 @@ def run_agent(
                      "base_url": model_config.base_url, "messages": messages,
                      "response_text": response.text, "reasoning": response.reasoning,
                      "tool_calls": [], "finish_reason": "max_rounds",
-                     "usage": response.usage, "summary": summarize_messages(messages)},
+                     "usage": response.usage, "preset": model_config.preset,
+                     "summary": summarize_messages(messages)},
         )
         turn.model_event_ids.append(event.id)
         turn.text = response.text
@@ -661,7 +663,8 @@ def run_agent(
             "base_url": model_config.base_url, "messages": messages,
             "response_text": follow_up.text, "reasoning": follow_up.reasoning,
             "tool_calls": [], "finish_reason": follow_up.finish_reason,
-            "usage": follow_up.usage, "summary": summarize_messages(messages),
+            "usage": follow_up.usage, "preset": model_config.preset,
+            "summary": summarize_messages(messages),
             "asked_for_outcome": True,
         })
         if follow_up.text.strip():

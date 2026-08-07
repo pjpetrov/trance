@@ -6807,3 +6807,91 @@ def test_the_server_notices_its_own_code_has_changed(tmp_path, monkeypatch):
         os.utime(source, (was, was))
 
     assert client.get("/api/config").json()["stale"] is False
+
+
+def test_usage_is_counted_per_model_definition(tmp_path):
+    """"Sonnet" is what you chose and what you would delete; a model id can be
+    shared by two definitions pointed at different endpoints."""
+    from trance.usage import UsageLedger
+
+    ledger = UsageLedger(tmp_path / "usage.json")
+    ledger.record("s1", "Sonnet", {"prompt_tokens": 1200, "completion_tokens": 300})
+    ledger.record("s1", "Sonnet", {"prompt_tokens": 800, "completion_tokens": 150})
+    ledger.record("s1", "local", {"prompt_tokens": 20000, "completion_tokens": 900})
+    ledger.record("s2", "Sonnet", {"prompt_tokens": 5, "completion_tokens": 5})
+
+    run = ledger.for_session("s1")
+    assert [r["model"] for r in run] == ["local", "Sonnet"]      # biggest first
+    assert run[1] == {"model": "Sonnet", "calls": 2, "input_tokens": 2000,
+                      "output_tokens": 450, "total": 2450}
+
+    # Lifetime spans sessions; the run does not.
+    assert ledger.lifetime()["Sonnet"]["total"] == 2460
+    assert [r["model"] for r in ledger.for_session("s2")] == ["Sonnet"]
+
+
+def test_both_spellings_of_usage_are_understood(tmp_path):
+    """OpenAI says prompt/completion, Anthropic says input/output."""
+    from trance.usage import UsageLedger
+
+    ledger = UsageLedger(tmp_path / "usage.json")
+    ledger.record("s", "a", {"prompt_tokens": 10, "completion_tokens": 2})
+    ledger.record("s", "a", {"input_tokens": 30, "output_tokens": 4})
+    assert ledger.lifetime()["a"] == {"calls": 2, "input_tokens": 40,
+                                      "output_tokens": 6, "total": 46}
+
+    # A call that reported nothing still happened.
+    ledger.record("s", "a", {})
+    assert ledger.lifetime()["a"]["calls"] == 3
+
+
+def test_the_ledger_survives_a_restart_and_forgets_deleted_sessions(tmp_path):
+    from trance.usage import UsageLedger
+
+    path = tmp_path / "usage.json"
+    ledger = UsageLedger(path)
+    ledger.record("s1", "Sonnet", {"prompt_tokens": 100, "completion_tokens": 10})
+
+    again = UsageLedger(path)
+    assert again.lifetime()["Sonnet"]["total"] == 110
+    assert again.for_session("s1")[0]["calls"] == 1
+
+    again.forget("s1")
+    assert again.for_session("s1") == []
+    # ...but what it cost is still what it cost.
+    assert again.lifetime()["Sonnet"]["total"] == 110
+
+
+def test_every_model_call_is_counted_whoever_made_it(tmp_path):
+    """Counted from the bus, so the orchestrator's calls count too — a total
+    that only some call sites remember to update is worse than none."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    app.state.bus.emit("model_call", sid, agent="orchestrator",
+                       payload={"preset": "Sonnet",
+                                "usage": {"prompt_tokens": 900, "completion_tokens": 100}})
+    app.state.bus.emit("model_call", sid, agent="backend",
+                       payload={"preset": "local",
+                                "usage": {"prompt_tokens": 50, "completion_tokens": 5}})
+    # Replayed history must not double-count.
+    replayed = app.state.bus.emit("model_call", sid, agent="backend",
+                                  payload={"preset": "local",
+                                           "usage": {"prompt_tokens": 50}})
+    replayed.replay = True
+    app.state.usage.on_event(replayed)
+
+    body = client.get(f"/api/sessions/{sid}/usage").json()
+    assert body["calls"] == 3 and body["total"] == 1105
+    assert [m["model"] for m in body["models"]] == ["Sonnet", "local"]

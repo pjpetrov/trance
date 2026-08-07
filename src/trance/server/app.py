@@ -38,6 +38,7 @@ from ..providers import (
 )
 from ..session import ChatMessage, SessionStore
 from .. import paths, preview, vcs
+from ..usage import UsageLedger
 from ..worker.client import BackendError
 
 STATIC = Path(__file__).parent / "static"
@@ -78,6 +79,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     bus.subscribe_sync(persist)
 
+    #: What each model has been asked to do — this run, and in total. Counted
+    #: from the bus so the orchestrator's calls count too, not only the agents'.
+    ledger = UsageLedger(Path(config.runs_dir) / "usage.json")
+    bus.subscribe_sync(ledger.on_event)
+
     def history_for(session_id: str):
         """This run's events, plus everything earlier runs recorded.
 
@@ -94,6 +100,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     app.state.config = config
     app.state.store = store
     app.state.bus = bus
+    app.state.usage = ledger
 
     def touch(session):
         store.save(session)
@@ -283,6 +290,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     @app.get("/api/config")
     def get_config():
         orchestrator = config.for_orchestrator()
+        lifetime = ledger.lifetime()
         return {
             "config": config.to_dict(),
             "roles": {r.name: r.to_dict() for r in roles.all()},
@@ -290,7 +298,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             # *provider* is disabled, and providers no longer exist — so it
             # returns nothing, and the UI that reads this emptied its model
             # picker every time it refreshed.
-            "presets": [m.to_dict() for m in providers.all_presets()],
+            "presets": [{**m.to_dict(), "spend": lifetime.get(m.name)}
+                        for m in providers.all_presets()],
             "kinds": KIND_DEFAULTS,
             "planning": {"max_step_points": config.max_step_points, "scale": list(POINTS),
                          "escalation_preset": config.escalation_preset,
@@ -483,7 +492,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.get("/api/presets")
     def list_presets():
-        return {"presets": [m.to_dict() for m in providers.all_presets()]}
+        lifetime = ledger.lifetime()
+        return {"presets": [{**m.to_dict(), "spend": lifetime.get(m.name)}
+                            for m in providers.all_presets()]}
 
     @app.put("/api/presets/{name}")
     def upsert_preset(name: str, body: dict):
@@ -1054,6 +1065,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(502, "the model returned nothing to use")
         return {"name": name, "system_prompt": text}
 
+    @app.get("/api/sessions/{session_id}/usage")
+    def session_usage(session_id: str):
+        """What this run has asked of each model."""
+        _need(store, session_id)
+        rows = ledger.for_session(session_id)
+        return {"models": rows,
+                "total": sum(r["total"] for r in rows),
+                "calls": sum(r["calls"] for r in rows)}
+
     @app.get("/api/sessions/{session_id}/reviews")
     def review_history(session_id: str):
         """Every review sent for this session, newest first.
@@ -1192,6 +1212,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             running = registry.pop(session_id, None)
             if running is not None:
                 running.stop()
+        ledger.forget(session_id)
         session = _need(store, session_id)
         if session.status == "running":
             session.stop()  # let the engine unwind before the directory goes

@@ -29,7 +29,9 @@ you press Run.
 
 **Runs it, visibly.** A live console shows what the working agent is doing:
 commands with their output, diffs as they are written, graph lookups, every
-model call. The step that is running says how full its context window is.
+model call. The step that is running says how full its context window is, and
+the run header says what it has asked of each model so far — tokens, per model,
+because that is the decision it informs.
 
 **Keeps agents inside their lane.** Each agent owns path globs, a toolset, and a
 command allowlist, enforced at the tool boundary rather than asked for in a

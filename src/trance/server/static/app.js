@@ -825,6 +825,7 @@ function renderRun() {
   status.append(el("span", "muted small",
     `${progress.done || 0} done · ${progress.pending || 0} pending · ${progress.failed || 0} failed`));
   status.append(runClock());
+  status.append(spendBadge());
   if (session.error) status.append(el("span", "badge", session.error));
 
   renderFlowView();
@@ -935,6 +936,35 @@ function trackClock(session) {
 
 function clockSeconds() {
   return clock.base + (clock.working ? (Date.now() - clock.since) / 1000 : 0);
+}
+
+/* What this run has asked of each model. Tokens, not money: trance does not
+ * know anybody's price list, and a number invented from a stale table would be
+ * believed. The breakdown is per model because that is the decision it informs
+ * — which model to point the next agent at. */
+function spendBadge() {
+  const node = el("span", "muted small spend");
+  const paint = (body) => {
+    node.innerHTML = "";
+    if (!body || !body.models.length) return;
+    node.append(el("span", null, `${tokens(body.total)} tok`));
+    node.title = body.models
+      .map((m) => `${m.model}: ${m.calls} call(s), ${tokens(m.input_tokens)} in / `
+                  + `${tokens(m.output_tokens)} out`)
+      .join("\n");
+  };
+  if (state.session) {
+    api(`/api/sessions/${state.session.id}/usage`).then(paint).catch(() => {});
+  }
+  return node;
+}
+
+//: 23,350 -> "23.4k". A token count is a size, not an amount to reconcile.
+function tokens(n) {
+  n = Number(n) || 0;
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 100_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
 function runClock() {
@@ -1454,8 +1484,12 @@ function paintPresets(selected) {
     const row = el("button", "agent-name"
       + (preset.name === state.presetSelected ? " on" : ""));
     row.append(el("span", "agent-name-text", preset.name));
-    row.append(el("span", "muted small", KIND_SHORT[preset.kind] || preset.kind || ""));
-    row.title = `${preset.model || "no model id"} — ${preset.base_url || "default endpoint"}`;
+    const spend = preset.spend;
+    row.append(el("span", "muted small",
+      spend ? `${tokens(spend.total)} tok` : KIND_SHORT[preset.kind] || preset.kind || ""));
+    row.title = `${preset.model || "no model id"} — ${preset.base_url || "default endpoint"}`
+      + (spend ? `\n${spend.calls} call(s), ${tokens(spend.input_tokens)} in / `
+                 + `${tokens(spend.output_tokens)} out, all time` : "");
     row.onclick = () => paintPresets(preset.name);
     names.append(row);
   });

@@ -36,6 +36,9 @@ class ModelConfig:
     provider: str = "default"
     #: Which client implementation to use (see providers/).
     kind: str = "llamacpp"
+    #: The model definition this came from, so usage can be counted against the
+    #: name you gave it rather than a model id two definitions might share.
+    preset: str = ""
 
     @property
     def input_budget(self) -> int:
@@ -178,6 +181,7 @@ class Config:
             context_window=window,
             provider=chosen.name,
             kind=chosen.kind,
+            preset=chosen_preset.name if chosen_preset else "",
         )
 
     def for_role(self, role) -> ModelConfig:

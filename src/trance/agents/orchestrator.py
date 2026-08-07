@@ -146,7 +146,8 @@ def _ask_for_split(step: dict, *, roles: list, config: ModelConfig, bus: EventBu
     response = client_for(config).complete(messages,
                                            tools=[split_step_tool(roles, threshold)])
     bus.emit("model_call", session_id, agent="orchestrator", payload={
-        "round": 1, "model": config.model, "base_url": config.base_url,
+        "round": 1, "model": config.model, "preset": config.preset,
+        "base_url": config.base_url,
         "splitting": step["task"], "messages": messages,
         "response_text": response.text, "reasoning": response.reasoning,
         "tool_calls": [{"name": c.name, "arguments": c.arguments} for c in response.tool_calls],
@@ -321,7 +322,8 @@ def chat(
     bus.emit(
         "model_call", session_id, agent="orchestrator",
         payload={
-            "round": 1, "model": config.model, "base_url": config.base_url,
+            "round": 1, "model": config.model, "preset": config.preset,
+        "base_url": config.base_url,
             "messages": full, "response_text": response.text, "reasoning": response.reasoning,
             "tool_calls": [{"name": c.name, "arguments": c.arguments} for c in response.tool_calls],
             "finish_reason": response.finish_reason, "usage": response.usage,
@@ -582,7 +584,8 @@ def draft_agent_prompt(name: str, *, description: str = "", goal: str = "",
                 {"role": "user", "content": prompt}]
     response = client_for(config).complete(messages)
     bus.emit("model_call", session_id or "agents", agent="orchestrator", payload={
-        "round": 1, "model": config.model, "base_url": config.base_url,
+        "round": 1, "model": config.model, "preset": config.preset,
+        "base_url": config.base_url,
         "drafting_prompt_for": name, "messages": messages,
         "response_text": response.text, "reasoning": response.reasoning,
         "tool_calls": [], "finish_reason": response.finish_reason,

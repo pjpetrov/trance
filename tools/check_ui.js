@@ -108,7 +108,9 @@ const RESPONSES = {
                        has_key: false, self_contained: true },
                      { name: "claude", kind: "anthropic", model: "claude-opus-5",
                        base_url: "https://y", context_window: 1000000, max_tokens: 0,
-                       has_key: true, self_contained: true }],
+                       has_key: true, self_contained: true,
+                       spend: { calls: 12, input_tokens: 1450000,
+                                output_tokens: 60000, total: 1510000 } }],
                    planning: { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] },
                    orchestrator: { provider: "p", model: "m", base_url: "u" } },
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
@@ -120,7 +122,9 @@ const RESPONSES = {
     { name: "Qwen3.6-llama.cpp", kind: "llamacpp", model: "qwen", base_url: "http://x/v1",
       context_window: 64000, max_tokens: 0, has_key: false, self_contained: true },
     { name: "claude", kind: "anthropic", model: "claude-opus-5", base_url: "https://y",
-      context_window: 1000000, max_tokens: 0, has_key: true, self_contained: true }] },
+      context_window: 1000000, max_tokens: 0, has_key: true, self_contained: true,
+      spend: { calls: 12, input_tokens: 1450000, output_tokens: 60000,
+               total: 1510000 } }] },
   "/api/sessions/s1/files": {
     root: "/p",
     files: [{ path: "server/app.js", bytes: 2048, lines: 80 },
@@ -137,6 +141,10 @@ const RESPONSES = {
   "/api/sessions/s1/file?path=server%2Fapp.js": {
     path: "server/app.js", content: "const PORT = 3000;\napp.listen(PORT);\n",
     bytes: 40, lines: 2 },
+  "/api/sessions/s1/usage": { calls: 3, total: 23350, models: [
+    { model: "Qwen3.6-llama.cpp", calls: 1, input_tokens: 20000,
+      output_tokens: 900, total: 20900 },
+    { model: "Sonnet", calls: 2, input_tokens: 2000, output_tokens: 450, total: 2450 }] },
   "/api/sessions/s1/reviews": { reviews: [
     { review: "rev_2", status: "running", at: "2026-08-07T13:09:53+00:00",
       before: "bbb", after: "ccc", files: ["app.js"],
@@ -519,6 +527,13 @@ try {
       console.log("BROKEN: the models list is empty when settings opens");
       process.exit(1);
     }
+    // What each model has been asked to do, all time, beside its name.
+    const withSpend = flat(document.getElementById("preset-names")).replace(/\s+/g, " ");
+    if (!withSpend.includes("1.5M tok")) {
+      console.log("BROKEN: a model's usage is not shown beside it:", withSpend);
+      process.exit(1);
+    }
+
     // Discovery runs on render; the suggestions land under the model field.
     await new Promise((r) => setTimeout(r, 0));
     const pane = flat(document.getElementById("preset-list")).replace(/\s+/g, " ");
@@ -763,6 +778,17 @@ try {
     const line = flat(document.getElementById("now-working")).replace(/\s+/g, " ");
     if (!line.includes("step 2/3")) {
       console.log("BROKEN: the activity line does not say which step:", line.slice(0, 120));
+      process.exit(1);
+    }
+  }
+
+  // This run's spend, in the run header.
+  {
+    api.renderRun();
+    await new Promise((r) => setTimeout(r, 0));
+    const header = flat(document.getElementById("run-status")).replace(/\s+/g, " ");
+    if (!header.includes("23.4k tok")) {
+      console.log("BROKEN: the run does not report what it spent:", header.slice(0, 160));
       process.exit(1);
     }
   }
