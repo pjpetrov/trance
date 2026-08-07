@@ -4791,3 +4791,106 @@ def test_a_torn_last_line_costs_one_event_not_the_file(tmp_path):
 
     kept = log.read()
     assert [e.payload["content"] for e in kept] == ["first", "second"]
+
+
+# =============== changing part of a file, instead of re-emitting all of it
+
+def test_edit_file_changes_a_snippet_and_leaves_the_rest(tmp_path):
+    """Rewriting a 600-line file to change ten lines costs the whole file in
+    output tokens and gets cut off mid-string."""
+    tools = _tools(tmp_path)
+    (tmp_path / "server").mkdir()
+    body = "const PORT = 3000;\n" + "// filler\n" * 400 + "app.listen(PORT);\n"
+    (tmp_path / "server" / "app.js").write_text(body)
+
+    outcome = tools.call("edit_file", {
+        "path": "server/app.js", "find": "const PORT = 3000;",
+        "replace": "const PORT = process.env.PORT || 3100;"})
+
+    text = (tmp_path / "server" / "app.js").read_text()
+    assert outcome.ok is True
+    assert "process.env.PORT || 3100" in text
+    assert text.count("// filler") == 400        # nothing else moved
+    assert outcome.detail["kind"] == "write" and outcome.detail["added"] == 1
+
+
+def test_an_ambiguous_edit_is_refused_rather_than_guessed(tmp_path):
+    """"Replace the first one" is a guess about which one was meant, and
+    silently editing the wrong occurrence is worse than failing."""
+    tools = _tools(tmp_path)
+    (tmp_path / "server").mkdir()
+    (tmp_path / "server" / "app.js").write_text("let x = 1;\nlet x = 1;\n")
+
+    outcome = tools.call("edit_file", {"path": "server/app.js",
+                                       "find": "let x = 1;", "replace": "let x = 2;"})
+    assert outcome.ok is False
+    assert "appears 2 times" in outcome.text
+    assert (tmp_path / "server" / "app.js").read_text() == "let x = 1;\nlet x = 1;\n"
+
+
+def test_an_edit_that_does_not_match_says_why(tmp_path):
+    tools = _tools(tmp_path)
+    (tmp_path / "server").mkdir()
+    (tmp_path / "server" / "app.js").write_text("    const port = 3000;\n")
+
+    outcome = tools.call("edit_file", {"path": "server/app.js",
+                                       "find": "const port = 3000;   ",
+                                       "replace": "const port = 3100;"})
+    assert outcome.ok is False
+    assert "match exactly" in outcome.text and "indentation" in outcome.text
+
+
+def test_an_edit_obeys_the_remit(tmp_path):
+    tools = _tools(tmp_path, "tester")
+    (tmp_path / "server").mkdir()
+    (tmp_path / "server" / "app.js").write_text("x = 1\n")
+
+    outcome = tools.call("edit_file", {"path": "server/app.js",
+                                       "find": "x = 1", "replace": "x = 2"})
+    assert outcome.ok is False and outcome.remit_violation == "server/app.js"
+    assert (tmp_path / "server" / "app.js").read_text() == "x = 1\n"
+
+
+def test_replace_symbol_swaps_a_function_without_quoting_it_back(tmp_path):
+    """The graph already knows where the function starts and ends."""
+    tools = _indexed_tools(tmp_path, "backend")
+    (tmp_path / "app.py").write_text(
+        "import os\n\n\ndef charge(order):\n    return 0\n\n\ndef refund(order):\n"
+        "    return 1\n")
+    tools._reindex = None
+    from trance.indexer.service import index_repo
+    index_repo(tmp_path, tools.graph.db)
+
+    outcome = tools.call("replace_symbol", {
+        "symbol": "charge", "source": "def charge(order):\n    return order.total"})
+
+    text = (tmp_path / "app.py").read_text()
+    assert outcome.ok is True
+    assert "return order.total" in text
+    assert "def refund(order):\n    return 1" in text     # its neighbour is intact
+    assert text.startswith("import os")
+
+
+def test_replace_symbol_will_not_guess_between_two_of_the_same_name(tmp_path):
+    from trance.indexer.service import index_repo
+
+    tools = _indexed_tools(tmp_path, "backend")
+    (tmp_path / "a.py").write_text("def run():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def run():\n    return 2\n")
+    index_repo(tmp_path, tools.graph.db)
+
+    outcome = tools.call("replace_symbol", {"symbol": "run", "source": "def run():\n    pass"})
+    assert outcome.ok is False and "matches 2 symbols" in outcome.text
+    assert (tmp_path / "a.py").read_text() == "def run():\n    return 1\n"
+
+
+def test_the_edit_tools_are_offered_and_explained(tmp_path):
+    from trance.agents.tools import permissions_brief
+
+    tools = _indexed_tools(tmp_path, "backend")
+    offered = {s["function"]["name"] for s in tools.specs()}
+    assert {"edit_file", "replace_symbol", "write_file", "append_file"} <= offered
+
+    brief = permissions_brief(BUILTIN_ROLES["backend"])
+    assert "edit_file" in brief and "size of the edit" in brief
+    assert "edit_file" in BUILTIN_ROLES["backend"].system_prompt

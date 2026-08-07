@@ -181,6 +181,8 @@ try {
                           query: "SSE done event equity curve" },
                         { kind: "graph", tool: "get_definition", hit: true,
                           query: "streamBacktest" },
+                        { kind: "edit_miss", path: "server/app.js" },
+                        { kind: "edit_ambiguous", path: "server/app.js", count: 3 },
                         { kind: "memory", note: "port 3100", stored: true, agent: "backend" },
                         { kind: "memory", note: "port 3100", stored: false, agent: "frontend" },
                         { kind: "read", path: "a.py" },

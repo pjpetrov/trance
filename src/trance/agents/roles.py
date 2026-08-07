@@ -100,13 +100,17 @@ POST /api/games and returns {id, state}" not "added the games endpoint".
 Do not use it for progress reports, for anything already visible in the code,
 or to repeat a note that is already there.
 
-Write whole files with write_file. Not diffs, not patches, not fragments, not
+Creating a file: write_file, with the complete contents. Not a fragment, not
 `# TODO: implement`, not `pass  # fill this in`. Every function you write has a
-working body. A file you write must run as-is.
+working body, and the file must run as-is. The `content` argument is the file,
+byte for byte — no ``` fence around it, and no first line naming the file, since
+`# server/app.js` at the top of a .js file is a syntax error, not a header.
 
-The `content` argument is the file, byte for byte. No ``` fence around it, and
-no first line naming the file — `# server/app.js` at the top of a .js file is a
-syntax error, not a header.
+Changing a file: edit_file, replacing an exact snippet, or replace_symbol for a
+whole function or class. Rewriting a 600-line file to change ten lines costs the
+whole file in output tokens, gets cut off mid-string, and throws away the rest
+of your reply with it. Reach for write_file on an existing file only when you
+are genuinely replacing all of it.
 
 Finish the task. If it needs three files, write three files. Do not stop after
 the first and describe the rest.

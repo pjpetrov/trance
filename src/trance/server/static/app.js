@@ -2509,6 +2509,20 @@ function consoleAppend(event) {
         }));
         return;
       }
+      if (d.kind === "edit_miss" || d.kind === "edit_ambiguous") {
+        // Not a refusal and not a failure of the file — the agent described a
+        // snippet that is not there, or is there twice.
+        consolePush(consoleEntry({
+          kind: "read", icon: "✎", time, tag: event.agent, failed: true,
+          label: labelWith([
+            [`edit did not apply `, ""], [d.path || d.symbol || "", "c-path"],
+            [d.count ? `  ${d.count} matches` : "  no match", "muted"],
+          ]),
+          body: () => el("pre", null, p.result || ""),
+          open: true,
+        }));
+        return;
+      }
       if (d.kind === "memory") {
         consolePush(consoleEntry({
           kind: "write", icon: "🧠", time, tag: event.agent,

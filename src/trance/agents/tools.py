@@ -379,6 +379,18 @@ class AgentTools:
                     {"path": {"type": "string"}, "content": {"type": "string",
                      "description": "The ENTIRE file contents. Not a diff, not a fragment."}},
                     ["path", "content"]),
+                _fn("edit_file",
+                    "Change part of a file: replace an exact snippet with new text. "
+                    "USE THIS for any change to an existing file — rewriting a whole "
+                    "file to change a few lines costs the whole file in output and gets "
+                    "cut off. The snippet must appear exactly once; include a line "
+                    "either side if it would not.",
+                    {"path": {"type": "string"},
+                     "find": {"type": "string",
+                              "description": ("The exact text to replace, copied from "
+                                              "read_file — indentation and all.")},
+                     "replace": {"type": "string", "description": "What to put there."}},
+                    ["path", "find", "replace"]),
                 _fn("append_file",
                     "Add to the END of a file, creating it if absent. Use this when a file is "
                     "too long to emit in one reply: write_file the first section, then "
@@ -440,6 +452,19 @@ class AgentTools:
                 {"note": {"type": "string",
                           "description": "One specific, self-contained sentence."}},
                 ["note"]))
+        if ("graph" in self.role.toolsets and self.graph is not None
+                and "files" in self.role.toolsets):
+            out.append(_fn(
+                "replace_symbol",
+                "Replace one indexed function or class with new source, without "
+                "quoting the old code back. The cheapest way to change a function in "
+                "a large file.",
+                {"symbol": {"type": "string",
+                            "description": "Its name, or path/to/file.js::name."},
+                 "source": {"type": "string",
+                            "description": "The complete new definition, including "
+                                           "its signature line."}},
+                ["symbol", "source"]))
         if "graph" in self.role.toolsets and self.graph is not None:
             out += self.graph_specs()
         return out
@@ -456,6 +481,8 @@ class AgentTools:
             "read_file": self.read_file,
             "write_file": self.write_file,
             "append_file": self.append_file,
+            "edit_file": self.edit_file,
+            "replace_symbol": self.replace_symbol,
             "list_files": self.list_files,
             "run_command": self.run_command,
             "stop_command": self.stop_command,
@@ -586,6 +613,76 @@ class AgentTools:
                                          "outline": True, "symbols": len(symbols),
                                          "lines": len(lines)})
 
+    def edit_file(self, path: str, find: str, replace: str) -> ToolOutcome:
+        """Replace one exact snippet, leaving the rest of the file untouched.
+
+        Rewriting a whole file to change ten lines costs the whole file in
+        output tokens — a 600-line module is most of a reply on its own, and the
+        call gets cut off mid-string. This is the way out: the cost of an edit
+        becomes the size of the edit.
+
+        The snippet must appear exactly once. Refusing an ambiguous match is the
+        point: "replace the first one" is a guess about which one the agent
+        meant, and silently editing the wrong occurrence is worse than failing.
+        """
+        target = self._resolve(path)
+        if target is None:
+            return ToolOutcome(f"Refused: {path!r} is outside the project directory.", ok=False)
+        if not target.is_file():
+            return ToolOutcome(f"{path} does not exist — use write_file to create it.",
+                               ok=False)
+        if not find:
+            return ToolOutcome("`find` is required: give the exact text to replace.",
+                               ok=False)
+
+        text = target.read_text(encoding="utf8", errors="replace")
+        found = text.count(find)
+        if found == 0:
+            return ToolOutcome(
+                f"Not found in {path}. The text must match exactly, including "
+                f"indentation and line breaks — read_file the part you are changing "
+                f"and copy it from there rather than retyping it.", ok=False,
+                detail={"kind": "edit_miss", "path": path})
+        if found > 1:
+            return ToolOutcome(
+                f"That text appears {found} times in {path}, so I cannot tell which "
+                f"one you mean. Include a line or two around it to make it unique.",
+                ok=False, detail={"kind": "edit_ambiguous", "path": path, "count": found})
+
+        return self._put(path, text.replace(find, replace, 1), append=False, kind="edit")
+
+    def replace_symbol(self, symbol: str, source: str) -> ToolOutcome:
+        """Replace one indexed function or class with new source.
+
+        The same saving as edit_file without having to quote the old code back:
+        the graph already knows where the symbol starts and ends.
+        """
+        if self.graph is None:
+            return ToolOutcome("No code graph available — use edit_file instead.", ok=False)
+        matches = self.graph.db.find_symbols(symbol)
+        if not matches:
+            return ToolOutcome(
+                f"No symbol named {symbol!r} is indexed. search_symbols finds what is, "
+                f"and the project map in your prompt lists it.", ok=False,
+                detail={"kind": "edit_miss", "symbol": symbol})
+        if len(matches) > 1:
+            where = ", ".join(m.qualname for m in matches[:6])
+            return ToolOutcome(
+                f"{symbol!r} matches {len(matches)} symbols — name one exactly: {where}",
+                ok=False, detail={"kind": "edit_ambiguous", "symbol": symbol})
+
+        found = matches[0]
+        target = self._resolve(found.file_path)
+        if target is None or not target.is_file():
+            return ToolOutcome(f"{found.file_path} is no longer there — re-read it.",
+                               ok=False)
+        raw = target.read_bytes()
+        # Byte offsets, because that is what the parser recorded; slicing the
+        # decoded text would drift on any non-ASCII character in the file.
+        updated = raw[:found.start_byte] + source.encode("utf8") + raw[found.end_byte:]
+        return self._put(found.file_path, updated.decode("utf8", errors="replace"),
+                         append=False, kind="edit")
+
     def read_file(self, path: str, start_line: int = 1, full: bool = False) -> ToolOutcome:  # noqa: D401
         target = self._resolve(path)
         if target is None:
@@ -634,7 +731,7 @@ class AgentTools:
         """
         return self._put(path, content, append=True)
 
-    def _put(self, path: str, content: str, *, append: bool) -> ToolOutcome:
+    def _put(self, path: str, content: str, *, append: bool, kind: str = "") -> ToolOutcome:
         target = self._resolve(path)
         if target is None:
             return ToolOutcome(f"Refused: {path!r} is outside the project directory.", ok=False)
@@ -676,7 +773,8 @@ class AgentTools:
         warning = (f"\n\nNote: I removed {' and '.join(stripped)} before writing. "
                    f"write_file takes the file's exact contents — no fences, no "
                    f"file-name header." if stripped else "")
-        verb = "Appended to" if append else ("Updated" if existed else "Created")
+        verb = ("Edited" if kind == "edit" else
+                "Appended to" if append else ("Updated" if existed else "Created"))
         size = (f"{len(content)} bytes added, {len(final)} total" if append
                 else f"{len(final)} bytes")
         return ToolOutcome(
@@ -998,9 +1096,11 @@ def permissions_brief(role: AgentRole) -> str:
         )
         lines.append(
             "A reply has a length limit, and a tool call that runs past it is cut off "
-            "and never runs. For a long file, write_file the first section and then "
-            "append_file each remaining section — do not try to emit the whole thing "
-            "in one call and do not resend a call that was cut off."
+            "and never runs. So CHANGE files with edit_file (replace an exact snippet) "
+            "or replace_symbol (swap one function or class) — the cost of an edit is "
+            "then the size of the edit, not the size of the file. write_file is for "
+            "creating a file or replacing all of it; if that file is long, write the "
+            "first section and append_file the rest."
         )
     elif "inspect" not in role.toolsets:
         lines.append("You have NO file access: you cannot read or write files.")
