@@ -1289,7 +1289,9 @@ function presetCard(preset, isNew) {
   const baseUrl = el("input", "compact");
   baseUrl.value = preset.base_url || "";
   baseUrl.placeholder = "default for this API";
-  baseUrl.title = "Endpoint. Blank uses the default for the API kind.";
+  baseUrl.title = "The root, not the full path — trance appends /chat/completions "
+                  + "for every OpenAI-compatible API. So https://host/v1, not "
+                  + "https://host/v1/chat/completions.";
 
   const key = el("input", "compact");
   key.type = "password";
@@ -1304,6 +1306,11 @@ function presetCard(preset, isNew) {
   const wrap = (label, node) => {
     const l = el("label", null, label);
     l.append(node);
+    return l;
+  };
+  const wrapHint = (label, node, hint) => {
+    const l = wrap(label, node);
+    l.append(el("span", "hint", hint));
     return l;
   };
   const ctx = el("input", "compact");
@@ -1335,7 +1342,8 @@ function presetCard(preset, isNew) {
   };
 
   grid.append(wrap("Name (agents pick this)", name), wrap("API", kind),
-              wrap("Base URL", baseUrl), wrap("API key", key),
+              wrapHint("Base URL", baseUrl, "the root — /chat/completions is added"),
+              wrap("API key", key),
               wrap("Model id", model), wrap("Context window", ctx),
               wrap("Max output", out));
   kind.onchange();
@@ -1350,7 +1358,10 @@ function presetCard(preset, isNew) {
     probeResult.className = "check-result";
     const body = await api(`/api/presets/${encodeURIComponent(preset.name)}/check`,
                            { method: "POST" });
-    probeResult.textContent = body.ok ? `ok — ${body.reply || body.model}` : body.error;
+    probeResult.textContent = body.ok
+      ? `ok — ${body.reply || body.model}`
+      : `${body.error}\ncalled: ${body.endpoint || "?"}`;
+    probeResult.title = `called ${body.endpoint || "?"}`;
     probeResult.className = `check-result ${body.ok ? "ok" : "bad"}`;
   };
 

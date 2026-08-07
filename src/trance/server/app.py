@@ -541,13 +541,20 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(404, "no such model")
         resolved = config.resolve(config.worker, preset=name)
         resolved.max_tokens = 16
+        client = client_for(resolved)
+        # The URL actually called, not the one that was typed. Most failures
+        # here are a base URL with a path too many or too few, and saying which
+        # address answered is the difference between a fix and a guess.
+        endpoint = getattr(client, "endpoint", resolved.base_url)
         try:
-            reply = client_for(resolved).complete([{"role": "user", "content": "Reply with OK."}])
+            reply = client.complete([{"role": "user", "content": "Reply with OK."}])
         except BackendError as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": str(exc), "endpoint": endpoint}
         except Exception as exc:  # SDK-specific failures shouldn't 500 the UI
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        return {"ok": True, "model": resolved.model, "reply": reply.text.strip()[:80]}
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                    "endpoint": endpoint}
+        return {"ok": True, "model": resolved.model, "endpoint": endpoint,
+                "reply": reply.text.strip()[:80]}
 
     @app.put("/api/config/orchestrator")
     def set_orchestrator(body: dict):

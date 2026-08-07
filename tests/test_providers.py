@@ -679,3 +679,25 @@ def test_the_editor_is_served_from_here_not_a_cdn(tmp_path):
         response = client.get(f"/static/vendor/{asset}")
         assert response.status_code == 200, asset
         assert len(response.content) > 1000, asset
+
+
+def test_a_failed_model_test_says_which_url_it_called(tmp_path):
+    """Most failures here are a base URL with a path too many or too few, and
+    the address that answered is the difference between a fix and a guess."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    # A base URL with the full path pasted in, which is the usual mistake.
+    client.put("/api/presets/zen", json={
+        "kind": "openai", "model": "gpt-5",
+        "base_url": "https://127.0.0.1:9/zen/v1/responses"})
+
+    body = client.post("/api/presets/zen/check").json()
+    assert body["ok"] is False
+    assert body["endpoint"] == "https://127.0.0.1:9/zen/v1/responses/chat/completions"
