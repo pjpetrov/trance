@@ -4575,10 +4575,12 @@ def test_with_nothing_running_a_hint_waits_for_the_next_step(tmp_path):
     assert session.flow.steps[1].steering == []
 
 
-def test_a_reconnect_ends_on_the_current_state_not_the_history(tmp_path):
-    """Regression: a refreshed page showed finished steps as pending. The
-    socket replayed every past event after the snapshot, and an old
-    flow_updated carries the flow as it was when it fired."""
+def test_a_reconnect_gets_the_current_state_and_no_history(tmp_path):
+    """Regression, twice over. A refreshed page once showed finished steps as
+    pending: the socket replayed every past event after the snapshot, and an
+    old flow_updated carries the flow as it was when it fired. Ordering fixed
+    that; not sending history at all removes the class of bug — a stale event
+    cannot overwrite anything if it never arrives on the live channel."""
     import json
 
     from fastapi.testclient import TestClient
@@ -4601,22 +4603,20 @@ def test_a_reconnect_ends_on_the_current_state_not_the_history(tmp_path):
     session.flow.steps[0].status = "done"
 
     with client.websocket_connect(f"/ws/{sid}") as ws:
-        frames = []
-        for _ in range(12):
-            frame = json.loads(ws.receive_text())
-            frames.append(frame)
-            if frame.get("type") == "snapshot" and frames.index(frame) > 0:
-                break
+        first = json.loads(ws.receive_text())
 
-    replayed = [f for f in frames if f.get("replay")]
-    assert replayed, "history was not replayed"
-    assert all(f.get("replay") for f in frames if f.get("type") == "flow_updated")
+    # The first thing down the socket is the current state, and there is no
+    # history behind it to argue with.
+    assert first["type"] == "snapshot"
+    assert [s["status"] for s in first["payload"]["flow"]["steps"]] == ["done", "pending"]
 
-    # The last word belongs to the snapshot, and it is current.
-    last_snapshot = [f for f in frames if f.get("type") == "snapshot"][-1]
-    assert frames.index(last_snapshot) > frames.index(replayed[0])
-    assert [s["status"] for s in last_snapshot["payload"]["flow"]["steps"]] \
-        == ["done", "pending"]
+    # The old flow_updated is still on record — it is simply asked for, by
+    # whoever wants to read the past, rather than pushed at a live screen.
+    history = client.get(f"/api/sessions/{sid}/events").json()
+    stale = [e for e in history if e["type"] == "flow_updated"]
+    assert stale, "the flow change should still be in the trace"
+    assert [s["status"] for s in stale[-1]["payload"]["flow"]["steps"]] == \
+        ["pending", "pending"]
 
 
 # ============================ the trace outlives the process that made it
@@ -7178,9 +7178,11 @@ def test_one_steps_events_can_be_asked_for_on_their_own(tmp_path):
     assert len(tail) == 2 and tail[-1]["type"] == "run_started"   # the *last* two
 
 
-def test_a_browser_is_not_sent_the_whole_history(tmp_path):
+def test_the_socket_carries_what_happens_next_not_what_already_did(tmp_path):
     """23.8MB of prompts, one websocket message at a time, before anything
-    appears — that is what a long session was replaying on every page load."""
+    appeared — that is what a long session replayed on every page load. The
+    socket is for what happens from now on; history is asked for by whoever
+    wants it, in the shape they want it."""
     from fastapi.testclient import TestClient
 
     from trance.config import Config
@@ -7195,20 +7197,20 @@ def test_a_browser_is_not_sent_the_whole_history(tmp_path):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(project)}).json()["id"]
 
-    for n in range(app_module.REPLAY_TAIL + 50):
+    for n in range(app_module.CONSOLE_TAIL + 50):
         app.state.bus.emit("tool_call", sid, agent="backend", step_id="st1",
                            payload={"name": f"call_{n}"})
 
     with client.websocket_connect(f"/ws/{sid}") as ws:
-        replayed = []
-        while True:
-            message = ws.receive_json()
-            if message.get("type") == "snapshot":
-                break
-            replayed.append(message)
+        first = ws.receive_json()
 
-    assert len(replayed) == app_module.REPLAY_TAIL + 1        # + the note
-    assert replayed[-1]["type"] == "history_trimmed"
-    assert replayed[-1]["payload"]["total"] == app_module.REPLAY_TAIL + 51
+    # Nothing but the snapshot: no history at all comes down the socket.
+    assert first["type"] == "snapshot"
+    assert first["payload"]["id"] == sid
+
+    # The console asks for its own tail, and is told what it is not seeing.
+    body = client.get(f"/api/sessions/{sid}/events", params={"tail": True}).json()
+    assert body["shown"] == app_module.CONSOLE_TAIL
+    assert body["total"] == app_module.CONSOLE_TAIL + 51
     # The tail is the *recent* end: what you were just looking at.
-    assert replayed[-2]["payload"]["name"] == f"call_{app_module.REPLAY_TAIL + 49}"
+    assert body["events"][-1]["payload"]["name"] == f"call_{app_module.CONSOLE_TAIL + 49}"

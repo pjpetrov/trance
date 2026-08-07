@@ -217,6 +217,7 @@ async function openSession(id) {
   consoleStep = null;
   consoleReset();
   resetFiles();
+  loadConsoleTail(id);
   connect(id);
   renderSessionBar();
   renderChat();
@@ -1169,6 +1170,32 @@ function applyRefinedFlow(payload) {
   }
   renderFlowEditor();
   if (payload.message) toast(payload.message);
+}
+
+/* The console's own history, asked for rather than pushed.
+ *
+ * The socket used to replay the whole session on connect — for a long run that
+ * is thousands of events and tens of megabytes of prompts, arriving one at a
+ * time, with everything else waiting behind them. Now the socket carries what
+ * happens next, and each screen fetches the part of the past it needs. */
+async function loadConsoleTail(sessionId) {
+  let body;
+  try {
+    body = await api(`/api/sessions/${sessionId}/events?tail=true`);
+  } catch (_) { return; }
+  if (!state.session || state.session.id !== sessionId) return;   // moved on
+
+  (body.events || []).forEach((event) => {
+    state.events.push(event);
+    consoleAppend({ ...event, replay: true });
+  });
+  if (body.total > body.shown) {
+    consolePush(consoleEntry({
+      kind: "step", icon: "…", time: "",
+      label: `${body.total - body.shown} earlier event(s) not shown — open a step `
+             + `to see its own history.`,
+    }));
+  }
 }
 
 function connect(sessionId) {
@@ -2980,6 +3007,9 @@ function consoleReset(label) {
   box.append(el("div", "c-empty", label || "Waiting for the agent to do something…"));
   const scope = $("console-scope");
   if (scope) scope.textContent = "";
+  // ...and the filter with it. A cleared console that still only accepts the
+  // last step's events drops everything else without saying so.
+  consoleStep = null;
 }
 
 function atBottom(box) {

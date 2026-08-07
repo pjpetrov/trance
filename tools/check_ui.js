@@ -249,7 +249,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,presetCard,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,loadConsoleTail,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,presetCard,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -1141,6 +1141,39 @@ try {
       process.exit(1);
     }
   }
+  // The console asks for its own tail rather than being sent one, and is told
+  // how much it is not seeing.
+  {
+    RESPONSES["/api/sessions/s1/events?tail=true"] = {
+      total: 2015, shown: 2,
+      events: [
+        { id: "h1", type: "tool_call", step_id: "st1", agent: "backend",
+          ts: "2026-08-07T20:00:00+00:00",
+          payload: { name: "read_file", arguments: { path: "old.js" }, ok: true } },
+        { id: "h2", type: "step_finished", step_id: "st1", agent: "backend",
+          ts: "2026-08-07T20:00:01+00:00", payload: { status: "done" } },
+      ],
+    };
+    api.consoleReset();
+    api.state.events = [];
+    await api.loadConsoleTail("s1");
+    const console_ = flat(document.getElementById("console")).replace(/\s+/g, " ");
+    if (!console_.includes("old.js")) {
+      console.log("BROKEN: the console did not load its own history:",
+                  console_.slice(0, 140));
+      process.exit(1);
+    }
+    if (!console_.includes("2013 earlier event(s) not shown")) {
+      console.log("BROKEN: the console does not say what it is missing:",
+                  console_.slice(0, 200));
+      process.exit(1);
+    }
+    if (api.state.events.length !== 2) {
+      console.log("BROKEN: fetched history did not reach state.events");
+      process.exit(1);
+    }
+  }
+
   // A step whose events the browser never received still shows its history:
   // it fetches them. A long run replays only a tail, so this is the normal
   // case after a page load, not an edge one.
