@@ -7140,3 +7140,75 @@ def test_a_half_written_call_is_taken_back_out_of_the_conversation(tmp_path, mon
     said = "\n".join(str(m.get("content") or "") for m in second)
     assert "cut off at the output limit" in said
     assert "write_file" in said
+
+
+def test_one_steps_events_can_be_asked_for_on_their_own(tmp_path):
+    """A finished run is thousands of events and tens of megabytes, nearly all
+    of it prompts. The step you are looking at is a fraction of that, and
+    holding the lot in a browser to find it is how a step ends up showing no
+    history at all."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    for step in ("st1", "st2"):
+        for n in range(3):
+            app.state.bus.emit("tool_call", sid, agent="backend", step_id=step,
+                               payload={"name": f"{step}_call_{n}"})
+    app.state.bus.emit("run_started", sid, payload={})      # no step of its own
+
+    everything = client.get(f"/api/sessions/{sid}/events").json()
+    assert len(everything) == 8          # six tool calls, run_started, session_created
+
+    one_step = client.get(f"/api/sessions/{sid}/events", params={"step": "st1"}).json()
+    assert len(one_step) == 3
+    assert all(e["step_id"] == "st1" for e in one_step)
+
+    tail = client.get(f"/api/sessions/{sid}/events", params={"limit": 2}).json()
+    assert len(tail) == 2 and tail[-1]["type"] == "run_started"   # the *last* two
+
+
+def test_a_browser_is_not_sent_the_whole_history(tmp_path):
+    """23.8MB of prompts, one websocket message at a time, before anything
+    appears — that is what a long session was replaying on every page load."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    for n in range(app_module.REPLAY_TAIL + 50):
+        app.state.bus.emit("tool_call", sid, agent="backend", step_id="st1",
+                           payload={"name": f"call_{n}"})
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        replayed = []
+        while True:
+            message = ws.receive_json()
+            if message.get("type") == "snapshot":
+                break
+            replayed.append(message)
+
+    assert len(replayed) == app_module.REPLAY_TAIL + 1        # + the note
+    assert replayed[-1]["type"] == "history_trimmed"
+    assert replayed[-1]["payload"]["total"] == app_module.REPLAY_TAIL + 51
+    # The tail is the *recent* end: what you were just looking at.
+    assert replayed[-2]["payload"]["name"] == f"call_{app_module.REPLAY_TAIL + 49}"

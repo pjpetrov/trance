@@ -44,6 +44,11 @@ from ..worker.client import BackendError
 STATIC = Path(__file__).parent / "static"
 
 
+#: How much of a session's history is pushed to a browser on connect. Enough to
+#: rebuild the console you were looking at; not the 24MB of prompts behind it.
+REPLAY_TAIL = 400
+
+
 def create_app(config: Config | None = None, sessions_dir: Path | None = None) -> FastAPI:
     config = config or Config.load()
     store = SessionStore(sessions_dir or Path(config.runs_dir) / "sessions")
@@ -1224,9 +1229,21 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"deleted": session_id, "project_dir": session.project_dir}
 
     @app.get("/api/sessions/{session_id}/events")
-    def get_events(session_id: str):
+    def get_events(session_id: str, step: str = "", limit: int = 0):
+        """This session's events, optionally only one step's.
+
+        A finished run is thousands of events and tens of megabytes, nearly all
+        of it prompts. Asking for the step you are looking at costs a fraction
+        of that, which is what the step detail does rather than holding the lot
+        in the browser.
+        """
         _need(store, session_id)
-        return [e.to_dict() for e in history_for(session_id)]
+        events = history_for(session_id)
+        if step:
+            events = [e for e in events if e.step_id == step]
+        if limit > 0:
+            events = events[-limit:]
+        return [e.to_dict() for e in events]
 
     @app.get("/api/sessions/{session_id}/memory")
     def get_memory(session_id: str):
@@ -1643,8 +1660,22 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 # flow_updated holds the flow as it was when it fired. Sending
                 # the snapshot first let that stale copy win, which is how a
                 # refreshed page showed finished steps as pending.
-                for event in history_for(session_id):
+                # A tail, not the lot. A long run is thousands of events and
+                # tens of megabytes of prompts; replaying all of it means the
+                # console is empty until the last one lands, and every step's
+                # detail waits behind prompts nobody asked to see. The rest is
+                # fetched per step, when a step is opened.
+                history = history_for(session_id)
+                for event in history[-REPLAY_TAIL:]:
                     await ws.send_text(json.dumps({**event.to_dict(), "replay": True}))
+                if len(history) > REPLAY_TAIL:
+                    await ws.send_text(json.dumps({
+                        "type": "history_trimmed", "session_id": session_id,
+                        "payload": {"shown": REPLAY_TAIL, "total": len(history),
+                                    "message": (f"Showing the last {REPLAY_TAIL} of "
+                                                f"{len(history)} events. Open a step to "
+                                                f"load its own.")},
+                        "replay": True}))
                 await ws.send_text(json.dumps({"type": "snapshot",
                                                "payload": session.to_dict()}))
             while True:

@@ -1141,6 +1141,32 @@ try {
       process.exit(1);
     }
   }
+  // A step whose events the browser never received still shows its history:
+  // it fetches them. A long run replays only a tail, so this is the normal
+  // case after a page load, not an edge one.
+  {
+    RESPONSES["/api/sessions/s1/events?step=st9"] = [
+      { id: "e1", type: "step_started", step_id: "st9", agent: "backend", ts: "2026-08-07T20:00:00+00:00",
+        payload: { task: "t", attempt: 1 } },
+      { id: "e2", type: "tool_call", step_id: "st9", agent: "backend", ts: "2026-08-07T20:00:01+00:00",
+        payload: { name: "read_file", arguments: { path: "a.js" }, ok: true,
+                   result: "contents" } },
+    ];
+    api.state.events = [];                       // nothing replayed for it
+    const far = { id: "st9", role: "backend", task: "t", status: "done",
+                  check: null, on_fail: null, max_loops: 2,
+                  attempts: [{ n: 1, outcome: "SUCCESS" }] };
+    api.openStep(far, 0);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    const shown = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
+    if (!shown.includes("read_file")) {
+      console.log("BROKEN: a step's history was not fetched when missing:",
+                  shown.slice(0, 160));
+      process.exit(1);
+    }
+  }
+
   // A step that ran before the page opened still shows its attempts.
   const noEvents = api.groupStepEvents([], loopStep);
   if (noEvents.length !== 2) {

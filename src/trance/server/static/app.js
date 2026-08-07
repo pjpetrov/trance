@@ -2413,23 +2413,47 @@ function openStep(step, index) {
   body.append(rowWithCopy("task", step.task || ""));
   body.append(el("pre", "code", step.task || "(no task)"));
 
-  // One section per block that ran. A step with five loop passes was a single
-  // wall of model calls; which pass a call belonged to was the one thing you
-  // needed and the only thing not shown.
-  const stepEvents = state.events.filter((e) => e.step_id === step.id);
-  const blocks = groupStepEvents(stepEvents, step);
-
   if (step.summary) {
     body.append(rowWithCopy("result", step.summary));
     body.append(el("pre", "code", step.summary));
   }
 
+  // One section per block that ran. A step with five loop passes was a single
+  // wall of model calls; which pass a call belonged to was the one thing you
+  // needed and the only thing not shown.
+  const history = el("div");
+  body.append(history);
+  paintStepHistory(history, step);
+}
+
+/* The step's own events, fetched if the browser does not have them.
+ *
+ * It used to read whatever the websocket had replayed — and a long run is
+ * thousands of events, so a page that loaded after one of those showed a step
+ * with no history at all. Its events were on the server the whole time. */
+async function paintStepHistory(box, step) {
+  let events = state.events.filter((e) => e.step_id === step.id);
+  const expected = (step.attempts || []).length;
+
+  if (events.length < expected || !events.length) {
+    box.innerHTML = "";
+    box.append(el("p", "muted small", "Loading this step's history…"));
+    try {
+      const fetched = await api(
+        `/api/sessions/${state.session.id}/events?step=${encodeURIComponent(step.id)}`);
+      if (fetched.length >= events.length) events = fetched;
+    } catch (_) { /* fall back to whatever the console has */ }
+  }
+
+  box.innerHTML = "";
+  const blocks = groupStepEvents(events, step);
   if (!blocks.length) {
-    body.append(el("p", "muted small",
+    box.append(el("p", "muted small",
       "Nothing recorded for this step. It may have been skipped, or it ran "
       + "before this session kept a trace."));
+    return;
   }
-  blocks.forEach((block, i) => body.append(
+  blocks.forEach((block, i) => box.append(
     blockSection(block, i === blocks.length - 1 && step.status === "running")));
 }
 
