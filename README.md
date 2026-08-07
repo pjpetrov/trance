@@ -21,7 +21,8 @@ trance serve            # http://localhost:8080
 ## What it does
 
 **Plans work.** You describe a project; an orchestrator asks a couple of
-questions and proposes a team and an ordered flow. Steps come with size
+questions and proposes a team and an ordered flow. Edits to the plan save
+themselves — there is no Save button to forget. Steps come with size
 estimates, and anything too big to picture is broken up before you see it. The
 plan lands in an editor — reorder, rewrite, add, delete — and nothing runs until
 you press Run.

@@ -446,6 +446,7 @@ function stepCard(step, index) {
       if (Number.isNaN(from) || from === index) return;
       const [moved] = state.draftSteps.splice(from, 1);
       state.draftSteps.splice(index, 0, moved);
+      queueFlowSave(true);
       redrawEditor();
     });
     return card;
@@ -480,6 +481,7 @@ function stepCard(step, index) {
       step.role = value;
     }
     redrawEditor();
+    queueFlowSave(true);
   };
 
   head.append(roleSelect);
@@ -501,7 +503,11 @@ function stepCard(step, index) {
 
   const remove = el("button", null, "✕");
   remove.disabled = !editable;
-  remove.onclick = () => { state.draftSteps.splice(index, 1); redrawEditor(); };
+  remove.onclick = () => {
+    state.draftSteps.splice(index, 1);
+    redrawEditor();
+    queueFlowSave(true);
+  };
   head.append(remove);
 
   if (finished) {
@@ -519,7 +525,7 @@ function stepCard(step, index) {
   const task = el("textarea");
   task.value = step.task || "";
   task.disabled = !editable;
-  task.oninput = () => { step.task = task.value; };
+  task.oninput = () => { step.task = task.value; queueFlowSave(); };
 
   // Three separate controls: the reality check, who fixes a failure, and how
   // many times the block may loop before the run is halted.
@@ -560,7 +566,7 @@ function stepCard(step, index) {
     check.disabled = !editable;
     check.title = "Independent check that the agent's report is true. It does not decide " +
                   "the loop — a false report stops the flow outright.";
-    check.onchange = () => { step.check = check.value || null; drawGates(); };
+    check.onchange = () => { step.check = check.value || null; drawGates(); queueFlowSave(true); };
 
     // No "on fail" agent here any more. Handing a failure to a *different*
     // agent is what a loop is, and having two ways to say it left the step
@@ -578,6 +584,7 @@ function stepCard(step, index) {
                   + "Set a number to override it for this step alone.";
     loops.onchange = () => {
       step.max_loops = Number(loops.value) || 0;
+      queueFlowSave();
       drawGates();
     };
 
@@ -585,7 +592,9 @@ function stepCard(step, index) {
     revert.type = "checkbox";
     revert.checked = !!step.revert_on_fail;
     revert.disabled = !editable;
-    revert.onchange = () => { step.revert_on_fail = revert.checked; drawGates(); };
+    revert.onchange = () => {
+      step.revert_on_fail = revert.checked; drawGates(); queueFlowSave(true);
+    };
     const revertLabel = el("label", "row small");
     revertLabel.append(revert, document.createTextNode(" revert on failure"));
     revertLabel.title = "Put the project back to where it was before this step ran, "
@@ -601,7 +610,7 @@ function stepCard(step, index) {
       legacy.title = "Set before loops existed. Clear it to have this agent simply retry.";
       const clear = el("button", "small", "clear");
       clear.disabled = !editable;
-      clear.onclick = () => { step.on_fail = null; drawGates(); };
+      clear.onclick = () => { step.on_fail = null; drawGates(); queueFlowSave(true); };
       row.append(legacy, clear);
     }
     gatesBox.append(row);
@@ -641,6 +650,7 @@ function stepCard(step, index) {
     if (Number.isNaN(from) || from === to) return;
     const [moved] = state.draftSteps.splice(from, 1);
     state.draftSteps.splice(to, 0, moved);
+    queueFlowSave(true);
     redrawEditor();
   });
   return card;
@@ -661,6 +671,7 @@ $("add-step").onclick = () => {
   state.draftSteps.push({ role: "backend", loop: "", task: "", check: null, on_fail: null,
                           max_loops: 2, status: "pending" });
   redrawEditor();
+  queueFlowSave(true);
   // A new step goes on the end, so put it in view rather than making the user
   // scroll past everything that is already done.
   const box = $("flow-editor");
@@ -669,18 +680,53 @@ $("add-step").onclick = () => {
   if (last) last.focus();
 };
 
-$("save-flow").onclick = async () => {
-  const flow = await api(`/api/sessions/${state.session.id}/flow`, {
-    method: "PUT", body: { steps: state.draftSteps },
-  });
-  state.session.flow = flow;
-  renderFlowEditor();
-  const n = (flow.requeued || []).length;
-  toast(n ? `Flow saved — ${n} edited step(s) re-queued to run again.` : "Flow saved.");
-};
+/* Edits save themselves. A Save button is a way to lose work: the plan is the
+ * one screen you leave to go and look at something, and an unsaved flow that
+ * looks saved is worse than no flow at all.
+ *
+ * Debounced, because typing a task is one edit, not forty. Structural changes —
+ * adding, deleting, reordering — go immediately, since there is nothing more
+ * coming and they are the ones worth not losing. */
+let flowSaveTimer = null;
+
+function queueFlowSave(now = false) {
+  if (!state.session || !isPlanning()) return;
+  clearTimeout(flowSaveTimer);
+  flowSaveTimer = setTimeout(saveFlowNow, now ? 0 : 700);
+}
+
+async function saveFlowNow() {
+  clearTimeout(flowSaveTimer);
+  if (!state.session || !state.draftSteps) return;
+  const sending = JSON.stringify(state.draftSteps);
+  markFlowSaving("saving…");
+  try {
+    const flow = await api(`/api/sessions/${state.session.id}/flow`, {
+      method: "PUT", body: { steps: JSON.parse(sending) },
+    });
+    state.session.flow = flow;
+    // Not renderFlowEditor(): redrawing under the cursor would move it, and
+    // what came back is what we just sent. Only the baseline needs updating,
+    // so a server-side change can still be told apart from a local edit.
+    state.draftBase = draftFingerprint();
+    const n = (flow.requeued || []).length;
+    markFlowSaving(n ? `saved — ${n} step(s) re-queued` : "saved");
+  } catch (_) {
+    markFlowSaving("not saved — check the connection");
+  }
+}
+
+function markFlowSaving(what) {
+  const mark = $("flow-saved");
+  if (!mark) return;
+  mark.textContent = what;
+  mark.className = "muted small" + (what.startsWith("not saved") ? " err" : "");
+}
 
 $("start-run").onclick = async () => {
-  await api(`/api/sessions/${state.session.id}/flow`, { method: "PUT", body: { steps: state.draftSteps } });
+  // Whatever is still in the debounce goes now, not in 700ms from a screen you
+  // have already left.
+  await saveFlowNow();
   state.session = await api(`/api/sessions/${state.session.id}/start`, { method: "POST" });
   show("run");
   renderRun();

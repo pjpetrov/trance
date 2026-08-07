@@ -136,13 +136,19 @@ const RESPONSES = {
                                prompt_view: "- **backend**: port 3100",
                                oversized: false, max_notes: 25 },
 };
-global.fetch = async (path) => ({
-  ok: true, status: 200,
-  json: async () => RESPONSES[path] ?? {},
-});
+// Every request the UI makes, so a check can ask "did that reach the server?"
+// — the only way to see a save that happens without a button being pressed.
+const REQUESTS = [];
+global.fetch = async (path, init = {}) => {
+  REQUESTS.push({
+    url: path, method: (init.method || "GET").toUpperCase(),
+    body: init.body ? JSON.parse(init.body) : null,
+  });
+  return { ok: true, status: 200, json: async () => RESPONSES[path] ?? {} };
+};
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -446,6 +452,35 @@ try {
   if (api.state.session.flow.steps[0].id !== "stale") {
     console.log("BROKEN: a live flow_updated was ignored");
     process.exit(1);
+  }
+
+  // Editing saves itself: there is no Save button to press, so an edit that
+  // does not reach the server is silently lost.
+  {
+    api.state.session.status = "planning";
+    api.state.session.flow = { steps: [{ id: "one", role: "backend", task: "t",
+                                         status: "pending", check: null, on_fail: null,
+                                         max_loops: 2, attempts: [] }] };
+    api.renderFlowEditor();
+    const before = REQUESTS.filter((r) => r.method === "PUT").length;
+    api.state.draftSteps.push({ role: "backend", loop: "", task: "added",
+                                check: null, on_fail: null, max_loops: 2,
+                                status: "pending" });
+    await api.saveFlowNow();
+    const puts = REQUESTS.filter((r) => r.method === "PUT" && /\/flow$/.test(r.url));
+    if (puts.length <= before) {
+      console.log("BROKEN: an edit never reached the server");
+      process.exit(1);
+    }
+    if ((puts[puts.length - 1].body.steps || []).length !== 2) {
+      console.log("BROKEN: the saved flow is not what was edited");
+      process.exit(1);
+    }
+    const mark = flat(document.getElementById("flow-saved"));
+    if (!mark.includes("saved")) {
+      console.log("BROKEN: nothing says the flow was saved:", mark);
+      process.exit(1);
+    }
   }
 
   // A step added elsewhere — a review sent, the orchestrator finishing — has to
