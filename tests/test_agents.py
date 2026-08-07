@@ -321,10 +321,33 @@ def test_validation_rejects_unusable_definitions():
     assert validate({"name": "", "toolsets": []})
     assert validate({"name": "two words", "toolsets": []})
     assert validate({"name": "x", "toolsets": ["magic"]})
-    # files without a remit means every write is refused — catch it at save time
-    assert validate({"name": "x", "toolsets": ["files"], "paths": []})
     assert validate({"name": "x", "toolsets": ["files"], "paths": ["src/**"]}) is None
     assert validate({"name": "x", "toolsets": ["graph"]}) is None
+    # An empty remit is read-only, not a mistake: reads and lists still work and
+    # every write is refused, which is the safest agent there is.
+    assert validate({"name": "x", "toolsets": ["files"], "paths": []}) is None
+
+
+def test_an_agent_with_no_remit_reads_but_cannot_write(tmp_path):
+    """The rule that refused to save this assumed the files toolset meant
+    writing. It also reads and lists, and reads are never remit-checked — so a
+    reviewer that must not touch the code had no way to be expressed."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.tools import AgentTools
+
+    (tmp_path / "server").mkdir()
+    (tmp_path / "server" / "app.py").write_text("PORT = 3000\n")
+    auditor = AgentRole(name="auditor", title="Auditor", description="reads only",
+                        system_prompt="p", paths=[], toolsets=["files"])
+    tools = AgentTools(tmp_path, auditor)
+
+    assert tools.read_file("server/app.py").ok
+    assert tools.list_files().ok
+
+    refused = tools.write_file("server/app.py", "PORT = 1\n")
+    assert refused.ok is False
+    assert "outside your remit" in refused.text
+    assert (tmp_path / "server" / "app.py").read_text() == "PORT = 3000\n"
 
 
 # ------------------------------------------------- permissions in the prompt

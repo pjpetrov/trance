@@ -2025,6 +2025,19 @@ function agentCard(agent, isNew) {
                   "Remit — one glob per line. Writes outside these are refused."));
   perms.append(paths);
 
+  // An empty box is a decision, and a meaningful one: it reads as unfinished
+  // otherwise, which is how it ended up being refused at save time.
+  const remitNote = el("div", "muted small remit-note");
+  const sayRemit = () => {
+    const globs = paths.value.split("\n").map((g) => g.trim()).filter(Boolean);
+    remitNote.textContent = globs.length
+      ? `Can write to ${globs.length} path pattern(s). Reads are not restricted.`
+      : "Read-only: it can read and list every file, and every write is refused.";
+  };
+  paths.addEventListener("input", sayRemit);
+  sayRemit();
+  perms.append(remitNote);
+
   // --- prompt ----------------------------------------------------------
   const promptWrap = el("details");
   promptWrap.append(el("summary", "muted small", "▸ system prompt"));

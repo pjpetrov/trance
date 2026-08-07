@@ -784,6 +784,26 @@ try {
       console.log("BROKEN: picking an agent did not change the pane:", second.slice(0, 160));
       process.exit(1);
     }
+    // An empty remit is read-only, and says so — it used to be refused at save
+    // time, so it read as an unfinished field rather than a decision.
+    const readonly = flat(api.agentCard({ name: "auditor", title: "Auditor",
+      description: "reads only", system_prompt: "p", paths: [], toolsets: ["files"],
+      preset: null, color: "#7aa2f7", protected: false, tries: 2, backup_tries: 2,
+      commands: [] }, false)).replace(/\s+/g, " ");
+    if (!readonly.includes("Read-only")) {
+      console.log("BROKEN: an empty remit does not say it is read-only:",
+                  readonly.slice(0, 160));
+      process.exit(1);
+    }
+    const withRemit = flat(api.agentCard({ name: "backend", title: "Backend",
+      description: "d", system_prompt: "p", paths: ["server/**", "api/**"],
+      toolsets: ["files"], preset: null, color: "#7aa2f7", protected: false,
+      tries: 2, backup_tries: 2, commands: [] }, false)).replace(/\s+/g, " ");
+    if (!withRemit.includes("2 path pattern(s)")) {
+      console.log("BROKEN: a remit does not say what it covers:", withRemit.slice(0, 160));
+      process.exit(1);
+    }
+
     const marked = document.getElementById("agent-names").querySelectorAll(".agent-name")
                      .filter((r) => (r.className || "").includes("on"));
     if (marked.length !== 1) {

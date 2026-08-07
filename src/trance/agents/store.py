@@ -131,10 +131,10 @@ def validate(data: dict) -> str | None:
         return f"unknown toolset(s): {', '.join(bad)}. Allowed: {', '.join(TOOLSETS)}"
     if data.get("paths") and not isinstance(data["paths"], list):
         return "paths must be a list of globs"
-    toolsets = data.get("toolsets") or []
-    if "files" in toolsets and not data.get("paths"):
-        return ("an agent with the files toolset needs at least one path in its remit, "
-                "or every write it attempts will be refused")
+    # An empty remit is not a mistake, it is read-only: the files toolset also
+    # reads and lists, and reads are never remit-checked. A reviewer that must
+    # not touch the code is exactly this, and refusing to save it left no way to
+    # express the safest agent there is.
     return None
 
 
