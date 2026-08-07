@@ -69,7 +69,8 @@ HTTPS tunnel so you can send the link to someone (see
 | **Run** | The pipeline, and a live console of the working agent. |
 | **Files** | The project tree, a CodeMirror editor, and line-by-line review. |
 
-Four modals: **⚙ Models**, **👥 Agents**, **↻ Loops**, **$_ Commands**.
+Four modals: **⚙ Models**, **👥 Agents** (the team down one side, one agent's
+settings at a time), **↻ Loops**, **$_ Commands**.
 
 ---
 

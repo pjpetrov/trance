@@ -172,6 +172,17 @@ const RESPONSES = {
                       max_loops: 2, attempts: [] }] },
     progress: { total: 1, done: 0, pending: 1 },
   },
+  "/api/agents": { toolsets: ["files", "graph", "commands", "inspect"], agents: [
+    { name: "backend", title: "Backend", description: "server work", system_prompt: "p",
+      paths: ["server/**"], toolsets: ["files"], preset: null, color: "#7aa2f7",
+      protected: true, tries: 2, backup_tries: 2, verifier: false, commands: [] },
+    { name: "frontend", title: "Frontend", description: "browser work", system_prompt: "p",
+      paths: ["public/**"], toolsets: ["files"], preset: null, color: "#9ece6a",
+      protected: true, tries: 2, backup_tries: 2, verifier: false, commands: [] },
+    { name: "tester", title: "Tester", description: "runs the tests", system_prompt: "p",
+      paths: [], toolsets: ["commands"], preset: null, color: "#e0af68",
+      protected: true, tries: 2, backup_tries: 2, verifier: true, commands: ["pytest"] },
+  ] },
   "/api/loops": { loops: [{ name: "another-loop", description: "d2", prompt: "",
                             start: "n_a", max_steps: 6, roles: ["reviewer"],
                             nodes: [{ id: "n_a", role: "reviewer", focus: "",
@@ -211,7 +222,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -749,10 +760,41 @@ try {
       }
     }
   }
+  // The agents modal: the team down the right, one card at a time on the left.
+  {
+    await api.renderAgents();
+    const picker = flat(document.getElementById("agent-names")).replace(/\s+/g, " ");
+    for (const who of ["backend", "frontend", "tester"]) {
+      if (!picker.includes(who)) {
+        console.log("BROKEN: the agent picker is missing", who, ":", picker);
+        process.exit(1);
+      }
+    }
+    const shown = flat(document.getElementById("agent-list")).replace(/\s+/g, " ");
+    if (!shown.includes("server/**") || shown.includes("public/**")) {
+      console.log("BROKEN: the pane should show one agent, not all of them:",
+                  shown.slice(0, 160));
+      process.exit(1);
+    }
+    // Clicking a name swaps the pane to that agent.
+    const rows = document.getElementById("agent-names").querySelectorAll(".agent-name");
+    rows[1].onclick();
+    const second = flat(document.getElementById("agent-list")).replace(/\s+/g, " ");
+    if (!second.includes("public/**") || second.includes("server/**")) {
+      console.log("BROKEN: picking an agent did not change the pane:", second.slice(0, 160));
+      process.exit(1);
+    }
+    const marked = document.getElementById("agent-names").querySelectorAll(".agent-name")
+                     .filter((r) => (r.className || "").includes("on"));
+    if (marked.length !== 1) {
+      console.log("BROKEN: expected exactly one selected agent, got", marked.length);
+      process.exit(1);
+    }
+  }
+
   // A new agent arrives with a template to edit, not an empty box — and a way
   // to have a first draft written from its name.
   {
-    const before = document.getElementById("agent-list").children.length;
     document.getElementById("add-agent").onclick();
     const card = flat(document.getElementById("agent-list")).replace(/\s+/g, " ");
     if (!card.includes("«WHAT THIS AGENT IS»")) {
@@ -767,8 +809,8 @@ try {
       console.log("BROKEN: no way to have a prompt drafted");
       process.exit(1);
     }
-    if (document.getElementById("agent-list").children.length <= before) {
-      console.log("BROKEN: the new agent card was not added");
+    if (card.includes("server/**")) {
+      console.log("BROKEN: adding an agent left the previous one on screen");
       process.exit(1);
     }
   }

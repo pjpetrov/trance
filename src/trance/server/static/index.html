@@ -235,8 +235,13 @@
     </div>
     <p class="muted small">Editing an agent type applies everywhere it's used. The <b>remit</b> is
       enforced at the tool boundary — a write outside it is refused, not just discouraged.</p>
-    <div id="agent-list" class="provider-list"></div>
-    <div class="row"><button id="add-agent" class="primary">+ Add agent type</button></div>
+    <div class="agents-split">
+      <div id="agent-list" class="provider-list"></div>
+      <div class="agent-picker">
+        <div id="agent-names"></div>
+        <button id="add-agent" class="primary">+ Add agent type</button>
+      </div>
+    </div>
   </div>
 </div>
 

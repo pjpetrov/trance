@@ -852,3 +852,29 @@ input.tiny { width: 68px; }
 .review-section > summary:hover { background: rgba(255, 255, 255, .03); }
 .review-when { font-variant-numeric: tabular-nums; font-size: 12px; }
 .review-body { padding-bottom: 10px; }
+
+/* Agents: one card at a time, with the team down the right-hand side. */
+.agents-split { display: flex; gap: 14px; align-items: flex-start; }
+.agents-split > .provider-list { flex: 1; min-width: 0; }
+.agent-picker {
+  width: 190px; flex: none; display: flex; flex-direction: column; gap: 3px;
+  position: sticky; top: 0;
+}
+.agent-picker > button.primary { margin-top: 8px; }
+.agent-name {
+  display: flex; gap: 8px; align-items: center; text-align: left;
+  padding: 6px 9px; border-radius: 6px; border: 1px solid transparent;
+  background: none; cursor: pointer; font-size: 13px; width: 100%;
+}
+.agent-name:hover { background: rgba(255, 255, 255, .04); }
+.agent-name.on {
+  background: var(--panel-2, #1b1f27); border-color: var(--line, #2a2f3a);
+  font-weight: 600;
+}
+.agent-name-text { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.agent-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+@media (max-width: 780px) {
+  .agents-split { flex-direction: column-reverse; }
+  .agent-picker { width: 100%; flex-direction: row; flex-wrap: wrap; }
+  .agent-name { width: auto; }
+}

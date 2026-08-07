@@ -1686,7 +1686,7 @@ function presetCard(preset, isNew) {
 
   if (isNew) {
     const cancel = el("button", null, "Cancel");
-    cancel.onclick = () => card.remove();
+    cancel.onclick = () => paintAgents(state.agents?.[0]?.name || "");
     actions.append(cancel);
   } else {
     const del = el("button", "danger", "Delete");
@@ -1767,9 +1767,39 @@ async function renderAgents() {
   const data = await api("/api/agents");
   state.toolsets = data.toolsets;
   state.agents = data.agents;
+  paintAgents();
+}
+
+/* One agent at a time. Eight cards of remits, prompts and models stacked in a
+ * modal is a page you scroll looking for the one you came for; the list on the
+ * right is the whole team at a glance, and the space goes to the agent you
+ * picked. */
+function paintAgents(selected) {
+  const agents = state.agents || [];
+  if (selected !== undefined) state.agentSelected = selected;
+  if (!agents.some((a) => a.name === state.agentSelected)) {
+    state.agentSelected = agents.length ? agents[0].name : "";
+  }
+
+  const names = $("agent-names");
+  names.innerHTML = "";
+  agents.forEach((agent) => {
+    const row = el("button", "agent-name"
+      + (agent.name === state.agentSelected ? " on" : ""));
+    const dot = el("span", "agent-dot");
+    dot.style.background = agent.color || "#7aa2f7";
+    row.append(dot, el("span", "agent-name-text", agent.name));
+    if (agent.verifier) row.append(el("span", "muted small", "✓"));
+    row.title = agent.description || agent.title || agent.name;
+    row.onclick = () => paintAgents(agent.name);
+    names.append(row);
+  });
+
   const box = $("agent-list");
   box.innerHTML = "";
-  data.agents.forEach((a) => box.append(agentCard(a, false)));
+  const showing = agents.find((a) => a.name === state.agentSelected);
+  if (showing) box.append(agentCard(showing, false));
+  else box.append(el("p", "muted small", "No agents yet — add one on the right."));
 }
 
 const TOOLSET_HELP = {
@@ -2070,6 +2100,7 @@ function agentCard(agent, isNew) {
     result.textContent = "saved";
     result.className = "check-result ok";
     toast(`Saved agent “${shortname}”.`);
+    state.agentSelected = shortname;      // stay on the one you just edited
     await renderAgents();
     await refreshConfig();
     if (state.session) state.session = await api(`/api/sessions/${state.session.id}`);
@@ -2078,7 +2109,7 @@ function agentCard(agent, isNew) {
 
   if (isNew) {
     const cancel = el("button", null, "Cancel");
-    cancel.onclick = () => card.remove();
+    cancel.onclick = () => paintAgents(state.agents?.[0]?.name || "");
     actions.append(cancel);
   } else if (agent.protected) {
     const reset = el("button", null, "Reset to built-in");
@@ -2132,7 +2163,13 @@ const AGENT_TEMPLATE = [
 ].join("\n");
 
 $("add-agent").onclick = () => {
-  $("agent-list").prepend(agentCard({
+  // A new one takes over the pane, so there is only ever one card on screen.
+  state.agentSelected = "";
+  $("agent-names").querySelectorAll(".agent-name").forEach(
+    (row) => row.classList.remove("on"));
+  const box = $("agent-list");
+  box.innerHTML = "";
+  box.append(agentCard({
     name: "", title: "", description: "", system_prompt: AGENT_TEMPLATE,
     paths: [], toolsets: ["files", "graph"], preset: null, color: "#7aa2f7",
     protected: false,
