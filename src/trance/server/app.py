@@ -945,7 +945,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                   "it in your report instead of changing code.")
         step = Step(role="" if loop_name else "backend", loop=loop_name, task=task,
                     points=3, max_loops=2)
-        session.flow.steps.append(step)
+        # Next, not last. The comments name lines in the code as it is right
+        # now; run them after everything else and those lines have moved.
+        position = session.flow.insert_next(step)
 
         record = {
             "id": f"rev_{uuid4().hex[:8]}", "step_id": step.id,
@@ -964,8 +966,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         touch(session)
         bus.emit("review_sent", session_id, agent="you", payload={
             "review": record["id"], "step_id": step.id, "notes": len(record["notes"]),
-            "loop": loop_name,
-            "message": f"Sent {len(record['notes'])} review comment(s) as a step.",
+            "loop": loop_name, "position": position,
+            "message": (f"Sent {len(record['notes'])} review comment(s) as step "
+                        f"{position} — it runs next."),
         })
         bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
         started = ensure_running(session)

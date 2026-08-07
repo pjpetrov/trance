@@ -6336,3 +6336,67 @@ def test_a_tunnel_does_not_outlive_the_preview_it_points_at(tmp_path, monkeypatc
     assert client.post(f"/api/sessions/{sid}/share", json={}).status_code == 200
     client.delete(f"/api/sessions/{sid}/preview")
     assert stopped, "stopping the preview left its tunnel running"
+
+
+def test_a_review_runs_next_not_last():
+    """The comments name lines in the code as it is right now. Queued behind
+    every other pending step, they are acted on after those lines have moved —
+    and it reads as if the review was ignored."""
+    from trance.flow import Flow, Step
+
+    flow = Flow(steps=[
+        Step(id="1", role="frontend", task="a", status="done"),
+        Step(id="2", role="frontend", task="b", status="failed"),
+        Step(id="3", role="frontend", task="c", status="running"),
+        Step(id="4", role="frontend", task="d", status="pending"),
+        Step(id="5", role="frontend", task="e", status="pending"),
+    ])
+    where = flow.insert_next(Step(id="rv", role="frontend", task="the review"))
+
+    # After the one in flight, ahead of everything merely queued.
+    assert where == 4
+    assert [s.id for s in flow.steps] == ["1", "2", "3", "rv", "4", "5"]
+    assert flow.next_pending().id == "rv"
+
+
+def test_a_review_with_nothing_running_goes_first(tmp_path):
+    from trance.flow import Flow, Step
+
+    flow = Flow(steps=[
+        Step(id="1", role="frontend", task="a", status="done"),
+        Step(id="2", role="frontend", task="b", status="pending"),
+    ])
+    assert flow.insert_next(Step(id="rv", role="frontend", task="review")) == 2
+    assert flow.next_pending().id == "rv"
+
+    # ...and onto the end when there is nothing left to be ahead of.
+    finished = Flow(steps=[Step(id="1", role="frontend", task="a", status="done")])
+    assert finished.insert_next(Step(id="rv", role="frontend", task="review")) == 2
+
+
+def test_the_review_step_lands_where_it_says_it_does(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "backend", "task": "one", "status": "done"},
+        {"role": "backend", "task": "two", "status": "pending"},
+        {"role": "backend", "task": "three", "status": "pending"},
+    ]})
+    client.post(f"/api/sessions/{sid}/review",
+                json={"path": "a.js", "line": 3, "note": "rename this"})
+    sent = client.post(f"/api/sessions/{sid}/review/finish", json={})
+    assert sent.status_code == 200
+
+    steps = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"]
+    assert [s["task"][:5] for s in steps] == ["one", "Addre", "two", "three"]

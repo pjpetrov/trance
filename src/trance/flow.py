@@ -208,6 +208,25 @@ class Flow:
     def next_pending(self) -> Step | None:
         return next((s for s in self.steps if s.status == "pending"), None)
 
+    def insert_next(self, step: "Step") -> int:
+        """Put a step at the front of the queue, after whatever is running.
+
+        For work that is about the code as it stands now — a review naming
+        particular lines. Appended at the end it runs after every other pending
+        step, by which time the lines it refers to have moved, and it reads as
+        if the comment was ignored. Returns where it landed, 1-based.
+        """
+        after = 0
+        for i, existing in enumerate(self.steps):
+            if existing.status in self.LOCKED:
+                after = i + 1            # never in front of something in flight
+            elif existing.status == "pending":
+                break
+            else:
+                after = i + 1            # done, failed, skipped: already behind us
+        self.steps.insert(after, step)
+        return after + 1
+
     #: A step whose agent is mid-flight cannot be edited — everything else can.
     LOCKED = ("running", "verifying")
     #: Statuses that mean "this will not run again unless you say so".
