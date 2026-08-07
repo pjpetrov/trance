@@ -30,8 +30,12 @@ import http.server
 import json
 import os
 import re
+import shutil
+import signal
 import socket
+import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -281,3 +285,81 @@ def public_url(port: int, api: str = NGROK_API, timeout: float = 0.4) -> str:
         else:
             plain = plain or url
     return https or plain              # https for preference; both are offered
+
+
+class NoTunnelTool(RuntimeError):
+    """ngrok is not installed, or not on the PATH trance was started with."""
+
+
+@dataclass
+class Tunnel:
+    """An ngrok agent trance started, and is therefore responsible for."""
+
+    port: int
+    url: str
+    proc: object
+    #: What it was started with, so the UI can say whether it has a password.
+    policy: str = ""
+
+    @property
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def to_dict(self) -> dict:
+        return {"url": self.url, "port": self.port,
+                "protected": bool(self.policy), "running": self.running}
+
+    def stop(self) -> None:
+        if self.proc is None:
+            return
+        try:
+            os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
+def start_tunnel(port: int, policy: str = "", wait_s: float = 25.0) -> Tunnel:
+    """Run `ngrok http <port>` and wait for it to report its public URL.
+
+    The URL is read back from the agent's own API rather than parsed out of its
+    output, because that is the thing the agent considers true — and it is the
+    same source used when someone starts ngrok themselves, so a tunnel behaves
+    identically whichever way it was started.
+    """
+    binary = shutil.which("ngrok")
+    if not binary:
+        raise NoTunnelTool(
+            "ngrok is not on trance's PATH. Install it (~/.local/bin is fine) and "
+            "restart trance, or start the tunnel yourself with tools/preview-tunnel.sh.")
+
+    command = [binary, "http", str(port)]
+    if policy:
+        command += ["--traffic-policy-file", policy]
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, start_new_session=True)
+
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            output = (proc.stdout.read() if proc.stdout else "") or ""
+            raise RuntimeError(_ngrok_failure(output))
+        url = public_url(port)
+        if url:
+            return Tunnel(port=port, url=url, proc=proc, policy=policy)
+        time.sleep(0.3)
+
+    proc.kill()
+    raise RuntimeError("ngrok did not report a public URL within 25s.")
+
+
+def _ngrok_failure(output: str) -> str:
+    """ngrok's own words, which say what to do; ours only if it said nothing."""
+    for line in output.splitlines():
+        if "ERR_NGROK" in line or "authentication failed" in line.lower():
+            return line.strip().removeprefix("ERROR:").strip()
+    return (output.strip().splitlines() or
+            ["ngrok exited immediately. Has it been given an authtoken? "
+             "`ngrok config add-authtoken <token>`"])[-1][:300]

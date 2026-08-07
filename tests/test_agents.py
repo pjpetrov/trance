@@ -6254,3 +6254,85 @@ def test_a_review_comment_needs_no_file(tmp_path):
     assert "- the controls are unusable on a phone" in task
     assert task.index("overall") < task.index("src/main.js")
     assert "line 12" in task
+
+
+def test_sharing_needs_something_to_share(tmp_path):
+    """A tunnel to nothing is a link that answers 502, so it is refused."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "index.html").write_text("<h1>hi</h1>")
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    refused = client.post(f"/api/sessions/{sid}/share", json={})
+    assert refused.status_code == 409 and "nothing is being served" in refused.text
+
+
+def test_a_missing_ngrok_says_so_rather_than_failing_obscurely(tmp_path, monkeypatch):
+    from trance import preview
+
+    monkeypatch.setattr("trance.preview.shutil.which", lambda _: None)
+    with pytest.raises(preview.NoTunnelTool) as raised:
+        preview.start_tunnel(1234)
+    assert "not on trance's PATH" in str(raised.value)
+
+
+def test_ngroks_own_complaint_is_what_gets_reported(tmp_path):
+    """"ngrok exited" tells you nothing. "authentication failed" tells you to go
+    and add your authtoken."""
+    from trance import preview
+
+    said = preview._ngrok_failure(
+        "ERROR:  authentication failed: This session is not authenticated.\n"
+        "ERROR:  ERR_NGROK_4018\n")
+    assert said == "authentication failed: This session is not authenticated."
+    # Anything it says is better than anything we would invent...
+    assert preview._ngrok_failure("could not bind: address in use\n") == \
+        "could not bind: address in use"
+    # ...but when it says nothing, the usual reason is worth naming.
+    assert "authtoken" in preview._ngrok_failure("")
+
+
+def test_a_tunnel_does_not_outlive_the_preview_it_points_at(tmp_path, monkeypatch):
+    """Stopping the preview leaves the public URL answering 502 otherwise."""
+    from fastapi.testclient import TestClient
+
+    from trance import preview
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    stopped = []
+
+    class FakeTunnel:
+        port, url, running, proc = 1, "https://x.ngrok-free.dev", True, None
+
+        def to_dict(self):
+            return {"url": self.url, "port": self.port, "running": True,
+                    "protected": False}
+
+        def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(preview, "start_tunnel", lambda port, policy="": FakeTunnel())
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "index.html").write_text("<h1>hi</h1>")
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    client.post(f"/api/sessions/{sid}/preview", json={"path": "index.html"})
+    assert client.post(f"/api/sessions/{sid}/share", json={}).status_code == 200
+    client.delete(f"/api/sessions/{sid}/preview")
+    assert stopped, "stopping the preview left its tunnel running"

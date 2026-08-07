@@ -4104,6 +4104,26 @@ function showPage(served) {
   renderPreviewStatus(served);
 }
 
+/* ngrok is a program on your machine, not a service trance talks to, so this
+ * starts it and waits for it to say where it landed. Anything it complains
+ * about — no authtoken, no account — is shown as it said it. */
+async function startShare(button) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "starting…";
+  try {
+    const tunnel = await api(`/api/sessions/${state.session.id}/share`,
+                             { method: "POST", body: { protected: false } });
+    state.shared = tunnel;
+    if (state.preview) state.preview.public = tunnel.url;
+    renderPreviewStatus();
+    toast(`Anyone with this link can open it: ${tunnel.url}`);
+  } catch (_) {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
 function warnAboutBuild(served) {
   const box = $("preview-warning-body");
   box.innerHTML = "";
@@ -4157,9 +4177,15 @@ function renderPreviewStatus(served) {
   link.title = "This preview, as reachable from any device on your network";
   note.append(el("span", "muted small", "serving"), link);
 
-  // A tunnel is started in a terminal, so its URL lives in that terminal. This
-  // is the one you would actually send someone, so it belongs next to the page
-  // it serves rather than in a window you have to go and find.
+  // Sharing is a click, but never an accident: the button says what it will do
+  // and the link is only public once you have pressed it.
+  if (!served.public) {
+    const share = el("button", "small", "share…");
+    share.title = "Publish this preview over HTTPS with ngrok, so you can send "
+                  + "someone the link";
+    share.onclick = () => startShare(share);
+    note.append(share);
+  }
   if (served.public) {
     const share = el("a", "share-link", "share");
     share.href = served.public;
@@ -4173,6 +4199,19 @@ function renderPreviewStatus(served) {
     };
     note.append(share);
   }
+  if (state.shared && state.shared.running) {
+    const unshare = el("button", "small", "stop sharing");
+    unshare.title = "Close the public link. The preview stays up locally.";
+    unshare.onclick = async () => {
+      await api(`/api/sessions/${state.session.id}/share`, { method: "DELETE" });
+      state.shared = null;
+      if (state.preview) state.preview.public = "";
+      renderPreviewStatus();
+      toast("The public link is closed.");
+    };
+    note.append(unshare);
+  }
+
   const stop = el("button", "small", "stop");
   stop.onclick = async () => {
     await api(`/api/sessions/${state.session.id}/preview`, { method: "DELETE" });

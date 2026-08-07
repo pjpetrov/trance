@@ -50,10 +50,10 @@ record of what each agent did — and a step that goes wrong can be undone with
 click a line number to comment on it, and send the review as a step the flow
 runs. When it finishes, "what was fixed" answers from git. A page can be opened
 in a browser from there — trance serves its folder as static files, on your
-network as well as locally so you can look at it on a phone, and never builds or
-runs anything to do it. If you have an ngrok tunnel pointed at that preview,
-the Files screen offers its public URL as a **share** link; trance never starts
-the tunnel, it only notices one that is already running.
+network as well as locally so you can look at it on a phone, and never builds
+your project to do it. One button further, it can put that preview behind an
+HTTPS tunnel so you can send the link to someone (see
+[Sharing a preview](#sharing-a-preview-optional)).
 
 ---
 
@@ -209,12 +209,52 @@ otherwise add an API key in ⚙ Models.
 trance serve -w ~/projects          # where new projects are created
 trance serve --host 0.0.0.0         # network-visible; read the warning it prints
                                     # (file previews are network-visible either way)
-
-tools/preview-tunnel.sh             # publish the running preview over HTTPS
-                                    # (ngrok; writes a password policy on first run)
-tools/preview-tunnel.sh --open      # ...with no login, to send to someone
 trance serve --runs-dir ~/.trance   # where sessions and settings live
 ```
+
+## Sharing a preview (optional)
+
+The ▷ button in the Files tab serves a page's folder on your own network. To
+send it to someone who is not on that network — "does this work on your phone?"
+— trance can put it behind an HTTPS tunnel. This needs
+[ngrok](https://ngrok.com/download), which is not a dependency: without it the
+sharing controls simply do not appear.
+
+```bash
+# once, on the machine running trance
+ngrok config add-authtoken <token from dashboard.ngrok.com>
+```
+
+Then in the UI: **▷** on a page to serve it, and **share…** next to *serving*.
+trance starts ngrok on that preview's port, shows the public link, and gives you
+**stop sharing** to close it again. Nothing is published until you press it, and
+stopping the preview stops the tunnel with it.
+
+Two things to know before you send the link on:
+
+* **There is no password.** Anyone with the URL can read *every file in that
+  folder*, not just the page. Keep secrets out of the folder you serve.
+* **A browser sees ngrok's warning page first** ("You are about to visit…") and
+  has to click through. That is ngrok's free plan; nothing here can turn it off.
+
+From a terminal instead, with a password, which is the better default when the
+folder is not just a game you want played:
+
+```bash
+tools/preview-tunnel.sh             # writes a policy with a generated password
+                                    # on first run, and prints the credentials
+tools/preview-tunnel.sh --open      # ...or no password, same as the UI button
+tools/preview-tunnel.sh s_1a2b3c4d  # when several sessions are serving
+```
+
+A tunnel started this way shows up in the UI too — trance reads the ngrok
+agent's local API, so the **share** link appears however the tunnel was started.
+Set `TRANCE_NGROK_API` if your agent is not on the default port.
+
+A Vite or webpack project will not work through any of this: the preview serves
+files, and the page's bare imports (`import ... from "three"`) need a build step.
+trance tells you which import stops it. Run your own dev server and point ngrok
+at that port instead.
 
 ## The CLI
 
@@ -237,7 +277,7 @@ trance stats      samples/sample-app
 ## Tests
 
 ```bash
-pytest                  # 450 tests
+pytest                  # 470 tests
 node tools/check_ui.js  # loads app.js in a DOM-less harness and drives it
 ```
 

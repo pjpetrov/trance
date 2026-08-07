@@ -142,7 +142,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -713,6 +713,25 @@ try {
     // the share link off screen — they used to share one container.
     api.renderReviewStatus();
     const status = flat(document.getElementById("preview-status")).replace(/\s+/g, " ");
+    // With a tunnel up: the link, and a way to close it. Without one: an
+    // offer to start one, never a public URL you did not ask for.
+    api.state.shared = { running: true, url: "https://sterilize-unscathed.ngrok-free.dev/" };
+    api.renderPreviewStatus();
+    const shared = flat(document.getElementById("preview-status")).replace(/\s+/g, " ");
+    if (!shared.includes("share") || !shared.includes("stop sharing")) {
+      console.log("BROKEN: no way to stop sharing:", shared.slice(0, 140));
+      process.exit(1);
+    }
+    api.state.shared = null;
+    api.renderPreviewStatus({ ...RESPONSES["/api/sessions/s1/preview"], public: "" });
+    const unshared = flat(document.getElementById("preview-status")).replace(/\s+/g, " ");
+    if (!unshared.includes("share…") || unshared.includes("ngrok-free")) {
+      console.log("BROKEN: sharing is not offered, or leaked a URL:",
+                  unshared.slice(0, 140));
+      process.exit(1);
+    }
+    api.renderPreviewStatus(RESPONSES["/api/sessions/s1/preview"]);
+
     // The address shown is the one you can type into a phone.
     if (!status.includes("serving") || !status.includes("192.168.10.59:44817")) {
       console.log("BROKEN: the running preview is not shown:", status.slice(0, 100));

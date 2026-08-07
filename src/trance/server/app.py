@@ -796,12 +796,67 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "needs_build": needs_build, "blocked_by": blockers,
                 "build_command": (dev or {}).get("command", "")}
 
+    #: Tunnels trance started, so it can stop them again. One per session: a
+    #: second public URL for the same folder is only confusing.
+    tunnels: dict[str, object] = {}
+
+    @app.post("/api/sessions/{session_id}/share")
+    def start_share(session_id: str, body: dict | None = None):
+        """Publish the running preview, and hand back the link to send."""
+        _need(store, session_id)
+        served = previews.get(session_id)
+        if served is None:
+            raise HTTPException(409, "nothing is being served — open a page with ▷ first")
+
+        existing = tunnels.get(session_id)
+        if existing is not None and existing.running and existing.port == served.port:
+            return existing.to_dict()
+        if existing is not None:
+            existing.stop()
+
+        # Off by default. A tunnel with a password on it is the safer thing, and
+        # the one the script writes; sharing with someone who has no password is
+        # the deliberate choice, made here rather than assumed.
+        policy = ""
+        if (body or {}).get("protected"):
+            policy = str(Path.home() / ".config" / "ngrok" / "trance-preview.yml")
+            if not Path(policy).is_file():
+                raise HTTPException(400, (
+                    f"No traffic policy at {policy}. Run tools/preview-tunnel.sh once "
+                    f"to have one written with a password."))
+        try:
+            tunnel = preview.start_tunnel(served.port, policy=policy)
+        except preview.NoTunnelTool as exc:
+            raise HTTPException(501, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+        tunnels[session_id] = tunnel
+        bus.emit("preview", session_id, agent="you", payload={
+            "url": tunnel.url, "root": served.root, "port": served.port,
+            "message": (f"Sharing {Path(served.root).name}/ at {tunnel.url}"
+                        + ("" if policy else " — anyone with the link can open it.")),
+        })
+        return tunnel.to_dict()
+
+    @app.delete("/api/sessions/{session_id}/share")
+    def stop_share(session_id: str):
+        _need(store, session_id)
+        tunnel = tunnels.pop(session_id, None)
+        if tunnel is not None:
+            tunnel.stop()
+        return {"stopped": tunnel is not None}
+
     @app.delete("/api/sessions/{session_id}/preview")
     def stop_preview(session_id: str):
         _need(store, session_id)
         served = previews.pop(session_id, None)
         if served is not None:
             served.stop()
+        # A tunnel to a server that is gone is a link that answers 502.
+        tunnel = tunnels.pop(session_id, None)
+        if tunnel is not None:
+            tunnel.stop()
         return {"stopped": served is not None}
 
     @app.get("/api/sessions/{session_id}/preview")
@@ -1033,10 +1088,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str):
-        served = previews.pop(session_id, None)
-        if served is not None:
-            served.stop()          # nothing should outlive the session it serves
         """Delete a session and its trace. Files the agents wrote are left alone."""
+        # Nothing should outlive the session it belongs to — least of all a
+        # public URL to a folder whose session no longer exists.
+        for registry in (previews, tunnels):
+            running = registry.pop(session_id, None)
+            if running is not None:
+                running.stop()
         session = _need(store, session_id)
         if session.status == "running":
             session.stop()  # let the engine unwind before the directory goes
