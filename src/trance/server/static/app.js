@@ -139,6 +139,25 @@ async function loadWorkspace() {
   }
 }
 
+/* One badge, coloured by what the status means rather than by which word it is:
+ * green for working, amber for waiting on you, red for stopped by a fault, and
+ * grey for over. Used in the session list and the session bar, so the same
+ * status never looks like two different things. */
+function statusBadge(status) {
+  const known = ["running", "paused", "error", "planning", "ready", "finished"];
+  const badge = el("span",
+    `badge status-${known.includes(status) ? status : "ready"}`, status || "?");
+  badge.title = {
+    running: "an agent is working on this right now",
+    paused: "waiting for you — a question, or the pause button",
+    error: "the run stopped on a fault",
+    planning: "no flow yet: still talking to the orchestrator",
+    ready: "planned, not running",
+    finished: "every step is done",
+  }[status] || "";
+  return badge;
+}
+
 async function loadHome() {
   const sessions = await api("/api/sessions");
   const list = $("session-list");
@@ -148,10 +167,10 @@ async function loadHome() {
     const row = el("div");
     const left = el("div", "grow");
     left.append(el("div", null, s.name));
-    left.append(el("div", "muted small", `${s.project_dir} · ${s.status}`));
+    left.append(el("div", "muted small", s.project_dir));
 
     const right = el("div", "row");
-    right.append(el("span", "badge", s.status));
+    right.append(statusBadge(s.status));
     const del = el("button", "icon-btn danger", "🗑");
     del.title = "Delete this session";
     del.onclick = async (e) => {
@@ -245,7 +264,7 @@ function renderSessionBar() {
     loadHome();
   };
   bar.append(back, el("span", null, state.session.name),
-             el("span", "badge", state.session.status));
+             statusBadge(state.session.status));
   const plan = el("button", null, "Plan");
   plan.onclick = () => show("plan");
   const run = el("button", null, "Run");

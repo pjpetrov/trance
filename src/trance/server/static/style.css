@@ -881,3 +881,13 @@ input.tiny { width: 68px; }
 
 /* The server is running code older than the files on disk. */
 .stale-note { background: var(--warn, #e0af68); color: #14161c; font-weight: 600; }
+
+/* Session status, by colour. Six statuses in a grey list read as one; the
+   question the list answers is "which of these is doing something" — running
+   and error are what you are looking for, and finished is what you are not. */
+.badge.status-running { background: var(--ok); color: #10121c; border: none; font-weight: 600; }
+.badge.status-paused { background: var(--warn); color: #10121c; border: none; font-weight: 600; }
+.badge.status-error { background: var(--err); color: #10121c; border: none; font-weight: 600; }
+.badge.status-planning { color: var(--purple); border-color: var(--purple); }
+.badge.status-ready { color: var(--accent); border-color: var(--accent); }
+.badge.status-finished { color: var(--muted); border-color: var(--line); }

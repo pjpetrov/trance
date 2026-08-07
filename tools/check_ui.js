@@ -249,7 +249,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,blockSection,loadConsoleTail,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,presetCard,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,statusBadge,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,blockSection,loadConsoleTail,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,presetCard,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -1141,6 +1141,38 @@ try {
       process.exit(1);
     }
   }
+  // Status is coloured by what it means, and the same status looks the same
+  // wherever it appears.
+  {
+    const seen = {};
+    for (const status of ["running", "paused", "error", "planning", "ready",
+                          "finished", "nonsense"]) {
+      const badge = api.statusBadge(status);
+      seen[status] = badge.className;
+      if (!flat(badge).includes(status)) {
+        console.log("BROKEN: a status badge does not say the status:", status);
+        process.exit(1);
+      }
+    }
+    if (seen.running === seen.finished || seen.error === seen.ready) {
+      console.log("BROKEN: different statuses share a colour:", seen);
+      process.exit(1);
+    }
+    if (!seen.nonsense.includes("status-")) {
+      console.log("BROKEN: an unknown status has no class at all:", seen.nonsense);
+      process.exit(1);
+    }
+    api.state.session.status = "running";
+    api.renderSessionBar();
+    const bar = document.getElementById("session-bar");
+    const badges = bar.querySelectorAll(".badge").filter(
+      (b) => (b.className || "").includes("status-"));
+    if (!badges.length || !badges[0].className.includes("status-running")) {
+      console.log("BROKEN: the session bar does not colour its status");
+      process.exit(1);
+    }
+  }
+
   // A delegated step is one long call with nothing coming back until it ends.
   // If neither the console nor the header says so, a step that is working looks
   // like one that has hung on whatever was said last.
