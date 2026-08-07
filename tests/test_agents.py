@@ -5574,3 +5574,102 @@ def test_an_unstated_outcome_is_not_checked_either(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
     assert order == ["backend"]
+
+
+# ------------------------------------- what is in the project, and running it
+
+def test_the_file_listing_counts_lines_by_kind_of_file(tmp_path):
+    """"4,300 lines" says almost nothing; 4,000 of JavaScript and 300 of CSS
+    says what was built."""
+    _, client, sid, project = _files_client(tmp_path)
+    (project / "js").mkdir()
+    (project / "js" / "app.js").write_text("let a = 1;\n" * 40)
+    (project / "js" / "chart.js").write_text("let b = 2;\n" * 60)
+    (project / "style.css").write_text("body {}\n" * 12)
+    (project / "Makefile").write_text("all:\n")
+
+    totals = {t["ext"]: t for t in client.get(f"/api/sessions/{sid}/files").json()["totals"]}
+
+    # 100 here plus the two lines of server/app.js the fixture writes.
+    assert totals["js"]["lines"] == 102 and totals["js"]["files"] == 3
+    assert totals["css"]["lines"] == 12
+    assert totals["(no suffix)"]["files"] == 1          # Makefile is not "makefile"
+    # Biggest first, so the shape of the project is the first thing read.
+    order = [t["ext"] for t in client.get(f"/api/sessions/{sid}/files").json()["totals"]]
+    assert order[0] == "js"
+
+
+def test_a_page_is_served_from_its_own_folder(tmp_path):
+    """A page asks for /js/app.js from its own root. Serving the project root
+    would 404 every absolute path in it."""
+    import urllib.request
+
+    _, client, sid, project = _files_client(tmp_path)
+    public = project / "server" / "public"
+    (public / "js").mkdir(parents=True)
+    (public / "index.html").write_text('<script src="/js/app.js"></script>')
+    (public / "js" / "app.js").write_text("console.log(1)")
+
+    served = client.post(f"/api/sessions/{sid}/preview",
+                         json={"path": "server/public/index.html"}).json()
+    try:
+        assert served["root"].endswith("server/public")
+        assert served["open"].endswith("/index.html")
+        page = urllib.request.urlopen(served["open"], timeout=5).read().decode()
+        assert "/js/app.js" in page
+        js = urllib.request.urlopen(served["url"] + "js/app.js", timeout=5).read()
+        assert b"console.log(1)" in js               # the absolute path resolves
+    finally:
+        client.delete(f"/api/sessions/{sid}/preview")
+
+
+def test_the_preview_cannot_reach_outside_what_it_serves(tmp_path):
+    import urllib.error
+    import urllib.request
+
+    _, client, sid, project = _files_client(tmp_path)
+    public = project / "public"
+    public.mkdir()
+    (public / "index.html").write_text("<html></html>")
+    (project / "secret.txt").write_text("not for the web")
+
+    served = client.post(f"/api/sessions/{sid}/preview",
+                         json={"path": "public/index.html"}).json()
+    try:
+        for escape in ("../secret.txt", "..%2Fsecret.txt", "../../etc/passwd"):
+            try:
+                body = urllib.request.urlopen(served["url"] + escape, timeout=5).read()
+            except urllib.error.HTTPError:
+                continue                              # refused, which is the point
+            assert b"not for the web" not in body
+            assert b"root:" not in body
+    finally:
+        client.delete(f"/api/sessions/{sid}/preview")
+
+
+def test_a_preview_does_not_outlive_its_session(tmp_path):
+    import urllib.error
+    import urllib.request
+
+    app, client, sid, project = _files_client(tmp_path)
+    (project / "index.html").write_text("<html></html>")
+    served = client.post(f"/api/sessions/{sid}/preview",
+                         json={"path": "index.html"}).json()
+    assert urllib.request.urlopen(served["open"], timeout=5).status == 200
+
+    client.delete(f"/api/sessions/{sid}")
+    with pytest.raises((urllib.error.URLError, OSError)):
+        urllib.request.urlopen(served["open"], timeout=3)
+
+
+def test_asking_twice_for_the_same_folder_keeps_the_same_port(tmp_path):
+    """A new origin each time would throw away whatever the page had stored."""
+    _, client, sid, project = _files_client(tmp_path)
+    (project / "index.html").write_text("<html></html>")
+
+    first = client.post(f"/api/sessions/{sid}/preview", json={"path": "index.html"}).json()
+    second = client.post(f"/api/sessions/{sid}/preview", json={"path": "index.html"}).json()
+    try:
+        assert first["port"] == second["port"]
+    finally:
+        client.delete(f"/api/sessions/{sid}/preview")

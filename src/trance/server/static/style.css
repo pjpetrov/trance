@@ -676,21 +676,20 @@ input.tiny { width: 68px; }
 .file-view .CodeMirror-gutters { background: var(--bg); border-right: 1px solid var(--line); }
 .file-view .CodeMirror-linenumber { color: var(--muted); cursor: pointer; }
 .file-view .CodeMirror-linenumber:hover { color: var(--accent); }
-/* Reading is a review, so the whole line is the target and says so. */
-.file-view:not(.editing) .CodeMirror-line { cursor: text; }
-.file-view:not(.editing) .CodeMirror-line:hover { background: rgba(122,162,247,.07); }
+/* The gutter is the button; the line itself stays selectable. */
+.file-view .CodeMirror-gutter-wrapper:hover { background: rgba(122,162,247,.12); }
 .file-view .CodeMirror-activeline-background { background: rgba(122,162,247,.06); }
 .file-view.editing .CodeMirror { box-shadow: 0 0 0 1px var(--accent) inset; }
 .file-view.editing .CodeMirror-cursor { border-left: 2px solid var(--accent); }
 /* The gutter you click to review, and the mark left where you did. */
 .review-gutter { width: 14px; }
 .review-dot { color: var(--warn); font-size: 10px; }
-.code-line { display: flex; gap: 12px; padding: 0 10px; cursor: pointer; }
-.code-line:hover { background: rgba(122,162,247,.08); }
+.code-line { display: flex; gap: 12px; padding: 0 10px; }
 .code-n {
   flex: 0 0 auto; width: 42px; text-align: right; color: var(--muted);
-  user-select: none; font-variant-numeric: tabular-nums;
+  user-select: none; font-variant-numeric: tabular-nums; cursor: pointer;
 }
+.code-n:hover { color: var(--accent); }
 .code-text { white-space: pre; overflow-x: auto; flex: 1 1 auto; }
 .code-note, .code-compose {
   display: flex; gap: 8px; align-items: center; margin: 4px 10px 4px 54px;
@@ -729,3 +728,33 @@ input.tiny { width: 68px; }
 }
 .run-clock.ticking { border-color: var(--accent); }
 .run-clock.ticking b { color: var(--accent); }
+
+/* ── what is in this project ───────────────────────────────────────────
+   Lines by kind of file. A single total says almost nothing; the split
+   is what tells you what was built. */
+.file-stats { margin: 6px 0 10px; }
+.file-stats > summary { cursor: pointer; list-style: none; padding: 3px 0; }
+.file-stats > summary::-webkit-details-marker { display: none; }
+.file-stats > summary::before { content: "▸ "; color: var(--muted); }
+.file-stats[open] > summary::before { content: "▾ "; }
+.stat-row-file {
+  display: flex; gap: 8px; align-items: center; font-size: 11.5px;
+  padding: 2px 0; font-variant-numeric: tabular-nums;
+}
+.stat-ext { flex: 0 0 62px; font-family: var(--mono); color: var(--fg); }
+.stat-bar { flex: 1 1 auto; height: 6px; background: var(--panel-2); border-radius: 3px; }
+.stat-fill { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.stat-lines { flex: 0 0 auto; color: var(--muted); min-width: 46px; text-align: right; }
+
+/* ── preview ───────────────────────────────────────────────────────────
+   Reading index.html tells you it exists; opening it tells you it works. */
+.file-open {
+  flex: 0 0 auto; padding: 0 6px; font-size: 11px; line-height: 1.6;
+  border-color: transparent; background: transparent; color: var(--muted);
+}
+.file-open:hover { color: var(--ok); border-color: var(--ok); }
+.preview-note {
+  display: inline-flex; gap: 7px; align-items: center; margin-left: 10px;
+  padding: 2px 9px; border-radius: 999px; border: 1px solid var(--ok);
+}
+.preview-note a { color: var(--ok); text-decoration: none; font-family: var(--mono); }

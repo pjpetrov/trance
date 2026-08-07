@@ -3611,13 +3611,53 @@ async function openFiles() {
   show("files");
   await loadFileTree();
   renderReviewStatus();
+  api(`/api/sessions/${state.session.id}/preview`)
+    .then(renderPreviewStatus).catch(() => {});
   if (fileState.path) await openFile(fileState.path);
 }
 
 async function loadFileTree() {
   const data = await api(`/api/sessions/${state.session.id}/files`);
   fileState.files = data.files || [];
+  fileState.totals = data.totals || [];
   renderFileTree();
+  renderFileStats();
+}
+
+/* What is actually in a project is a question about kinds of file. "4,300
+ * lines" says almost nothing; 4,000 of JavaScript and 300 of CSS says what was
+ * built. */
+function renderFileStats() {
+  const box = $("file-stats-body");
+  if (!box) return;
+  box.innerHTML = "";
+  const totals = fileState.totals || [];
+  if (!totals.length) {
+    box.append(el("p", "muted small", "Nothing here yet."));
+    return;
+  }
+  const lines = totals.reduce((sum, t) => sum + t.lines, 0);
+  const files = totals.reduce((sum, t) => sum + t.files, 0);
+  const summary = $("file-stats").querySelector("summary");
+  if (summary) {
+    summary.textContent = `${lines.toLocaleString()} lines in ${files} files`;
+  }
+
+  const most = Math.max(...totals.map((t) => t.lines), 1);
+  totals.forEach((t) => {
+    const row = el("div", "stat-row-file");
+    row.append(el("span", "stat-ext", `.${t.ext}`.replace("..", ".")));
+    const bar = el("span", "stat-bar");
+    const fill = el("span", "stat-fill");
+    fill.style.width = `${Math.max(2, Math.round((t.lines / most) * 100))}%`;
+    bar.append(fill);
+    row.append(bar);
+    row.append(el("span", "stat-lines", t.lines.toLocaleString()));
+    row.append(el("span", "muted small", `${t.files}f`));
+    row.title = `${t.files} file(s), ${t.lines.toLocaleString()} lines, `
+                + `${Math.ceil(t.bytes / 1024).toLocaleString()}k`;
+    box.append(row);
+  });
 }
 
 function renderFileTree() {
@@ -3650,7 +3690,15 @@ function renderFileTree() {
       const marks = (state.session.review || []).filter((n) => n.path === file.path).length;
       row.append(el("span", "file-name", file.path.split("/").pop()));
       if (marks) row.append(el("span", "badge review-count", String(marks)));
-      row.append(el("span", "muted small", `${Math.ceil(file.bytes / 1024)}k`));
+      // A page is worth opening, not just reading: reading index.html tells you
+      // it exists, and running it tells you whether the thing works.
+      if (/\.(html?|svg)$/i.test(file.path)) {
+        const open = el("button", "file-open", "▷");
+        open.title = "Serve this folder and open the page in a new tab";
+        open.onclick = (e) => { e.stopPropagation(); openPreview(file.path); };
+        row.append(open);
+      }
+      row.append(el("span", "muted small", `${file.lines || "?"}L`));
       row.onclick = () => openFile(file.path);
       group.append(row);
     });
@@ -3668,7 +3716,7 @@ async function openFile(path) {
   fileState.editing = false;
   $("file-name").textContent = path;
   $("file-meta").textContent = `${data.lines} lines · ${Math.ceil(data.bytes / 1024)}k`
-    + " · click a line to comment on it";
+    + " · click a line number to comment on that line";
   renderFileTree();
   renderFileView();
 }
@@ -3728,20 +3776,11 @@ function renderFileView() {
     matchBrackets: true,
     gutters: ["CodeMirror-linenumbers", "review-gutter"],
   });
+  // The line number is the button. Clicking the line itself has to stay free
+  // for selecting and copying, which is most of what reading code is.
   editor.on("gutterClick", (cm, line) => {
     if (fileState.editing) return;
     commentOn(line + 1, cm.getLine(line) || "");
-  });
-  // The gutter alone was too small a target: clicking the line you are reading
-  // is the gesture people actually make. While reading, the click has nothing
-  // else to do — the editor has no cursor — so it opens the comment box.
-  editor.getWrapperElement().addEventListener("click", (e) => {
-    if (fileState.editing) return;
-    if (e.target.closest && e.target.closest(".code-note, .code-compose")) return;
-    if (editor.getSelection()) return;          // they were selecting, not clicking
-    const pos = editor.coordsChar({ left: e.clientX, top: e.clientY }, "window");
-    if (!pos) return;
-    commentOn(pos.line + 1, editor.getLine(pos.line) || "");
   });
   fileEditing(false);
   paintReviewMarks();
@@ -3783,8 +3822,9 @@ function renderPlainFileView() {
     const n = i + 1;
     const row = el("div", "code-line");
     row.append(el("span", "code-n", String(n)), el("code", "code-text", text || " "));
-    row.title = "Click to comment on this line";
-    row.onclick = () => commentOn(n, text);
+    const gutter = row.firstChild;
+    gutter.title = "Comment on this line";
+    gutter.onclick = () => commentOn(n, text);
     box.append(row);
     notes.filter((note) => note.line === n).forEach((note) => {
       const card = el("div", "code-note");
@@ -3794,8 +3834,20 @@ function renderPlainFileView() {
   });
 }
 
+//: The comment box being written, so a second click closes it rather than
+//: stacking another one under a different line.
+let composing = null;
+
 function commentOn(line, code) {
   if (fileState.editing) return;
+  // Clicking again — the same line or another — puts the open one away first.
+  const wasOn = composing && composing.line;
+  if (composing) {
+    composing.close();
+    composing = null;
+    if (wasOn === line) return;              // a second click on the same line
+  }
+
   const form = el("div", "code-compose");
   form.append(el("span", "muted small", `line ${line}`));
   const input = el("input");
@@ -3806,6 +3858,7 @@ function commentOn(line, code) {
   let widget = null;
   const close = () => {
     if (widget) widget.clear(); else form.remove();
+    if (composing && composing.form === form) composing = null;
   };
   cancel.onclick = (e) => { e.stopPropagation(); close(); };
   send.onclick = async (e) => {
@@ -3835,6 +3888,7 @@ function commentOn(line, code) {
     const anchor = rows[line - 1];
     if (anchor && anchor.after) anchor.after(form); else $("file-view").append(form);
   }
+  composing = { line, form, close };
   input.focus();
 }
 
@@ -3847,6 +3901,41 @@ function renderReviewStatus() {
     ? `${pending} comment(s) waiting — “Review finished” sends them as a step`
     : "Click any line to comment on it."));
   $("review-finish").disabled = !pending;
+}
+
+async function openPreview(path) {
+  let served;
+  try {
+    served = await api(`/api/sessions/${state.session.id}/preview`,
+                       { method: "POST", body: { path } });
+  } catch (_) { return; }
+  // A new tab rather than an iframe: the page gets its own origin, its own
+  // console and its own devtools, which is what you need to judge it.
+  window.open(served.open, "_blank", "noopener");
+  toast(`Serving ${served.root.split("/").pop()}/ on port ${served.port}.`);
+  renderPreviewStatus(served);
+}
+
+function renderPreviewStatus(served) {
+  const box = $("files-status");
+  const existing = box.querySelector(".preview-note");
+  if (existing && existing.remove) existing.remove();
+  if (!served || !served.port) return;
+
+  const note = el("span", "preview-note");
+  const link = el("a", null, `:${served.port}`);
+  link.href = served.url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  note.append(el("span", "muted small", "serving"), link);
+  const stop = el("button", "small", "stop");
+  stop.onclick = async () => {
+    await api(`/api/sessions/${state.session.id}/preview`, { method: "DELETE" });
+    note.remove();
+    toast("Preview stopped.");
+  };
+  note.append(stop);
+  box.append(note);
 }
 
 $("file-filter").addEventListener("input", renderFileTree);

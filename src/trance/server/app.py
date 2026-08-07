@@ -35,7 +35,7 @@ from ..providers import (
     client_for,
 )
 from ..session import ChatMessage, SessionStore
-from .. import vcs
+from .. import preview, vcs
 from ..worker.client import BackendError
 
 STATIC = Path(__file__).parent / "static"
@@ -659,10 +659,41 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 size = path.stat().st_size
             except OSError:
                 continue
-            found.append({"path": path.relative_to(root).as_posix(), "bytes": size})
+            found.append({"path": path.relative_to(root).as_posix(), "bytes": size,
+                          "lines": _count_lines(path, size)})
             if len(found) >= 2000:
                 break
-        return {"root": str(root), "files": found}
+        return {"root": str(root), "files": found, "totals": _by_extension(found)}
+
+    #: Counting lines means reading the file, so anything this size is reported
+    #: by bytes alone rather than holding up the listing.
+    COUNT_UNDER_BYTES = 2_000_000
+
+    def _count_lines(path: Path, size: int) -> int:
+        if size > COUNT_UNDER_BYTES:
+            return 0
+        try:
+            with path.open("rb") as handle:
+                return sum(1 for _ in handle)
+        except OSError:
+            return 0
+
+    def _by_extension(files: list[dict]) -> list[dict]:
+        """Lines and bytes per file type, biggest first.
+
+        What is actually in a project is a question about kinds of file, not
+        about a total: 4,000 lines of JavaScript and 300 of CSS says something,
+        and "4,300 lines" says almost nothing.
+        """
+        totals: dict[str, dict] = {}
+        for item in files:
+            name = item["path"].rsplit("/", 1)[-1]
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name[1:] else "(no suffix)"
+            entry = totals.setdefault(ext, {"ext": ext, "files": 0, "lines": 0, "bytes": 0})
+            entry["files"] += 1
+            entry["lines"] += item["lines"]
+            entry["bytes"] += item["bytes"]
+        return sorted(totals.values(), key=lambda e: (-e["lines"], -e["bytes"], e["ext"]))
 
     @app.get("/api/sessions/{session_id}/file")
     def read_project_file(session_id: str, path: str):
@@ -704,6 +735,52 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         })
         return {"path": body["path"], "bytes": len(content),
                 "committed": bool(result and result.ok)}
+
+    #: One preview server per session, kept until it is stopped or the session
+    #: goes. Restarting it for every click would give the browser a new origin
+    #: each time and throw away whatever the page had in local storage.
+    previews: dict[str, object] = {}
+    app.state.previews = previews
+
+    @app.post("/api/sessions/{session_id}/preview")
+    def start_preview(session_id: str, body: dict | None = None):
+        """Serve the folder a page lives in, and hand back its URL."""
+        session = _need(store, session_id)
+        root = _project_of(session)
+        target = _inside(root, (body or {}).get("path") or "")
+        if target is None or not target.exists():
+            raise HTTPException(404, "no such file")
+
+        web_root = preview.web_root_for(root, (body or {}).get("path") or "")
+        existing = previews.get(session_id)
+        if existing is not None and existing.root == str(web_root):
+            served = existing
+        else:
+            if existing is not None:
+                existing.stop()
+            served = preview.serve(web_root)
+            previews[session_id] = served
+
+        page = target.name if target.is_file() else ""
+        bus.emit("preview", session_id, agent="you", payload={
+            "url": served.url + page, "root": served.root, "port": served.port,
+            "message": f"Serving {Path(served.root).name}/ at {served.url}",
+        })
+        return {**served.to_dict(), "open": served.url + page}
+
+    @app.delete("/api/sessions/{session_id}/preview")
+    def stop_preview(session_id: str):
+        _need(store, session_id)
+        served = previews.pop(session_id, None)
+        if served is not None:
+            served.stop()
+        return {"stopped": served is not None}
+
+    @app.get("/api/sessions/{session_id}/preview")
+    def preview_status(session_id: str):
+        _need(store, session_id)
+        served = previews.get(session_id)
+        return served.to_dict() if served else {"root": "", "port": 0, "url": ""}
 
     # ------------------------------------------------------------- review
 
@@ -911,6 +988,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str):
+        served = previews.pop(session_id, None)
+        if served is not None:
+            served.stop()          # nothing should outlive the session it serves
         """Delete a session and its trace. Files the agents wrote are left alone."""
         session = _need(store, session_id)
         if session.status == "running":

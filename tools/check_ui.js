@@ -78,8 +78,17 @@ const RESPONSES = {
       context_window: 64000, max_tokens: 0, has_key: false, self_contained: true },
     { name: "claude", kind: "anthropic", model: "claude-opus-5", base_url: "https://y",
       context_window: 1000000, max_tokens: 0, has_key: true, self_contained: true }] },
-  "/api/sessions/s1/files": { root: "/p", files: [
-    { path: "server/app.js", bytes: 2048 }, { path: "README.md", bytes: 300 }] },
+  "/api/sessions/s1/files": {
+    root: "/p",
+    files: [{ path: "server/app.js", bytes: 2048, lines: 80 },
+            { path: "server/public/index.html", bytes: 900, lines: 30 },
+            { path: "README.md", bytes: 300, lines: 12 }],
+    totals: [{ ext: "js", files: 1, lines: 80, bytes: 2048 },
+             { ext: "html", files: 1, lines: 30, bytes: 900 },
+             { ext: "md", files: 1, lines: 12, bytes: 300 }] },
+  "/api/sessions/s1/preview": { root: "/p/server/public", port: 44817,
+                                url: "http://127.0.0.1:44817/",
+                                open: "http://127.0.0.1:44817/index.html" },
   "/api/sessions/s1/file?path=server%2Fapp.js": {
     path: "server/app.js", content: "const PORT = 3000;\napp.listen(PORT);\n",
     bytes: 40, lines: 2 },
@@ -633,6 +642,18 @@ try {
     const tree = flat(document.getElementById("file-tree")).replace(/\s+/g, " ");
     if (!tree.includes("app.js")) {
       console.log("BROKEN: the file tree did not render");
+      process.exit(1);
+    }
+    // The harness has no real tree, so each id is its own node: read the body.
+    const stats = flat(document.getElementById("file-stats-body")).replace(/\s+/g, " ");
+    for (const want of [".js", "80", ".html", "30", ".md", "12"]) {
+      if (!stats.includes(want)) {
+        console.log("BROKEN: file statistics missing", want, "in:", stats.slice(0, 120));
+        process.exit(1);
+      }
+    }
+    if (!tree.includes("▷")) {
+      console.log("BROKEN: no way to open a page from the tree");
       process.exit(1);
     }
     const view = flat(document.getElementById("file-view")).replace(/\s+/g, " ");
