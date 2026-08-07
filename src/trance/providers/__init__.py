@@ -144,14 +144,6 @@ class ProviderStore:
 
     # ----------------------------------------------------------- presets
 
-    def presets(self) -> list[ModelPreset]:
-        """Only presets whose provider still exists and is enabled."""
-        live = {p.name for p in self.all(enabled_only=True)}
-        return sorted(
-            (m for m in self._presets.values() if m.provider in live),
-            key=lambda m: m.name,
-        )
-
     def all_presets(self) -> list[ModelPreset]:
         return sorted(self._presets.values(), key=lambda m: m.name)
 

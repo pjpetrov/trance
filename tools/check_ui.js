@@ -101,7 +101,14 @@ global.navigator = {};
 global.location = { protocol: "http:", host: "x" };
 global.WebSocket = function () { return { onmessage: null, onclose: null, close() {} }; };
 const RESPONSES = {
-  "/api/config": { roles: {}, providers: [], presets: [], kinds: {},
+  "/api/config": { roles: {}, providers: [], kinds: {},
+                   presets: [
+                     { name: "Qwen3.6-llama.cpp", kind: "llamacpp", model: "qwen",
+                       base_url: "http://x/v1", context_window: 64000, max_tokens: 0,
+                       has_key: false, self_contained: true },
+                     { name: "claude", kind: "anthropic", model: "claude-opus-5",
+                       base_url: "https://y", context_window: 1000000, max_tokens: 0,
+                       has_key: true, self_contained: true }],
                    planning: { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] },
                    orchestrator: { provider: "p", model: "m", base_url: "u" } },
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
@@ -161,6 +168,13 @@ const RESPONSES = {
     when: "2 minutes ago", who: "trance", stat: " server/app.js | 4 +++-",
     clipped: false,
     diff: "--- a/server/app.js\n+++ b/server/app.js\n-const PORT = 3000;\n+const PORT = process.env.PORT;" },
+  // Re-fetching the session happens after nearly every save; without this the
+  // session became {} and the next thing to touch it failed somewhere else.
+  "/api/sessions/s1": {
+    id: "s1", name: "p", project_dir: "/tmp/p", status: "ready", paused: false,
+    goal: "", team: [], reviews: [], review: [], chat: [],
+    flow: { steps: [] }, progress: { total: 0, done: 0 },
+  },
   // The chat endpoint answers with the whole session, which the UI then adopts.
   "/api/sessions/s1/chat": {
     id: "s1", name: "p", project_dir: "/tmp/p", status: "planning", paused: false,
@@ -826,6 +840,25 @@ try {
       process.exit(1);
     }
 
+    // Saving an agent and then picking another must not lose the model list —
+    // the picker on the card is built from state.presets, which the save path
+    // reloads.
+    const saveButtons = document.getElementById("agent-list").querySelectorAll("button")
+                          .filter((b) => (b.textContent || "") === "Save");
+    if (!saveButtons.length) {
+      console.log("BROKEN: the agent card has no Save button");
+      process.exit(1);
+    }
+    await saveButtons[0].onclick();
+    const rowsAfter = document.getElementById("agent-names").querySelectorAll(".agent-name");
+    rowsAfter[2].onclick();
+    const afterSave = flat(document.getElementById("agent-list")).replace(/\s+/g, " ");
+    if (afterSave.includes("no models defined")) {
+      console.log("BROKEN: the model picker lost its models after a save:",
+                  afterSave.slice(0, 200));
+      process.exit(1);
+    }
+
     const marked = document.getElementById("agent-names").querySelectorAll(".agent-name")
                      .filter((r) => (r.className || "").includes("on"));
     if (marked.length !== 1) {
@@ -1228,7 +1261,10 @@ try {
   console.log("all render paths ran without a ReferenceError");
   process.exit(0);
 } catch (e) {
+  // With the stack: "undefined has no .split" names no function otherwise, and
+  // the whole point of this harness is to say where.
   console.log("BROKEN:", e.constructor.name + ":", e.message);
+  console.log((e.stack || "").split("\n").slice(1, 5).join("\n"));
   process.exit(1);
 }
 })();

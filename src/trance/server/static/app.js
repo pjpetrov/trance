@@ -1779,9 +1779,12 @@ function paintStale(stale) {
   const existing = bar.querySelector(".stale-note");
   if (existing && existing.remove) existing.remove();
   if (!stale) return;
-  const note = el("span", "badge stale-note", "restart to load new code");
-  note.title = "trance's source has changed since this server started, so what "
-               + "you are using is the older version. Restart it to pick up the change.";
+  const note = el("span", "badge stale-note", "trance itself was updated — restart it");
+  note.title = "This is about trance, not your project. Its own source files have "
+               + "changed since this server started, so you are still using the "
+               + "version that was running when you launched it. Stop trance and "
+               + "start it again to pick up the change; your sessions are on disk "
+               + "and survive.";
   bar.append(note);
 }
 

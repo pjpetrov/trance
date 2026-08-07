@@ -250,17 +250,19 @@ def test_role_without_a_preset_still_resolves(tmp_path):
     assert config.for_role(role).model == "m1"
 
 
-def test_presets_hide_when_their_provider_is_disabled(tmp_path):
+def test_a_model_is_offered_whatever_it_was_once_attached_to(tmp_path):
+    """A model used to be hidden when its *provider* was disabled. Providers are
+    gone — everything is defined on the model — so that filter could only ever
+    return nothing, and the config endpoint that used it emptied the model
+    picker in the UI on every refresh."""
     from trance.providers import ModelPreset
 
     store = ProviderStore(tmp_path / "p.json")
-    store.upsert(ProviderConfig(name="local", kind="ollama"))
     store.upsert_preset(ModelPreset(name="fast", provider="local", model="m"))
-    assert [m.name for m in store.presets()] == ["fast"]
+    store.upsert_preset(ModelPreset(name="slow", provider="", model="m2"))
 
-    store.upsert(ProviderConfig(name="local", kind="ollama", enabled=False))
-    assert store.presets() == []          # not offered to agents
-    assert len(store.all_presets()) == 1  # but still configured
+    assert [m.name for m in store.all_presets()] == ["fast", "slow"]
+    assert not hasattr(store, "presets"), "the provider-filtered list is gone"
 
 
 def test_seeding_gives_every_provider_a_starter_model(tmp_path):

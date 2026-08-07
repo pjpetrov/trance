@@ -286,7 +286,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {
             "config": config.to_dict(),
             "roles": {r.name: r.to_dict() for r in roles.all()},
-            "presets": [m.to_dict() for m in providers.presets()],
+            # all_presets, not presets: the latter hides anything whose
+            # *provider* is disabled, and providers no longer exist — so it
+            # returns nothing, and the UI that reads this emptied its model
+            # picker every time it refreshed.
+            "presets": [m.to_dict() for m in providers.all_presets()],
             "kinds": KIND_DEFAULTS,
             "planning": {"max_step_points": config.max_step_points, "scale": list(POINTS),
                          "escalation_preset": config.escalation_preset,
