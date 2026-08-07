@@ -207,6 +207,9 @@ otherwise add an API key in ⚙ Models.
 trance serve -w ~/projects          # where new projects are created
 trance serve --host 0.0.0.0         # network-visible; read the warning it prints
                                     # (file previews are network-visible either way)
+
+tools/preview-tunnel.sh             # publish the running preview over HTTPS,
+                                    # password-protected, via ngrok
 trance serve --runs-dir ~/.trance   # where sessions and settings live
 ```
 
