@@ -114,7 +114,9 @@ Toolsets: `files` (read/write within the remit), `graph` (symbol lookups),
 verifiers that must not be able to do the work themselves).
 
 Ships with backend, frontend, tester, devops, reviewer, planner, factchecker and
-the orchestrator. All editable; new ones can be added.
+the orchestrator. All editable; new ones can be added — a new agent starts from
+a template with the parts to replace marked «like this», and one button drafts a
+first prompt from the name you gave it.
 
 ### Steps, loops and outcomes
 

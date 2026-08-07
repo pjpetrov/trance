@@ -2577,42 +2577,6 @@ def test_the_plan_is_returned_before_the_splitting_finishes(tmp_path, monkeypatc
         splitting.set()
 
 
-def test_the_user_is_told_splitting_is_still_running(tmp_path, monkeypatch):
-    import threading
-
-    from fastapi.testclient import TestClient
-
-    from trance.config import Config
-    from trance.server import app as app_module
-
-    done = threading.Event()
-    proposal = {"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "build the whole api", "points": 8}]}
-
-    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
-                        lambda **kw: {"text": "plan", "proposal": proposal})
-    monkeypatch.setattr(app_module.orchestrator_agent, "split_oversized",
-                        lambda *a, **k: done.wait(5) or {**proposal, "split": []})
-
-    config = Config.load(tmp_path / "none.toml")
-    config.runs_dir = str(tmp_path / "runs")
-    app = app_module.create_app(config, tmp_path / "sessions")
-    client = TestClient(app)
-    try:
-        sid = client.post("/api/sessions",
-                          json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
-        client.post(f"/api/sessions/{sid}/chat", json={"message": "build it"})
-
-        kinds = [e.type for e in app.state.bus.history(sid)]
-        assert "splitting_steps" in kinds        # so the UI can say what it is waiting for
-        notice = next(e for e in app.state.bus.history(sid) if e.type == "splitting_steps")
-        assert notice.payload["count"] == 1 and notice.payload["threshold"] == 5
-    finally:
-        done.set()
-
-
-# ------------------------------- orientation: the goal and what comes next
-
 def test_an_agent_is_told_the_goal_and_what_its_task_is_not(tmp_path, monkeypatch):
     """An agent that does not know the goal makes locally sensible, globally
     wrong choices — an API shape nothing downstream can use."""
@@ -4032,90 +3996,6 @@ def test_the_orchestrator_can_put_a_loop_on_a_step(tmp_path, monkeypatch):
     assert steps[-1]["loop"] == "test-and-fix" and steps[-1]["role"] == ""
     assert "added_final_check" not in result["proposal"]   # it did not forget
 
-
-def test_the_background_split_reports_back(tmp_path, monkeypatch):
-    """Regression: the split ran and the plan was updated on the server, but
-    nothing told the browser, so the screen kept the un-split plan."""
-    import time
-
-    from fastapi.testclient import TestClient
-
-    from trance.config import Config
-    from trance.server import app as app_module
-
-    proposal = {"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "loop": "", "task": "build everything", "points": 8,
-         "check": None, "on_fail": None, "max_loops": 2}]}
-
-    def split(p, **kw):
-        return {**p, "split": [{"task": "build everything", "points": 8,
-                                "into": ["part one", "part two"]}],
-                "steps": [{"role": "backend", "loop": "", "task": "part one", "points": 3},
-                          {"role": "backend", "loop": "", "task": "part two", "points": 3}]}
-
-    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
-                        lambda **kw: {"text": "here", "proposal": proposal})
-    monkeypatch.setattr(app_module.orchestrator_agent, "split_oversized", split)
-
-    config = Config.load(tmp_path / "none.toml")
-    config.runs_dir = str(tmp_path / "runs")
-    app = app_module.create_app(config, tmp_path / "sessions")
-
-    # The context manager runs the lifespan, so background tasks progress the
-    # way they do under a live server rather than only during a request.
-    with TestClient(app) as client:
-        sid = client.post("/api/sessions",
-                          json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
-        body = client.post(f"/api/sessions/{sid}/chat", json={"message": "go"}).json()
-        # The response is the un-split plan: that is the point of showing it early.
-        assert [s["task"] for s in body["flow"]["steps"]] == ["build everything"]
-
-        for _ in range(50):
-            client.get("/api/config")                 # drive the loop
-            events = [e for e in app.state.bus.history(sid) if e.type == "flow_updated"]
-            if events:
-                break
-            time.sleep(0.05)
-
-    assert events, "the split finished but never reported back"
-    assert events[-1].payload["message"] == "Split into 2 steps."
-    assert [s.task for s in app.state.store.get(sid).flow.steps] == ["part one", "part two"]
-
-
-def test_the_step_being_split_is_named_in_the_event(tmp_path, monkeypatch):
-    """So the UI can mark that card rather than the whole plan."""
-    import time
-
-    from fastapi.testclient import TestClient
-
-    from trance.config import Config
-    from trance.server import app as app_module
-
-    proposal = {"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "loop": "", "task": "small", "points": 2},
-        {"role": "backend", "loop": "", "task": "huge", "points": 8}]}
-    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
-                        lambda **kw: {"text": "h", "proposal": proposal})
-    monkeypatch.setattr(app_module.orchestrator_agent, "split_oversized",
-                        lambda p, **kw: {**p, "split": []})
-
-    config = Config.load(tmp_path / "none.toml")
-    config.runs_dir = str(tmp_path / "runs")
-    app = app_module.create_app(config, tmp_path / "sessions")
-    with TestClient(app) as client:
-        sid = client.post("/api/sessions",
-                          json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
-        client.post(f"/api/sessions/{sid}/chat", json={"message": "go"})
-        time.sleep(0.1)
-        client.get("/api/config")
-
-        notice = next(e for e in app.state.bus.history(sid) if e.type == "splitting_steps")
-        session = app.state.store.get(sid)
-        assert notice.payload["step_ids"] == [session.flow.steps[1].id]   # the 8, not the 2
-        assert notice.payload["tasks"] == ["huge"]
-
-
-# --------------------- every file-writing step is fact-checked by default
 
 def test_a_step_that_writes_files_gets_a_fact_check(tmp_path):
     """An agent reporting SUCCESS is the one thing here with no independent
@@ -6684,3 +6564,112 @@ def test_with_no_agent_at_all_ngrok_is_started(monkeypatch):
 
     with pytest.raises(preview.NoTunnelTool):
         preview.start_tunnel(7000)          # got as far as looking for the binary
+
+
+def test_a_plan_is_not_rewritten_behind_your_back(tmp_path, monkeypatch):
+    """Splitting rewrites the plan you are reading and costs a model call per
+    step, and "too big" is a judgement — five points may be exactly the step you
+    meant. The estimate is reported; the decision is left where it belongs."""
+    from fastapi.testclient import TestClient
+
+    from trance.agents import orchestrator as orch
+    from trance.config import Config
+    from trance.events import Event
+    from trance.server import app as app_module
+
+    plan = {"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "task": "build the whole API", "check": None,
+         "on_fail": None, "max_loops": 2, "points": 13},
+        {"role": "backend", "task": "add one route", "check": None,
+         "on_fail": None, "max_loops": 2, "points": 2},
+    ]}
+    monkeypatch.setattr(orch, "chat", lambda **kw: {
+        "text": "here is the plan", "proposal": plan, "truncated": False})
+
+    split_calls = []
+    monkeypatch.setattr(orch, "split_oversized",
+                        lambda *a, **k: split_calls.append(True) or {"steps": [], "team": []})
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    seen: list[Event] = []
+    app.state.bus.subscribe_sync(seen.append)
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.post(f"/api/sessions/{sid}/chat", json={"message": "build it"})
+
+    flow = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"]
+    assert [s["task"] for s in flow] == ["build the whole API", "add one route"]
+    assert not split_calls, "the plan was split without being asked"
+
+    # ...but the oversized one is named, so the editor can mark it.
+    flagged = [e for e in seen if e.type == "oversized_steps"]
+    assert len(flagged) == 1 and flagged[0].payload["count"] == 1
+    assert flagged[0].payload["step_ids"] == [flow[0]["id"]]
+    assert "split any of them" in flagged[0].payload["message"].lower()
+
+
+def test_a_drafted_prompt_covers_what_a_prompt_here_needs(monkeypatch, tmp_path):
+    """The hardest part of adding an agent is the empty box: the shape these
+    need is not obvious from the box. The draft is a starting point — so what
+    matters is that the model is asked for the right thing."""
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    asked = {}
+
+    class Fake:
+        def complete(self, messages, tools=None, **kwargs):
+            asked["system"] = messages[0]["content"]
+            asked["user"] = messages[1]["content"]
+            asked["tools"] = tools
+            return ChatResponse(text="  You are the migration writer.\n  ")
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: Fake())
+    text = orchestrator.draft_agent_prompt(
+        "migrator", description="writes database migrations",
+        goal="a shop", config=ModelConfig(), bus=EventBus(), session_id="s")
+
+    assert text == "You are the migration writer."          # trimmed, used as-is
+    assert "'migrator'" in asked["user"]
+    assert "writes database migrations" in asked["user"] and "a shop" in asked["user"]
+    for needed in ("OUTCOME: SUCCESS", "must not do", "whole files", "200 words"):
+        assert needed in asked["user"], needed
+    assert asked["tools"] is None                            # prose, not a tool call
+
+
+def test_drafting_needs_a_name_to_draft_about(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    refused = client.post("/api/agents/draft-prompt", json={"name": "  "})
+    assert refused.status_code == 400 and "name is required" in refused.text
+
+
+def test_a_model_that_returns_nothing_is_not_saved_as_a_prompt(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.agents import orchestrator
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    monkeypatch.setattr(orchestrator, "draft_agent_prompt", lambda *a, **k: "   ")
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    empty = client.post("/api/agents/draft-prompt", json={"name": "migrator"})
+    assert empty.status_code == 502 and "returned nothing" in empty.text

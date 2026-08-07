@@ -316,9 +316,8 @@ function renderFlowEditor() {
   const box = $("flow-editor");
   box.innerHTML = "";
   if (!state.draftSteps.length) {
-    box.append(el("p", "muted small", state.splitting
-      ? "Waiting for the orchestrator to break the oversized steps up…"
-      : "No steps yet — describe the project to the orchestrator, or add one manually."));
+    box.append(el("p", "muted small",
+      "No steps yet — describe the project to the orchestrator, or add one manually."));
   }
   state.draftSteps.forEach((step, index) => box.append(stepCard(step, index)));
 }
@@ -329,16 +328,19 @@ function draftFingerprint() {
     (s) => [s.role, s.task, s.check, s.on_fail, s.max_loops]));
 }
 
-//: Ids of the steps the orchestrator is breaking up right now.
+//: Steps the orchestrator thinks are too big — pointed out, not acted on.
 function splittingIds() {
-  return new Set((state.splitting && state.splitting.step_ids) || []);
+  return new Set((state.oversized && state.oversized.step_ids) || []);
 }
 
+/* A note, not a spinner. Splitting rewrites the plan you are reading and costs
+ * a model call, and "too big" is a judgement: five points may be exactly the
+ * step you meant. So it says so, and the split button next to it is yours. */
 function splittingMark(step) {
   const mark = el("span", "splitting-mark");
-  mark.append(el("span", "spin", "◐"), el("span", null, "splitting…"));
-  mark.title = `Over ${state.splitting.threshold} points — the orchestrator is `
-               + "breaking this step into smaller ones. It updates when that is done.";
+  mark.append(el("span", null, "large"));
+  mark.title = `Estimated over ${(state.oversized || {}).threshold || "the"} points. `
+               + "Press split if you want the orchestrator to break it up.";
   return mark;
 }
 
@@ -1075,7 +1077,7 @@ function refreshPlan() {
 }
 
 function applyRefinedFlow(payload) {
-  state.splitting = null;
+  state.oversized = null;
   if (!state.session) return;
   //: Bumped on every flow the server pushes, so a slower response cannot put
   //: an older one back.
@@ -1124,8 +1126,8 @@ function connect(sessionId) {
 
     if (event.type === "approval_requested") setActivity(
       event.payload.agent, "waiting for you to allow or refuse an action");
-    if (event.type === "splitting_steps") {
-      state.splitting = event.payload;
+    if (event.type === "oversized_steps") {
+      state.oversized = event.payload;
       if (isPlanning()) renderFlowEditor();
     }
     if (event.type === "flow_updated" && event.payload.flow) {
@@ -1187,7 +1189,7 @@ function headline(event) {
     case "steering_delivered": return `hint delivered: “${clip(p.note, 70)}”`;
     case "loop_node": return p.message || "";
     case "loop_exhausted": return p.message || "";
-    case "splitting_steps": return p.message;
+    case "oversized_steps": return p.message;
     case "steps_split":
       return `${p.split.length} step(s) over ${p.threshold} points broken up — `
              + `${p.steps} steps now`;
@@ -1953,6 +1955,37 @@ function agentCard(agent, isNew) {
   prompt.rows = 10;
   prompt.value = agent.system_prompt || "";
   promptWrap.append(prompt);
+
+  // A draft to edit, not a finished prompt: the model knows the shape these
+  // need, and you know what the agent is actually for.
+  const draftRow = el("div", "row small");
+  const draft = el("button", null, "✎ write one from the name");
+  draft.title = "Ask the orchestrator's model for a first draft, from this agent's "
+                + "name and description. It replaces what is in the box.";
+  draft.onclick = async () => {
+    const shortname = name.value.trim();
+    if (!shortname) return toast("Give it a name first — that is what the draft is about.");
+    const was = prompt.value;
+    draft.disabled = true;
+    draft.textContent = "writing…";
+    try {
+      const drafted = await api("/api/agents/draft-prompt", {
+        method: "POST",
+        body: { name: shortname, description: description.value.trim(),
+                session: state.session ? state.session.id : "" },
+      });
+      prompt.value = drafted.system_prompt;
+      const undo = el("button", null, "undo");
+      undo.onclick = () => { prompt.value = was; undo.remove(); };
+      draftRow.append(undo);
+      toast("Drafted — read it before saving. It is a starting point.");
+    } finally {
+      draft.disabled = false;
+      draft.textContent = "✎ write one from the name";
+    }
+  };
+  draftRow.append(draft);
+  promptWrap.append(draftRow);
   if ((agent.toolsets || []).length && agent.name !== "orchestrator") {
     promptWrap.append(el("p", "hint",
       "If this agent verifies other steps, its prompt must end with a line " +
@@ -2030,9 +2063,30 @@ function agentCard(agent, isNew) {
   return card;
 }
 
+/* A blank prompt box teaches nothing about what belongs in one. This is the
+ * shape of every prompt that works here — who it is, what it does, and the two
+ * things agents get wrong without being told — with the parts to replace marked
+ * so it is obvious they are yours and not a default that already fits. */
+const AGENT_TEMPLATE = [
+  "You are the «WHAT THIS AGENT IS», working on «THE PART OF THE PROJECT IT OWNS».",
+  "",
+  "What you do:",
+  "- «THE ONE THING IT IS FOR — be specific: 'write the HTTP handlers', not 'do backend work'»",
+  "- «WHAT IT MUST NEVER DO — the mistake you expect from it»",
+  "",
+  "How to work:",
+  "- Read before you write: get_definition on a symbol beats reading a whole file.",
+  "- Change what the task asks for and nothing else.",
+  "- «ANYTHING THIS PROJECT DOES DIFFERENTLY — a framework, a convention, a test command»",
+  "",
+  "Report OUTCOME: SUCCESS only when the work is done and you have checked it.",
+  "Report OUTCOME: FAILED — why, when it is not. A wrong success costs the next agent more",
+  "than an honest failure.",
+].join("\n");
+
 $("add-agent").onclick = () => {
   $("agent-list").prepend(agentCard({
-    name: "", title: "", description: "", system_prompt: "",
+    name: "", title: "", description: "", system_prompt: AGENT_TEMPLATE,
     paths: [], toolsets: ["files", "graph"], preset: null, color: "#7aa2f7",
     protected: false,
   }, true));
@@ -3208,11 +3262,10 @@ function consoleAppend(event) {
       return;
     }
 
-    case "splitting_steps":
+    case "oversized_steps":
       consolePush(consoleEntry({
         kind: "step", icon: "✂", time, tag: "orchestrator",
-        label: p.message || "breaking up oversized steps",
-        body: () => el("pre", null, (p.tasks || []).join("\n")),
+        label: p.message || "some steps came out large",
       }));
       return;
 

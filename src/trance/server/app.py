@@ -1005,6 +1005,27 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "commits": vcs.commits_between(root, record["before"], after) if after else [],
         }
 
+    @app.post("/api/agents/draft-prompt")
+    async def draft_agent_prompt(body: dict):
+        """A first draft of an agent's system prompt, from its name."""
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "a name is required to write a prompt about")
+        session = store.get(body.get("session") or "") if body.get("session") else None
+        try:
+            text = await asyncio.to_thread(
+                orchestrator_agent.draft_agent_prompt, name,
+                description=(body.get("description") or "").strip(),
+                goal=(session.goal if session else ""),
+                config=config.for_orchestrator(), bus=bus,
+                session_id=session.id if session else "")
+        except BackendError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        text = (text or "").strip()
+        if not text:
+            raise HTTPException(502, "the model returned nothing to use")
+        return {"name": name, "system_prompt": text}
+
     @app.get("/api/sessions/{session_id}/reviews")
     def review_history(session_id: str):
         """Every review sent for this session, newest first.
@@ -1258,52 +1279,23 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                     "message": ("Dropped checks that cannot verify: "
                                 + ", ".join(proposal["dropped_checks"])),
                 })
-            # Splitting is one model call per oversized step and can run for a
-            # minute on a local model. Showing the plan first and refining it
-            # after beats an empty flow panel and no explanation.
-            # The flow is already applied, so the proposal's steps and the
-            # session's are the same list — which is how the UI can mark the
-            # exact steps being worked on rather than the whole plan.
-            oversized = [(step.id, raw) for step, raw
+            # Oversized steps are pointed out, not acted on. Splitting rewrites
+            # the plan you are reading, takes a model call per step, and is a
+            # judgement — five points may be exactly the step you wanted. The
+            # split button on the step is where that judgement belongs.
+            oversized = [step.id for step, raw
                          in zip(session.flow.steps, proposal["steps"])
                          if (raw.get("points") or 0) > config.max_step_points > 0]
             if oversized:
-                bus.emit("splitting_steps", session_id, agent="orchestrator", payload={
+                bus.emit("oversized_steps", session_id, agent="orchestrator", payload={
                     "count": len(oversized), "threshold": config.max_step_points,
-                    "step_ids": [step_id for step_id, _ in oversized],
-                    "tasks": [raw["task"] for _, raw in oversized],
-                    "message": (f"{len(oversized)} step(s) are over "
-                                f"{config.max_step_points} points — breaking them up."),
+                    "step_ids": oversized,
+                    "message": (f"{len(oversized)} step(s) came out over "
+                                f"{config.max_step_points} points. Split any of them "
+                                f"from the step itself if you want them broken up."),
                 })
-                _spawn(_split_in_background(session, proposal))
         touch(session)
         return session.to_dict()
-
-    async def _split_in_background(session, proposal: dict) -> None:
-        """Refine an already-visible plan. Never leaves the user with nothing."""
-        try:
-            refined = await asyncio.to_thread(
-                orchestrator_agent.split_oversized, dict(proposal),
-                roles=roles.all(), config=config.for_orchestrator(), bus=bus,
-                session_id=session.id, threshold=config.max_step_points,
-                project_dir=Path(session.project_dir),
-            )
-        except Exception as exc:  # noqa: BLE001 — the plan stands either way
-            bus.emit("warning", session.id, agent="orchestrator", payload={
-                "message": f"Could not split the oversized steps: {exc}"})
-            return
-        if not refined.get("split"):
-            bus.emit("flow_updated", session.id, payload={
-                "flow": session.flow.to_dict(), "split": []})
-            return
-        session.team = roles.resolve_team(refined["team"] or [s.name for s in session.team])
-        session.flow = Flow(steps=[Step.from_dict(s) for s in refined["steps"]])
-        touch(session)
-        bus.emit("flow_updated", session.id, payload={
-            "flow": session.flow.to_dict(), "split": refined["split"],
-            "message": f"Split into {len(refined['steps'])} steps."})
-
-    # --------------------------------------------------------------- flow
 
     @app.put("/api/sessions/{session_id}/flow")
     def update_flow(session_id: str, body: dict):

@@ -548,3 +548,44 @@ def _describe_project(project_dir: Path) -> str:
         return "The directory is empty — this is a brand new project."
     listing = "\n".join(f"- {p.relative_to(path)}" for p in files)
     return f"Existing files:\n{listing}"
+
+
+def draft_agent_prompt(name: str, *, description: str = "", goal: str = "",
+                       config: ModelConfig, bus: EventBus, session_id: str = "") -> str:
+    """Write a system prompt for an agent, from its name and what it is for.
+
+    A blank box is the hardest part of adding an agent: the shape of a prompt
+    that works here — who it is, what it must not do, how to report — is not
+    obvious from the box. This produces a draft to edit, never a finished thing:
+    the person adding the agent knows what it is for and the model does not.
+    """
+    role = BUILTIN_ROLES["orchestrator"]
+    about = f"\n\nWhat the user says it is for: {description}" if description else ""
+    project = f"\n\nThe project: {goal}" if goal else ""
+    prompt = (
+        f"Write the system prompt for a coding agent called {name!r} on this team."
+        f"{about}{project}\n\n"
+        "Write the prompt itself and nothing else — no preamble, no explanation, no "
+        "markdown fences. Address the agent as 'You'.\n\n"
+        "It must cover, in this order and in a few short lines each:\n"
+        "- what it is and which part of the project it owns\n"
+        "- what it does, specifically — 'write the HTTP handlers', not 'do backend work'\n"
+        "- what it must not do: the mistake this kind of agent actually makes\n"
+        "- that it should fetch symbols rather than read whole files, and change only "
+        "what the task asks for\n"
+        "- that it must end with 'OUTCOME: SUCCESS' or 'OUTCOME: FAILED — why', and that "
+        "a wrong success costs the next agent more than an honest failure\n\n"
+        "Keep it under 200 words. Be concrete about this agent; anything true of every "
+        "agent is wasted context."
+    )
+    messages = [{"role": "system", "content": role.system_prompt},
+                {"role": "user", "content": prompt}]
+    response = client_for(config).complete(messages)
+    bus.emit("model_call", session_id or "agents", agent="orchestrator", payload={
+        "round": 1, "model": config.model, "base_url": config.base_url,
+        "drafting_prompt_for": name, "messages": messages,
+        "response_text": response.text, "reasoning": response.reasoning,
+        "tool_calls": [], "finish_reason": response.finish_reason,
+        "usage": response.usage, "summary": summarize_messages(messages),
+    })
+    return (response.text or "").strip()

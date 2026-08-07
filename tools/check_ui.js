@@ -267,7 +267,7 @@ try {
   }
   api.state.planning = { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] };
   // One step mid-split: the marker belongs on that card, not above the plan.
-  api.state.splitting = { count: 1, threshold: 5, step_ids: ["s4"] };
+  api.state.oversized = { count: 1, threshold: 5, step_ids: ["s4"] };
   api.state.roles.backend.tries = 2;
   api.state.roles.backend.backup_preset = "claude";
   api.state.roles.backend.backup_tries = 2;
@@ -291,16 +291,18 @@ try {
       process.exit(1);
     }
   }
+  // A step the orchestrator called oversized says so — and nothing is happening
+  // to it, because splitting is a button now and not a consequence.
   const splitting = api.stepCard(api.state.draftSteps[4], 4);
-  if (!flat(splitting).includes("splitting…")) {
-    console.log("BROKEN: the step being split is not marked");
+  if (!flat(splitting).includes("large")) {
+    console.log("BROKEN: an oversized step is not marked");
     process.exit(1);
   }
   if (flat(api.stepCard(api.state.draftSteps[0], 0)).includes("splitting…")) {
     console.log("BROKEN: a step that is not being split is marked");
     process.exit(1);
   }
-  api.state.splitting = null;
+  api.state.oversized = null;
 
   // The run clock: a total that ticks while working and freezes when not.
   api.trackClock({ run_seconds: 125, working: true });
@@ -673,6 +675,30 @@ try {
       }
     }
   }
+  // A new agent arrives with a template to edit, not an empty box — and a way
+  // to have a first draft written from its name.
+  {
+    const before = document.getElementById("agent-list").children.length;
+    document.getElementById("add-agent").onclick();
+    const card = flat(document.getElementById("agent-list")).replace(/\s+/g, " ");
+    if (!card.includes("«WHAT THIS AGENT IS»")) {
+      console.log("BROKEN: a new agent has no template to edit:", card.slice(0, 160));
+      process.exit(1);
+    }
+    if (!card.includes("OUTCOME: SUCCESS")) {
+      console.log("BROKEN: the template does not say how to report an outcome");
+      process.exit(1);
+    }
+    if (!card.includes("write one from the name")) {
+      console.log("BROKEN: no way to have a prompt drafted");
+      process.exit(1);
+    }
+    if (document.getElementById("agent-list").children.length <= before) {
+      console.log("BROKEN: the new agent card was not added");
+      process.exit(1);
+    }
+  }
+
   api.state.commands = RESPONSES["/api/commands"];
   api.loopCard(JSON.parse(JSON.stringify(RESPONSES["/api/loops"].loops[0])), false);
   api.loopCard({ name: "", description: "", prompt: "", nodes: [], start: "",
@@ -727,11 +753,11 @@ try {
   }
   // The plan is shown before splitting finishes, so both states must render.
   document.getElementById("screen-plan").classList.add("active");
-  api.state.splitting = { count: 2, threshold: 5 };
+  api.state.oversized = { count: 2, threshold: 5 };
   api.renderFlowEditor();
   api.state.draftSteps = [];
   api.renderFlowEditor();                    // the empty + splitting message
-  api.state.splitting = null;
+  api.state.oversized = null;
 
   // A refined flow must replace an untouched draft and spare an edited one.
   api.state.session.flow = { steps: [{ id: "a", role: "backend", task: "one", status: "pending",
