@@ -700,6 +700,53 @@ $("collapse-editor").onchange = () => {
   redrawEditor();
 };
 
+/* Ask for a plan without having to phrase it. The message is sent through the
+ * ordinary chat, and shows up there, because a plan that appeared with nothing
+ * in the conversation explaining it is a plan you cannot argue with. */
+$("generate-plan").onclick = async () => {
+  if (!state.session) return;
+  const said = (state.session.chat || []).some((m) => m.role === "user");
+  if (!said && !(state.session.goal || "").trim()) {
+    return toast("Tell the orchestrator what you are building first — it has "
+                 + "nothing to plan from yet.");
+  }
+  const button = $("generate-plan");
+  button.disabled = true;
+  button.textContent = "planning…";
+  try {
+    $("chat-text").value = state.draftSteps.length
+      ? "Propose the plan again, from everything we have discussed. Replace the "
+        + "current steps."
+      : "Propose the plan now, from everything we have discussed.";
+    await sendChat();
+  } finally {
+    button.disabled = false;
+    button.textContent = "Generate plan";
+  }
+};
+
+/* Emptying the flow. Confirmed, because the steps are work — yours or the
+ * orchestrator's — and there is no undo beyond asking for another plan. */
+$("clear-plan").onclick = async () => {
+  if (!state.session || !state.draftSteps) return;
+  const n = state.draftSteps.length;
+  if (!n) return toast("The plan is already empty.");
+  const sure = await confirmDialog(
+    `Clear all ${n} step(s)?`,
+    "The flow is emptied and saved. A step that is running right now is kept — "
+    + "stop the run first if you want that gone too.");
+  if (!sure) return;
+  state.draftSteps = [];
+  redrawEditor();
+  await saveFlowNow();
+  // The server keeps anything mid-flight, so show what actually survived.
+  state.draftSteps = JSON.parse(JSON.stringify(state.session?.flow?.steps || []));
+  state.draftBase = draftFingerprint();
+  redrawEditor();
+  toast(state.draftSteps.length
+    ? `Cleared — ${state.draftSteps.length} running step(s) kept.` : "Plan cleared.");
+};
+
 $("add-step").onclick = () => {
   state.draftSteps.push({ role: "backend", loop: "", task: "", check: null, on_fail: null,
                           max_loops: 2, status: "pending" });

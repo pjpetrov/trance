@@ -6673,3 +6673,40 @@ def test_a_model_that_returns_nothing_is_not_saved_as_a_prompt(tmp_path, monkeyp
 
     empty = client.post("/api/agents/draft-prompt", json={"name": "migrator"})
     assert empty.status_code == 502 and "returned nothing" in empty.text
+
+
+def test_clearing_the_plan_keeps_only_what_is_mid_flight(tmp_path):
+    """Emptying the flow must not yank a step out from under a running agent —
+    that is the one thing an edit is never allowed to do."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "backend", "task": "done one", "status": "done"},
+        {"role": "backend", "task": "running one", "status": "running"},
+        {"role": "backend", "task": "pending one", "status": "pending"},
+    ]})
+
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": []})
+
+    left = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"]
+    assert [(s["task"], s["status"]) for s in left] == [("running one", "running")]
+
+    # And with nothing in flight, clearing leaves nothing at all. (A fresh
+    # session: the running step above is not removable by any edit, ever.)
+    other = client.post("/api/sessions",
+                        json={"name": "q", "project_dir": str(project)}).json()["id"]
+    client.put(f"/api/sessions/{other}/flow", json={"steps": [
+        {"role": "backend", "task": "a", "status": "pending"},
+        {"role": "backend", "task": "b", "status": "failed"}]})
+    client.put(f"/api/sessions/{other}/flow", json={"steps": []})
+    assert client.get(f"/api/sessions/{other}").json()["flow"]["steps"] == []

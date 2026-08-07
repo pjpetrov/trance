@@ -45,13 +45,16 @@ const makeEl = (tag = "div") => {
     querySelector: (sel) => el._found[sel] || null,
     // Enough of a selector engine for ".a, .b", which is what the UI uses to
     // sweep up markers it left on other elements.
+    // ".a, .b" and "button" — classes and tag names, which is every selector
+    // this UI uses. Anything cleverer would be a second, worse browser.
     querySelectorAll: (sel) => {
-      const wanted = String(sel).split(",").map((x) => x.trim().replace(/^\./, ""));
+      const wanted = String(sel).split(",").map((x) => x.trim());
+      const hit = (node) => wanted.some((w) => (w.startsWith(".")
+        ? (node.className || "").split(/\s+/).includes(w.slice(1))
+        : (node.tagName || "").toLowerCase() === w.toLowerCase()));
       const out = [];
       const walk = (node) => (node.children || []).forEach((child) => {
-        if (wanted.some((w) => (child.className || "").split(/\s+/).includes(w))) {
-          out.push(child);
-        }
+        if (hit(child)) out.push(child);
         walk(child);
       });
       walk(el);
@@ -158,6 +161,17 @@ const RESPONSES = {
     when: "2 minutes ago", who: "trance", stat: " server/app.js | 4 +++-",
     clipped: false,
     diff: "--- a/server/app.js\n+++ b/server/app.js\n-const PORT = 3000;\n+const PORT = process.env.PORT;" },
+  // The chat endpoint answers with the whole session, which the UI then adopts.
+  "/api/sessions/s1/chat": {
+    id: "s1", name: "p", project_dir: "/tmp/p", status: "planning", paused: false,
+    goal: "build me a game", team: [], reviews: [], review: [],
+    chat: [{ role: "user", content: "build me a game" },
+           { role: "orchestrator", content: "here is a plan" }],
+    flow: { steps: [{ id: "g1", role: "backend", task: "planned step",
+                      status: "pending", check: null, on_fail: null,
+                      max_loops: 2, attempts: [] }] },
+    progress: { total: 1, done: 0, pending: 1 },
+  },
   "/api/loops": { loops: [{ name: "another-loop", description: "d2", prompt: "",
                             start: "n_a", max_steps: 6, roles: ["reviewer"],
                             nodes: [{ id: "n_a", role: "reviewer", focus: "",
@@ -574,6 +588,66 @@ try {
     }
     if (cards[2].classList.contains("drop-after")) {
       console.log("BROKEN: the drop marker outlived the drop");
+      process.exit(1);
+    }
+  }
+
+  // Generate plan: goes through the ordinary chat, so what was asked for is
+  // visible in the conversation rather than a plan appearing from nowhere.
+  {
+    api.state.session.status = "planning";
+    api.state.session.chat = [{ role: "user", content: "build me a game" }];
+    api.state.draftSteps = [];
+    const before = REQUESTS.length;
+    await document.getElementById("generate-plan").onclick();
+    const sent = REQUESTS.slice(before).filter((r) => /\/chat$/.test(r.url));
+    if (!sent.length || !/propose the plan/i.test(sent[0].body.message || "")) {
+      console.log("BROKEN: generate plan asked for nothing:", JSON.stringify(sent));
+      process.exit(1);
+    }
+    // With nothing said yet there is nothing to plan from, so it does not ask.
+    api.state.session.chat = [];
+    api.state.session.goal = "";
+    const quiet = REQUESTS.length;
+    await document.getElementById("generate-plan").onclick();
+    if (REQUESTS.slice(quiet).some((r) => /\/chat$/.test(r.url))) {
+      console.log("BROKEN: asked for a plan with nothing to plan from");
+      process.exit(1);
+    }
+    api.state.session.chat = [{ role: "user", content: "build me a game" }];
+  }
+
+  // Clear plan: confirmed, then emptied and saved — and whatever the server
+  // kept (a running step) is what ends up on screen.
+  {
+    api.state.session.status = "planning";
+    api.state.session.flow = { steps: [
+      { id: "one", role: "backend", task: "t", status: "pending", check: null,
+        on_fail: null, max_loops: 2, attempts: [] },
+      { id: "two", role: "backend", task: "u", status: "pending", check: null,
+        on_fail: null, max_loops: 2, attempts: [] },
+    ] };
+    api.renderFlowEditor();
+    RESPONSES["/api/sessions/s1/flow"] = { steps: [] };
+    document.getElementById("clear-plan").onclick();
+    await new Promise((r) => setTimeout(r, 0));
+    // The dialog is on screen and nothing has been sent yet.
+    const dialog = document.body.children.filter(
+      (n) => (n.className || "").includes("modal open"));
+    if (!dialog.length || !flat(dialog[0]).includes("Clear all 2 step(s)?")) {
+      console.log("BROKEN: clearing the plan did not ask first");
+      process.exit(1);
+    }
+    const buttons = dialog[0].querySelectorAll("button");
+    const go = buttons.filter((b) => (b.className || "").includes("danger"));
+    if (!go.length) {
+      console.log("BROKEN: the confirm dialog has no confirm button");
+      process.exit(1);
+    }
+    go[0].onclick();
+    await new Promise((r) => setTimeout(r, 0));
+    if (api.state.draftSteps.length !== 0) {
+      console.log("BROKEN: the plan was not cleared:", api.state.draftSteps.length);
       process.exit(1);
     }
   }
