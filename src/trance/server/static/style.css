@@ -818,3 +818,22 @@ input.tiny { width: 68px; }
 }
 .step-card.drop-before::before { top: -4px; }
 .step-card.drop-after::after { bottom: -4px; }
+
+/* What was fixed: the commits, each opening onto its own patch. */
+.changes-head { margin: 18px 12px 8px; font-size: 12px; text-transform: uppercase;
+                letter-spacing: .04em; color: var(--muted, #8b93a7); }
+.commit-row { border: 1px solid var(--line, #2a2f3a); border-radius: 6px;
+              margin: 0 12px 5px; background: var(--panel-2, #1b1f27); }
+.commit-row > summary {
+  display: flex; gap: 10px; align-items: baseline; cursor: pointer;
+  padding: 6px 10px; font-size: 12px; list-style: none;
+}
+.commit-row > summary::-webkit-details-marker { display: none; }
+.commit-row > summary:hover { background: rgba(255, 255, 255, .03); }
+.commit-subject { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge.mono { font-family: ui-monospace, monospace; }
+.diff-added { color: var(--ok, #9ece6a); }
+.diff-removed { color: var(--err, #f7768e); }
+.commit-stat { margin: 0; padding: 6px 10px; font-size: 11px; color: var(--muted, #8b93a7);
+               white-space: pre-wrap; }
+.commit-body { border-top: 1px solid var(--line, #2a2f3a); }

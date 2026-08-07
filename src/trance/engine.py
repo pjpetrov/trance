@@ -883,6 +883,20 @@ class FlowEngine:
                 return
             self._emit("git", payload={"action": "init", "message": result.detail})
         self._git = True
+        # trance's index is binary and rewritten on every reindex, so a repo
+        # that tracks it puts "Binary files differ" in the middle of every diff
+        # an agent made. Ignore it, and stop tracking it in repos that already
+        # do — from the index only, so nothing on disk moves and no history is
+        # rewritten.
+        if vcs.ignore_trance_files(self.project):
+            self._emit("git", payload={"action": "ignore",
+                                       "message": "Added trance's index to .gitignore."})
+        dropped = vcs.untrack_ignored(self.project)
+        if dropped:
+            self._emit("git", payload={
+                "action": "untrack", "files": dropped,
+                "message": (f"Stopped tracking {len(dropped)} index file(s) — they were "
+                            f"making every diff unreadable. Nothing was deleted.")})
         # Anything already in the tree is committed before the first agent runs,
         # so "revert this step" can never take a user's own edits with it.
         self._checkpoint("before the run")

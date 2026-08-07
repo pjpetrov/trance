@@ -130,6 +130,17 @@ const RESPONSES = {
   "/api/sessions/s1/review/changes": {
     review: "rev_1", status: "done", before: "aaa", after: "bbb",
     files: ["server/app.js"], notes: [{ path: "server/app.js", line: 1, note: "use env" }],
+    diff: "--- a/server/app.js\n+++ b/server/app.js\n-const PORT = 3000;\n+const PORT = process.env.PORT;",
+    commits: [
+      { sha: "aaaa1111bbbb", short: "aaaa1111", subject: "backend: read the port from env",
+        when: "2 minutes ago", who: "trance", files: 1, added: 3, removed: 1 },
+      { sha: "cccc2222dddd", short: "cccc2222", subject: "tester: cover the new default",
+        when: "1 minute ago", who: "trance", files: 2, added: 30, removed: 0 },
+    ] },
+  "/api/sessions/s1/commit/aaaa1111bbbb": {
+    sha: "aaaa1111bbbb", short: "aaaa1111", subject: "backend: read the port from env",
+    when: "2 minutes ago", who: "trance", stat: " server/app.js | 4 +++-",
+    clipped: false,
     diff: "--- a/server/app.js\n+++ b/server/app.js\n-const PORT = 3000;\n+const PORT = process.env.PORT;" },
   "/api/loops": { loops: [{ name: "another-loop", description: "d2", prompt: "",
                             start: "n_a", max_steps: 6, roles: ["reviewer"],
@@ -170,7 +181,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewChanges,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -474,6 +485,33 @@ try {
   if (api.state.session.flow.steps[0].id !== "stale") {
     console.log("BROKEN: a live flow_updated was ignored");
     process.exit(1);
+  }
+
+  // "What was fixed" lists the commits the agents made, each opening onto its
+  // own patch — one combined diff hides which agent did what, and when.
+  {
+    await api.showReviewChanges();
+    const shown = flat(document.getElementById("file-view")).replace(/\s+/g, " ");
+    for (const want of ["aaaa1111", "read the port from env", "cccc2222", "+30"]) {
+      if (!shown.includes(want)) {
+        console.log("BROKEN: the commit list is missing", want, ":", shown.slice(0, 200));
+        process.exit(1);
+      }
+    }
+    // Opening one fetches that commit alone, rather than everything up front.
+    const rows = document.getElementById("file-view").querySelectorAll(".commit-row");
+    if (rows.length !== 2) {
+      console.log("BROKEN: expected two commit rows, got", rows.length);
+      process.exit(1);
+    }
+    rows[0].open = true;
+    await rows[0].fire("toggle", {});
+    await new Promise((r) => setTimeout(r, 0));
+    const opened = flat(rows[0]).replace(/\s+/g, " ");
+    if (!opened.includes("process.env.PORT")) {
+      console.log("BROKEN: opening a commit did not show its diff:", opened.slice(0, 160));
+      process.exit(1);
+    }
   }
 
   // Reordering: the line shows which edge the step will join, and the drop has

@@ -4230,7 +4230,9 @@ async function startShare(button) {
     state.shared = tunnel;
     if (state.preview) state.preview.public = tunnel.url;
     renderPreviewStatus();
-    toast(`Anyone with this link can open it: ${tunnel.url}`);
+    toast(tunnel.adopted
+      ? `Using the ngrok tunnel you already had: ${tunnel.url}`
+      : `Anyone with this link can open it: ${tunnel.url}`);
   } catch (_) {
     button.disabled = false;
     button.textContent = label;
@@ -4312,7 +4314,9 @@ function renderPreviewStatus(served) {
     };
     note.append(share);
   }
-  if (state.shared && state.shared.running) {
+  // Only for a tunnel trance started. One it merely found belongs to whoever
+  // ran ngrok, and a button that silently does nothing is worse than no button.
+  if (state.shared && state.shared.running && !state.shared.adopted) {
     const unshare = el("button", "small", "stop sharing");
     unshare.title = "Close the public link. The preview stays up locally.";
     unshare.onclick = async () => {
@@ -4362,7 +4366,9 @@ $("review-finish").onclick = async () => {
     : `Sent ${result.notes.length} comment(s) as a step. Press Run to start it.`);
 };
 
-$("review-changes").onclick = async () => {
+$("review-changes").onclick = () => showReviewChanges();
+
+async function showReviewChanges() {
   const body = await api(`/api/sessions/${state.session.id}/review/changes`);
   const box = $("file-view");
   fileEditing(false);
@@ -4381,9 +4387,64 @@ $("review-changes").onclick = async () => {
   }
   body.notes.forEach((note) => {
     const row = el("div", "code-note");
-    row.append(el("span", "badge", `${note.path}:${note.line}`),
+    row.append(el("span", "badge", note.path ? `${note.path}:${note.line}` : "overall"),
                el("span", null, note.note));
     box.append(row);
   });
-  if (body.diff) box.append(renderDiff(body.diff));
-};
+
+  // The commits, in the order they were made. A run is one commit per step, so
+  // this is what each agent did — and "everything since you commented" as one
+  // diff hides which agent did what, and in what order.
+  const commits = body.commits || [];
+  if (commits.length) {
+    box.append(el("h3", "changes-head", `${commits.length} commit(s)`));
+    commits.forEach((commit) => box.append(commitRow(commit)));
+  }
+  if (body.diff) {
+    box.append(el("h3", "changes-head", "Everything together"));
+    box.append(renderDiff(body.diff));
+  }
+}
+
+/* One commit, folded. Opening it fetches its patch — a run can be dozens of
+ * commits and nobody wants all of their diffs at once. */
+function commitRow(commit) {
+  const row = el("details", "commit-row");
+  const summary = el("summary");
+  summary.append(el("span", "badge mono", commit.short),
+                 el("span", "commit-subject", commit.subject || "(no message)"));
+  if (commit.files) {
+    summary.append(el("span", "muted small",
+      `${commit.files} file(s)`),
+      el("span", "diff-added", `+${commit.added}`),
+      el("span", "diff-removed", `−${commit.removed}`));
+  }
+  summary.append(el("span", "muted small", commit.when || ""));
+  row.append(summary);
+
+  const body = el("div", "commit-body");
+  body.append(el("p", "muted small", "Loading…"));
+  row.append(body);
+
+  let loaded = false;
+  row.addEventListener("toggle", async () => {
+    if (loaded || !row.open) return;
+    loaded = true;
+    try {
+      const full = await api(`/api/sessions/${state.session.id}/commit/${commit.sha}`);
+      body.innerHTML = "";
+      if (full.stat) body.append(el("pre", "commit-stat", full.stat));
+      body.append(renderDiff(full.diff));
+      if (full.clipped) {
+        body.append(el("p", "muted small",
+          "…this commit is too large to show in full — `git show " + commit.short
+          + "` has the rest."));
+      }
+    } catch (_) {
+      loaded = false;
+      body.innerHTML = "";
+      body.append(el("p", "muted small err", "Could not load this commit."));
+    }
+  });
+  return row;
+}

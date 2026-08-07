@@ -828,6 +828,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             tunnel = preview.start_tunnel(served.port, policy=policy)
         except preview.NoTunnelTool as exc:
             raise HTTPException(501, str(exc)) from exc
+        except preview.TunnelBusy as exc:
+            raise HTTPException(409, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(502, str(exc)) from exc
 
@@ -996,7 +998,19 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "notes": record["notes"], "before": record["before"], "after": after,
             "files": record["files"] or vcs.changed_between(root, record["before"], after),
             "diff": vcs.diff(root, record["before"], after) if after else "",
+            # One commit per step, so this is what each agent did and in what
+            # order — more use than one combined diff when several ran.
+            "commits": vcs.commits_between(root, record["before"], after) if after else [],
         }
+
+    @app.get("/api/sessions/{session_id}/commit/{sha}")
+    def show_commit(session_id: str, sha: str):
+        """One commit of this project: its message, its stat, its patch."""
+        session = _need(store, session_id)
+        found = vcs.show(_project_of(session), sha)
+        if not found:
+            raise HTTPException(404, f"no such commit: {sha}")
+        return found
 
     # -------------------------------------------------------------- loops
 

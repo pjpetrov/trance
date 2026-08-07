@@ -19,6 +19,7 @@ Everything here is deliberately narrow:
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,7 +83,51 @@ def ensure_repo(project: Path) -> GitResult:
     # not have one. Set it locally so nothing outside this project changes.
     _run(project, "config", "user.email", "agents@trance.local")
     _run(project, "config", "user.name", "trance agents")
+    ignore_trance_files(project)
     return GitResult(True, "initialised a git repository")
+
+
+#: trance's own working files, which live in the project but are not part of it.
+#: The graph database in particular is binary and rewritten on every index, so
+#: committing it puts "Binary files differ" in the middle of every diff an agent
+#: made — in a repo whose whole point is being readable afterwards.
+IGNORED = (".trance/graph.db", ".trance/graph.db-shm", ".trance/graph.db-wal")
+_IGNORE_BLOCK = "\n".join(("# trance's index — regenerated, not source", *IGNORED))
+
+
+def ignore_trance_files(project: Path) -> bool:
+    """Add trance's own working files to .gitignore. True if it changed it.
+
+    PLAN.md and memory.md are deliberately *not* ignored: they are written for
+    you to read, and their history is part of the record of the run.
+    """
+    path = Path(project) / ".gitignore"
+    try:
+        current = path.read_text(encoding="utf8") if path.exists() else ""
+        if ".trance/graph.db" in current:
+            return False
+        prefix = "" if not current or current.endswith("\n") else "\n"
+        path.write_text(current + prefix + _IGNORE_BLOCK + "\n", encoding="utf8")
+    except OSError:
+        return False
+    return True
+
+
+def untrack_ignored(project: Path) -> list[str]:
+    """Stop tracking trance's index in a repo that already committed it.
+
+    Only ever from the index — the files stay on disk, and no history is
+    rewritten. Returns what it stopped tracking.
+    """
+    code, out = _run(project, "ls-files", "--", ".trance/")
+    if code != 0 or not out:
+        return []
+    tracked = [line.strip() for line in out.splitlines()
+               if line.strip().split("/")[-1].startswith("graph.db")]
+    if not tracked:
+        return []
+    _run(project, "rm", "--cached", "-q", "--", *tracked)
+    return tracked
 
 
 def head(project: Path) -> str:
@@ -165,6 +210,58 @@ def log(project: Path, limit: int = 20) -> list[dict]:
         if len(parts) == 3:
             entries.append({"sha": parts[0], "subject": parts[1], "when": parts[2]})
     return entries
+
+
+def commits_between(project: Path, before: str, after: str = "HEAD") -> list[dict]:
+    """The commits that made up a piece of work, oldest first.
+
+    One commit per step is what the engine writes, so this is the list of what
+    each agent actually did — which is a more useful answer to "what was fixed"
+    than one combined diff, and the only way to see the order it happened in.
+    """
+    if not before:
+        return []
+    code, out = _run(project, "log", "--reverse", "--no-merges",
+                     f"{before}..{after}", "--pretty=format:%H%x1f%s%x1f%ar%x1f%an",
+                     "--shortstat")
+    if code != 0 or not out:
+        return []
+
+    commits: list[dict] = []
+    for line in out.splitlines():
+        if "\x1f" in line:
+            sha, subject, when, who = (line.split("\x1f") + ["", "", ""])[:4]
+            commits.append({"sha": sha, "short": sha[:8], "subject": subject,
+                            "when": when, "who": who, "files": 0,
+                            "added": 0, "removed": 0})
+        elif line.strip() and commits:
+            # " 2 files changed, 30 insertions(+), 4 deletions(-)"
+            for count, what in re.findall(r"(\d+) (\w+)", line):
+                if what.startswith("file"):
+                    commits[-1]["files"] = int(count)
+                elif what.startswith("insertion"):
+                    commits[-1]["added"] = int(count)
+                elif what.startswith("deletion"):
+                    commits[-1]["removed"] = int(count)
+    return commits
+
+
+def show(project: Path, sha: str, max_chars: int = 400_000) -> dict:
+    """One commit: what it says, and what it changed."""
+    if not sha or not re.fullmatch(r"[0-9a-fA-F]{4,40}", sha):
+        return {}
+    code, out = _run(project, "show", sha, "--stat", "--pretty=format:%H%x1f%s%x1f%ar%x1f%an")
+    if code != 0 or not out:
+        return {}
+    head_line, _, rest = out.partition("\n")
+    sha_full, subject, when, who = (head_line.split("\x1f") + ["", "", ""])[:4]
+
+    code, patch = _run(project, "show", sha, "--patch", "--pretty=format:")
+    patch = patch if code == 0 else ""
+    clipped = len(patch) > max_chars
+    return {"sha": sha_full, "short": sha_full[:8], "subject": subject, "when": when,
+            "who": who, "stat": rest.strip(), "diff": patch[:max_chars],
+            "clipped": clipped}
 
 
 def diff(project: Path, before: str, after: str = "HEAD", path: str = "") -> str:

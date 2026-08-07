@@ -231,6 +231,10 @@ trance starts ngrok on that preview's port, shows the public link, and gives you
 **stop sharing** to close it again. Nothing is published until you press it, and
 stopping the preview stops the tunnel with it.
 
+A free ngrok account allows one agent at a time. If one is already running,
+trance uses it when it is serving this same preview and tells you to stop it
+when it is not — rather than passing on ngrok's `ERR_NGROK_334`.
+
 Two things to know before you send the link on:
 
 * **There is no password.** Anyone with the URL can read *every file in that

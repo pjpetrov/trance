@@ -5593,7 +5593,9 @@ def test_the_file_listing_counts_lines_by_kind_of_file(tmp_path):
     # 100 here plus the two lines of server/app.js the fixture writes.
     assert totals["js"]["lines"] == 102 and totals["js"]["files"] == 3
     assert totals["css"]["lines"] == 12
-    assert totals["(no suffix)"]["files"] == 1          # Makefile is not "makefile"
+    # Makefile is not "makefile", and a dotfile has no extension either — the
+    # fixture's repo has a .gitignore, which is as much a project file as any.
+    assert totals["(no suffix)"]["files"] == 2
     # Biggest first, so the shape of the project is the first thing read.
     order = [t["ext"] for t in client.get(f"/api/sessions/{sid}/files").json()["totals"]]
     assert order[0] == "js"
@@ -6279,10 +6281,62 @@ def test_sharing_needs_something_to_share(tmp_path):
 def test_a_missing_ngrok_says_so_rather_than_failing_obscurely(tmp_path, monkeypatch):
     from trance import preview
 
+    # No agent running — otherwise this depends on whatever the machine happens
+    # to have open, which is how a test starts failing for the wrong reason.
+    monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [])
     monkeypatch.setattr("trance.preview.shutil.which", lambda _: None)
     with pytest.raises(preview.NoTunnelTool) as raised:
         preview.start_tunnel(1234)
     assert "not on trance's PATH" in str(raised.value)
+
+
+def test_an_agent_already_tunnelling_this_port_is_used_as_is(monkeypatch):
+    """Free ngrok allows one agent at a time. A second one gets ERR_NGROK_334,
+    and "502" is a poor way to learn that the tunnel you started an hour ago is
+    still up."""
+    from trance import preview
+
+    monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [
+        {"public_url": "http://x.ngrok-free.dev", "config": {"addr": "http://localhost:5000"}},
+        {"public_url": "https://x.ngrok-free.dev", "config": {"addr": "http://localhost:5000"}},
+    ])
+
+    same = preview.start_tunnel(5000)
+    assert same.url == "https://x.ngrok-free.dev"      # https wins
+    assert same.adopted is True and same.running is True
+    # Not ours to kill: someone else started it.
+    assert same.proc is None
+    same.stop()
+
+    with pytest.raises(preview.TunnelBusy) as raised:
+        preview.start_tunnel(6000)
+    assert "already tunnelling" in str(raised.value)
+    assert "localhost:5000" in str(raised.value)
+
+
+def test_the_busy_agent_is_a_conflict_not_a_gateway_error(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance import preview
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    monkeypatch.setattr(preview, "agent_tunnels", lambda *a, **k: [
+        {"public_url": "https://x.ngrok-free.dev", "config": {"addr": "http://localhost:1"}}])
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "index.html").write_text("<h1>hi</h1>")
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.post(f"/api/sessions/{sid}/preview", json={"path": "index.html"})
+
+    refused = client.post(f"/api/sessions/{sid}/share", json={})
+    assert refused.status_code == 409
+    assert "one agent at a time" in refused.json()["detail"]
 
 
 def test_ngroks_own_complaint_is_what_gets_reported(tmp_path):
@@ -6400,3 +6454,112 @@ def test_the_review_step_lands_where_it_says_it_does(tmp_path):
 
     steps = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"]
     assert [s["task"][:5] for s in steps] == ["one", "Addre", "two", "three"]
+
+
+def test_what_was_fixed_lists_the_commits_each_agent_made(tmp_path):
+    """A run is one commit per step, so the list is what each agent did and in
+    what order. One combined diff hides both."""
+    from trance import vcs
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    vcs.ensure_repo(project)
+    (project / "a.js").write_text("const PORT = 3000;\n")
+    vcs.commit_all(project, "before the review")
+    before = vcs.head(project)
+
+    (project / "a.js").write_text("const PORT = process.env.PORT;\n")
+    vcs.commit_all(project, "backend: read the port from the environment")
+    (project / "a.test.js").write_text("test('default port', () => {});\n")
+    vcs.commit_all(project, "tester: cover the new default")
+
+    made = vcs.commits_between(project, before)
+    # Oldest first: the order it happened in. (commit_all stamps "trance: ".)
+    assert [c["subject"] for c in made] == [
+        "trance: backend: read the port from the environment",
+        "trance: tester: cover the new default"]
+    assert made[0]["files"] == 1 and made[0]["added"] == 1 and made[0]["removed"] == 1
+    assert made[1]["added"] == 1 and made[1]["removed"] == 0
+
+    one = vcs.show(project, made[0]["sha"])
+    assert one["subject"].endswith("backend: read the port from the environment")
+    assert "process.env.PORT" in one["diff"] and "a.js" in one["stat"]
+    assert one["clipped"] is False
+
+
+def test_a_commit_id_that_is_not_one_is_refused(tmp_path):
+    """The sha reaches git from a URL, so it is checked before it gets there."""
+    from trance import vcs
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    vcs.ensure_repo(project)
+    (project / "a.js").write_text("x\n")
+    vcs.commit_all(project, "one")
+
+    assert vcs.show(project, "") == {}
+    assert vcs.show(project, "HEAD; rm -rf /") == {}
+    assert vcs.show(project, "../../etc/passwd") == {}
+    assert vcs.show(project, "no-such-commit") == {}
+    assert vcs.show(project, vcs.head(project))["subject"].endswith("one")
+
+
+def test_a_huge_commit_is_clipped_rather_than_streamed_whole(tmp_path):
+    from trance import vcs
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    vcs.ensure_repo(project)
+    (project / "big.txt").write_text("x\n")
+    vcs.commit_all(project, "one")
+    (project / "big.txt").write_text("\n".join(f"line {i}" for i in range(20_000)))
+    vcs.commit_all(project, "a lot at once")
+
+    shown = vcs.show(project, vcs.head(project), max_chars=5_000)
+    assert shown["clipped"] is True and len(shown["diff"]) == 5_000
+
+
+def test_trances_own_index_stays_out_of_the_project_history(tmp_path):
+    """The graph db is binary and rewritten on every index. Committed, it puts
+    "Binary files differ" in the middle of every diff an agent made — in a repo
+    whose whole point is being readable afterwards."""
+    from trance import vcs
+
+    project = tmp_path / "proj"
+    (project / ".trance").mkdir(parents=True)
+    (project / "app.js").write_text("const a = 1;\n")
+    (project / ".trance" / "graph.db").write_bytes(b"\x00binary\x00")
+    (project / ".trance" / "PLAN.md").write_text("# the plan\n")
+
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "first")
+
+    tracked = vcs.changed_between(project, "HEAD")     # nothing outstanding
+    assert tracked == []
+    listed = [line for line in
+              vcs._run(project, "ls-files")[1].splitlines()]
+    assert "app.js" in listed
+    assert ".trance/graph.db" not in listed
+    # ...but the plan and the memory are written for you to read, so they stay.
+    assert ".trance/PLAN.md" in listed
+
+
+def test_an_index_already_committed_is_untracked_not_deleted(tmp_path):
+    from trance import vcs
+
+    project = tmp_path / "proj"
+    (project / ".trance").mkdir(parents=True)
+    (project / "app.js").write_text("const a = 1;\n")
+    (project / ".trance" / "graph.db").write_bytes(b"\x00binary\x00")
+
+    vcs.ensure_repo(project)
+    (project / ".gitignore").unlink()                  # a repo from before this existed
+    vcs.commit_all(project, "with the index in it")
+    assert ".trance/graph.db" in vcs._run(project, "ls-files")[1]
+
+    vcs.ignore_trance_files(project)
+    dropped = vcs.untrack_ignored(project)
+
+    assert dropped == [".trance/graph.db"]
+    assert ".trance/graph.db" not in vcs._run(project, "ls-files")[1]
+    assert (project / ".trance" / "graph.db").exists()  # still on disk, still usable

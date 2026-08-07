@@ -300,16 +300,22 @@ class Tunnel:
     proc: object
     #: What it was started with, so the UI can say whether it has a password.
     policy: str = ""
+    #: Someone else's agent, which trance found and used rather than started.
+    adopted: bool = False
 
     @property
     def running(self) -> bool:
+        if self.adopted:
+            return bool(agent_tunnels())     # theirs; ask the agent, do not assume
         return self.proc is not None and self.proc.poll() is None
 
     def to_dict(self) -> dict:
-        return {"url": self.url, "port": self.port,
+        return {"url": self.url, "port": self.port, "adopted": self.adopted,
                 "protected": bool(self.policy), "running": self.running}
 
     def stop(self) -> None:
+        # Nothing to stop for a tunnel we adopted rather than started: it
+        # belongs to whoever ran ngrok, and killing it would be a surprise.
         if self.proc is None:
             return
         try:
@@ -321,6 +327,19 @@ class Tunnel:
                 pass
 
 
+def agent_tunnels(api: str = NGROK_API, timeout: float = 0.4) -> list[dict]:
+    """What the running ngrok agent is tunnelling, if one is running at all."""
+    try:
+        with urllib.request.urlopen(api, timeout=timeout) as response:
+            return json.load(response).get("tunnels") or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
+
+
+class TunnelBusy(RuntimeError):
+    """An ngrok agent is already running, and the account allows only one."""
+
+
 def start_tunnel(port: int, policy: str = "", wait_s: float = 25.0) -> Tunnel:
     """Run `ngrok http <port>` and wait for it to report its public URL.
 
@@ -328,7 +347,29 @@ def start_tunnel(port: int, policy: str = "", wait_s: float = 25.0) -> Tunnel:
     output, because that is the thing the agent considers true — and it is the
     same source used when someone starts ngrok themselves, so a tunnel behaves
     identically whichever way it was started.
+
+    An agent that is already running is dealt with first. Free ngrok accounts
+    allow exactly one at a time, so starting a second gets ERR_NGROK_334 — and
+    "502" is a poor way to learn that the tunnel you started an hour ago is
+    still up.
     """
+    running = agent_tunnels()
+    if running:
+        mine = [t for t in running
+                if (t.get("config") or {}).get("addr", "").rstrip("/").endswith(f":{port}")]
+        if mine:
+            # Already serving this exact port: adopt it rather than fight it.
+            https = next((t["public_url"] for t in mine
+                          if t.get("public_url", "").startswith("https://")), "")
+            return Tunnel(port=port, url=https or mine[0]["public_url"],
+                          proc=None, policy=policy, adopted=True)
+        elsewhere = ", ".join(sorted({(t.get("config") or {}).get("addr", "?")
+                                      for t in running}))
+        raise TunnelBusy(
+            f"An ngrok agent is already tunnelling {elsewhere}, and one agent at a "
+            f"time is all a free ngrok account allows. Stop that one — or open the "
+            f"page it is already serving.")
+
     binary = shutil.which("ngrok")
     if not binary:
         raise NoTunnelTool(
@@ -345,6 +386,10 @@ def start_tunnel(port: int, policy: str = "", wait_s: float = 25.0) -> Tunnel:
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             output = (proc.stdout.read() if proc.stdout else "") or ""
+            if "ERR_NGROK_334" in output or "ERR_NGROK_108" in output:
+                raise TunnelBusy(
+                    "An ngrok agent is already running, and one at a time is all a "
+                    "free ngrok account allows. Stop the other one and try again.")
             raise RuntimeError(_ngrok_failure(output))
         url = public_url(port)
         if url:
