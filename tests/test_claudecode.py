@@ -270,3 +270,165 @@ def test_the_cli_is_not_left_waiting_for_input(monkeypatch):
     ClaudeCodeClient(ModelConfig(kind="claudecode")).complete(
         [{"role": "user", "content": "hi"}])
     assert seen["kwargs"].get("stdin") == subprocess.DEVNULL
+
+
+# ------------------------------------------------- delegating the whole step
+
+def fake_delegate(monkeypatch, result: str, *, num_turns: int = 3,
+                  capture: dict | None = None, side_effect=None):
+    """Stand in for the CLI only.
+
+    Git has to keep working: this backend is judged by what the diff says it
+    changed, so a fake that swallows `git` too would be testing nothing.
+    """
+    import subprocess
+
+    from trance.agents import delegate
+
+    monkeypatch.setattr("trance.providers.claudecode_client.shutil.which",
+                        lambda _: "/usr/bin/claude")
+    real_run = subprocess.run
+
+    class Done:
+        returncode = 0
+        stdout = json.dumps({"is_error": False, "result": result,
+                             "num_turns": num_turns, "duration_api_ms": 900,
+                             "total_cost_usd": 0.02,
+                             "usage": {"input_tokens": 6,
+                                       "cache_read_input_tokens": 40000,
+                                       "output_tokens": 465}})
+        stderr = ""
+
+    def run(command, **kwargs):
+        if not (command and str(command[0]).endswith("claude")):
+            return real_run(command, **kwargs)
+        if capture is not None:
+            capture["command"] = command
+            capture["cwd"] = kwargs.get("cwd")
+        if side_effect is not None:
+            side_effect()
+        return Done()
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return delegate
+
+
+def test_a_delegated_step_runs_in_the_project_with_edits_allowed(tmp_path, monkeypatch):
+    """One call, its own loop, its own tools — because this CLI will not answer
+    round by round, and a run is five or more calls a step."""
+    from trance import vcs
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+
+    seen: dict = {}
+    delegate = fake_delegate(monkeypatch, "did it\n\nOUTCOME: SUCCESS", capture=seen)
+
+    project = tmp_path / "proj"
+    (project / "public").mkdir(parents=True)
+    (project / "public" / "app.js").write_text("x\n")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+
+    from trance.events import EventBus
+
+    delegate.run_delegated(
+        role=BUILTIN_ROLES["frontend"], task="add stop()", project=project,
+        config=ModelConfig(kind="claudecode", model="opus"), bus=EventBus(),
+        session_id="s", step_id="st", goal="a web app")
+
+    command = seen["command"]
+    assert seen["cwd"] == str(project)              # it works where the project is
+    assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+    assert "Edit" in command and "Read" in command
+    prompt = command[command.index("-p") + 1]
+    assert "add stop()" in prompt and "a web app" in prompt
+    assert "OUTCOME: SUCCESS" in prompt              # it is told how to report
+    assert "src/**" in prompt                        # ...and what it may change
+
+
+def test_what_it_touched_is_read_from_git_not_from_its_report(tmp_path, monkeypatch):
+    """A model saying what it did is a claim. With this backend the diff is the
+    only fact available."""
+    from trance import vcs
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "app.js").write_text("x\n")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+
+    # The "model" edits a file behind trance's back, as this backend can, and
+    # then reports that it did nothing.
+    delegate = fake_delegate(
+        monkeypatch, "I changed nothing at all.",
+        side_effect=lambda: (project / "src" / "app.js").write_text("edited\n"))
+
+    out = delegate.run_delegated(
+        role=BUILTIN_ROLES["frontend"], task="t", project=project,
+        config=ModelConfig(kind="claudecode"), bus=EventBus(),
+        session_id="s", step_id="st")
+
+    assert out["files_written"] == ["src/app.js"]
+    assert out["remit_violations"] == []
+
+
+def test_writing_outside_the_remit_fails_the_step(tmp_path, monkeypatch):
+    """trance cannot prevent it here — Claude Code writes files itself — so it
+    is caught afterwards and named, with the checkpoint still behind it."""
+    from trance import vcs
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    (project / "server").mkdir()
+    (project / "src" / "app.js").write_text("x\n")
+    (project / "server" / "app.py").write_text("y\n")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+
+    fake_delegate(monkeypatch, "done\n\nOUTCOME: SUCCESS",
+                  side_effect=lambda: (project / "server" / "app.py").write_text(
+                      "touched by the wrong agent\n"))
+
+    turn = run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=project,
+                     config=ModelConfig(kind="claudecode"), bus=EventBus(),
+                     session_id="s", step_id="st")
+
+    assert turn.remit_violations == ["server/app.py"]
+    assert turn.outcome[0] == "FAILED"
+    assert "outside this agent's remit" in turn.outcome[1]
+    # The work is still there to look at, not silently discarded.
+    assert (project / "server" / "app.py").read_text().startswith("touched")
+
+
+def test_an_agent_with_no_remit_is_told_to_change_nothing(tmp_path, monkeypatch):
+    from trance.agents.roles import AgentRole
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    seen: dict = {}
+    delegate = fake_delegate(monkeypatch, "OUTCOME: SUCCESS", capture=seen)
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    reader = AgentRole(name="auditor", title="Auditor", description="reads",
+                       system_prompt="p", paths=[], toolsets=["files"])
+    delegate.run_delegated(role=reader, task="look at it", project=project,
+                           config=ModelConfig(kind="claudecode"), bus=EventBus(),
+                           session_id="s", step_id="st")
+    prompt = seen["command"][seen["command"].index("-p") + 1]
+    assert "read-only" in prompt and "change no files" in prompt
+
+
+def test_only_this_backend_is_delegated():
+    from trance.agents import delegate
+
+    assert delegate.delegated("claudecode") is True
+    for other in ("anthropic", "openai", "ollama", "llamacpp", ""):
+        assert delegate.delegated(other) is False

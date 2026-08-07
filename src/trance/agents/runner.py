@@ -17,6 +17,7 @@ from ..config import ModelConfig
 from ..events import EventBus, summarize_messages
 from ..providers import Cancelled, client_for
 from ..worker.client import salvage_tool_calls
+from . import delegate
 from .memory import ProjectMemory
 from .roles import AgentRole
 from .tools import AgentTools, permissions_brief
@@ -334,6 +335,28 @@ def run_agent(
     steering_inbox=None,
 ) -> AgentTurn:
     model_config = config
+
+    # A backend that will not answer round by round runs the step itself. One
+    # call instead of a dozen, judged the same way — see agents/delegate.py for
+    # what that trades away.
+    if delegate.delegated(getattr(model_config, "kind", "")):
+        handed = delegate.run_delegated(
+            role=role, task=task, project=project, config=model_config, bus=bus,
+            session_id=session_id, step_id=step_id, memory=memory, goal=goal,
+            placement=placement, steering=steering)
+        turn = AgentTurn(text=handed["text"], files_written=handed["files_written"],
+                         remit_violations=handed["remit_violations"],
+                         usage=handed["usage"], rounds=handed["turns"],
+                         tool_calls=handed["turns"])
+        if handed["remit_violations"]:
+            # It wrote outside its remit. trance could not stop it — this
+            # backend edits files itself — so the step fails and names them,
+            # with the work still on disk and the checkpoint still behind it.
+            turn.text += (
+                "\n\nOUTCOME: FAILED — wrote outside this agent's remit: "
+                + ", ".join(handed["remit_violations"]))
+        return turn
+
     client = client_for(model_config)
     def notify(kind: str, payload: dict) -> None:
         bus.emit(kind, session_id, agent=role.name, step_id=step_id, payload=payload)

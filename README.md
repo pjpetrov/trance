@@ -93,25 +93,30 @@ one thing to pick.
 | `llamacpp` | OpenAI-compatible, local (llama-server) |
 | `claudecode` | the local `claude` CLI, on its subscription — no key, no endpoint |
 
-**Claude Code as a backend, and its limit.** `claudecode` runs `claude -p` for
-each call, so the model comes from whatever that CLI is signed in to rather than
-from an API key. A single step works end to end — read, edit and report through
-trance's own tools, inside the remit — but **it is not usable for a whole run**,
-and the reason is worth stating plainly: the CLI throttles programmatic use
-hard. A burst of calls comes back `is_error` with zero duration, zero cost and
-no request made, and stays that way through four retries over a minute, while
-the same conversation succeeds when left alone. An agent loop makes five or more
-calls per step. Point an agent's *backup* model at it, or use it for a one-off
-step; use an API model for the loop.
+**Claude Code as a backend.** `claudecode` reaches Claude through the local
+`claude` CLI, so the model comes from whatever that CLI is signed in to rather
+than from an API key. It does not work like the others, because it cannot: the
+CLI throttles programmatic use, and trance's ordinary loop is five or more calls
+per step. A burst of calls comes back `is_error` with zero duration, zero cost
+and no request made — while the same conversation succeeds when left alone.
 
-The rest, measured rather than guessed: its own system prompt and tools are
-turned off (`--system-prompt`, `--tools ""`), because left on every call carries
-~13,100 tokens of instructions trance did not write, and its built-in tools
-would edit your project behind every remit and counter trance keeps. It has no
-wire protocol for *returning* a tool call — it executes them — so tools are
-described in the prompt and their calls are parsed back out, in either the
-fenced form trance asks for or Claude's own XML syntax, which is what the model
-writes when the habit wins.
+So a step on this model is **delegated**: one call, Claude Code's own loop, its
+own tools, its own context management. Measured at nine seconds and three
+internal turns for a small edit, in the single call the throttle allows. trance
+still decides which step runs, in what order, with what prompt, and judges the
+result by the same `OUTCOME:` line and the same checks.
+
+Two things that trade away, stated rather than hidden:
+
+* **The remit is checked afterwards, not enforced during.** Claude Code writes
+  files itself, so the step runs between two git checkpoints and what it touched
+  is read back from the diff. Anything outside the remit fails the step and is
+  named — caught, not prevented, with the work still on disk and revertible.
+* **Context is theirs.** trance's prompt goes in, but Claude Code reads what it
+  likes after that and carries ~40,000 tokens of its own preamble and tools.
+  This project's whole argument about context does not apply to this backend; it
+  is here because a subscription is cheaper than an API bill, which is a
+  different saving.
 
 Whether using it this way fits your Claude Code subscription is a licensing
 question, not a technical one.
