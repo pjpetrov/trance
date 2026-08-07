@@ -598,12 +598,15 @@ def run_agent(
             })
             messages.append({"role": "user", "content": told})
 
+        cut_short = []
         for call in calls:
             if call.malformed:
                 # Almost always the model ran out of output tokens partway
                 # through a large `content` argument. Say so — "missing
                 # required argument 'path'" sends it hunting for the wrong bug.
                 truncated = response.finish_reason == "length"
+                if truncated:
+                    cut_short.append(call)
                 outcome = _malformed_call_outcome(call, truncated, model_config.max_tokens)
                 bus.emit("tool_call", session_id, agent=role.name, step_id=step_id, payload={
                     "name": call.name, "arguments": {}, "ok": False,
@@ -661,6 +664,9 @@ def run_agent(
             messages.append(tool_message)
             if key is not None and earlier is None:
                 seen_lookups[key] = tool_message
+
+        if cut_short:
+            _drop_unfinished_call(messages, cut_short)
     else:
         # Out of rounds: force a final answer with tools withheld.
         messages.append({
@@ -741,6 +747,43 @@ def run_agent(
 
     turn.usage = totals
     return turn
+
+
+def _drop_unfinished_call(messages: list[dict], cut_short: list) -> None:
+    """Take a half-written tool call back out of the conversation.
+
+    A call cut off at the output limit leaves arguments that are not JSON. Left
+    in the history, some endpoints re-parse it on every later request and refuse
+    the lot — llama.cpp 500s — so the next three rounds fail in the same second
+    without the model generating a thing, and the step dies reporting that
+    "every attempt was cut off" when only the first one ever ran.
+
+    So the assistant's turn is rewritten as what it actually amounted to: a
+    sentence saying it tried and was cut. Nothing is lost that was ever usable,
+    and the conversation can be sent again.
+    """
+    ids = {call.id for call in cut_short}
+    names = ", ".join(sorted({call.name for call in cut_short if call.name}) or ["a tool"])
+
+    for message in reversed(messages):
+        if message.get("role") != "assistant":
+            continue
+        keep = [c for c in (message.get("tool_calls") or [])
+                if c.get("id") not in ids]
+        if len(keep) == len(message.get("tool_calls") or []):
+            continue                      # not the turn we are looking for
+        note = (f"(I started a {names} call and my reply was cut off at the output "
+                f"limit before it was finished, so it did not run.)")
+        message["content"] = "\n\n".join(p for p in [message.get("content") or "", note] if p)
+        if keep:
+            message["tool_calls"] = keep
+        else:
+            message.pop("tool_calls", None)
+        break
+
+    # A tool result with no call to belong to is rejected by strict endpoints.
+    messages[:] = [m for m in messages
+                   if not (m.get("role") == "tool" and m.get("tool_call_id") in ids)]
 
 
 def _malformed_call_outcome(call, truncated: bool, max_tokens: int):

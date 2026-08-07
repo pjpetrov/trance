@@ -7089,3 +7089,54 @@ def test_a_setting_that_was_chosen_is_left_alone(tmp_path):
          "paths": [], "toolsets": ["commands"], "tool_rounds": 0},
     ]}))
     assert RoleStore(path).get("tester").tool_rounds == 0
+
+
+def test_a_half_written_call_is_taken_back_out_of_the_conversation(tmp_path, monkeypatch):
+    """A call cut off at the output limit leaves arguments that are not JSON.
+    Left in the history, llama.cpp re-parses it on every later request and
+    refuses the lot — three rounds failing in the same second without the model
+    generating anything, and a step that dies reporting "every attempt was cut
+    off" when only the first one ever ran."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    sent = []
+
+    class Cut:
+        def __init__(self):
+            self.round = 0
+
+        def complete(self, messages, tools=None, **kwargs):
+            sent.append([dict(m) for m in messages])
+            self.round += 1
+            if self.round == 1:
+                return ChatResponse(text="", finish_reason="length", tool_calls=[
+                    ToolCall(id="big", name="write_file", arguments={},
+                             raw_arguments='{"path": "a.js", "content": "half a fi',
+                             malformed=True)])
+            return ChatResponse(text="OUTCOME: SUCCESS", finish_reason="stop")
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Cut())
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    run_agent(role=AgentRole(name="b", title="B", description="d", system_prompt="p",
+                             paths=["**"], toolsets=["files"]),
+              task="t", project=project, config=ModelConfig(max_tokens=8000),
+              bus=EventBus(), session_id="s", step_id="st")
+
+    second = sent[1]
+    # Nothing unparseable is sent back: no tool_calls left over, and no orphan
+    # tool result pointing at a call that is no longer there.
+    for message in second:
+        for call in message.get("tool_calls") or []:
+            assert call.get("id") != "big"
+        assert message.get("tool_call_id") != "big"
+
+    # ...and the turn still says what happened, so the model knows to write small.
+    said = "\n".join(str(m.get("content") or "") for m in second)
+    assert "cut off at the output limit" in said
+    assert "write_file" in said

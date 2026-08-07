@@ -1,0 +1,6 @@
+unsloth/Qwen3.6-27B-GGUF:IQ4_XS @ http://localhost:12345/v1
+workspace: /home/petrovs/trance_workspace
+state:     /home/petrovs/trance/runs
+UI: http://0.0.0.0:8080
+warning: bound to all interfaces. There is no authentication, and agents can 
+write files and run commands. Only do this on a trusted network.
