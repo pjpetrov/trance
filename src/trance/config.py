@@ -148,6 +148,11 @@ class Config:
         remain for configs written before presets existed.
         """
         chosen_preset = self.presets.get(preset or "") if preset else None
+        # An agent naming no model, or one since deleted, gets a defined one
+        # rather than an invented endpoint. There is no "default model": with
+        # providers gone the fallback was a localhost nobody had configured.
+        if chosen_preset is None and self.presets:
+            chosen_preset = next(iter(self.presets.values()))
         if chosen_preset is not None:
             provider = chosen_preset.provider
             model = model or chosen_preset.model

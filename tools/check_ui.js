@@ -100,7 +100,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,openStep,groupStepEvents,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -125,6 +125,23 @@ try {
   api.state.session = session;
   api.state.roles = { backend: { name: "backend", color: "#7aa2f7", verifier: false },
                       tester: { name: "tester", color: "#f7768e", verifier: true } };
+  // An agent card must offer the defined models and nothing else.
+  api.state.presets = RESPONSES["/api/presets"].presets;
+  {
+    const card = api.agentCard({ name: "backend", title: "Backend", description: "d",
+                                 system_prompt: "p", paths: [], toolsets: ["files"],
+                                 preset: null, color: "#7aa2f7", commands: [],
+                                 command_list: "", verifier: false }, false);
+    const text = flat(card).replace(/\s+/g, " ");
+    if (text.includes("default model")) {
+      console.log("BROKEN: the agent model picker still offers a phantom default");
+      process.exit(1);
+    }
+    if (!text.includes("Qwen3.6-llama.cpp") || !text.includes("claude")) {
+      console.log("BROKEN: the agent model picker does not list the defined models");
+      process.exit(1);
+    }
+  }
   api.state.planning = { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] };
   // One step mid-split: the marker belongs on that card, not above the plan.
   api.state.splitting = { count: 1, threshold: 5, step_ids: ["s4"] };

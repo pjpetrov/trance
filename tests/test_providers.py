@@ -871,3 +871,39 @@ def test_a_name_deleted_and_then_recreated_is_kept(tmp_path):
     store.upsert_preset(ModelPreset(name="local", kind="llamacpp", model="qwen-new"))
 
     assert ProviderStore(path).preset("local").model == "qwen-new"
+
+
+def test_an_agent_with_no_model_gets_a_defined_one(tmp_path):
+    """There is no "default model": with providers gone, the fallback was a
+    localhost endpoint nobody had configured."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.providers.base import ModelPreset
+
+    config = Config()
+    config.presets["only-one"] = ModelPreset(
+        name="only-one", kind="anthropic", model="claude-opus-5", api_key="sk-x")
+
+    role = BUILTIN_ROLES["backend"]
+    assert role.preset is None
+    resolved = config.for_role(role)
+    assert resolved.model == "claude-opus-5" and resolved.kind == "anthropic"
+
+
+def test_an_agent_pointing_at_a_deleted_model_is_not_left_stranded(tmp_path):
+    from trance.config import Config
+    from trance.providers.base import ModelPreset
+
+    config = Config()
+    config.presets["still-here"] = ModelPreset(name="still-here", kind="llamacpp",
+                                               model="qwen")
+    resolved = config.resolve(config.worker, preset="deleted-yesterday")
+    assert resolved.model == "qwen"
+
+
+def test_with_no_models_at_all_the_old_default_still_applies(tmp_path):
+    """Nothing configured is a fresh install, not a broken one."""
+    from trance.config import Config
+
+    resolved = Config().resolve(Config().worker)
+    assert resolved.base_url.startswith("http://localhost")

@@ -3123,7 +3123,12 @@ def _escalating_engine(tmp_path, team, preset="big"):
 
     engine = _engine(tmp_path, team)
     engine.config.providers["p"] = ProviderConfig(name="p", kind="llamacpp")
-    engine.config.presets[preset] = ModelPreset(name=preset, provider="p", model="big-model")
+    # The everyday model comes first: an agent naming none uses the first
+    # defined model, and the escalation model is not that.
+    engine.config.presets["normal"] = ModelPreset(name="normal", kind="llamacpp",
+                                                  model="small-model")
+    engine.config.presets[preset] = ModelPreset(name=preset, kind="llamacpp",
+                                                model="big-model")
     engine.config.escalation_preset = preset
     return engine
 

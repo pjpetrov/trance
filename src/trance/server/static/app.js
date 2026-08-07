@@ -1486,6 +1486,10 @@ function renderOrchestratorSettings() {
   const box = $("orchestrator-settings");
   box.innerHTML = "";
   const select = el("select", "compact");
+  if (!(state.presets || []).length) {
+    box.append(el("p", "muted small", "No models defined yet — add one above."));
+    return;
+  }
   state.presets.forEach((m) => {
     const opt = el("option", null, `${m.name} — ${m.model}`);
     opt.value = m.name;
@@ -1529,10 +1533,13 @@ async function openAgents() {
 }
 
 async function renderAgents() {
-  // The card offers a list picker, so the names have to be here first.
+  // The card offers a model and a command list, so both have to be here first.
   if (!state.commands) {
     try { state.commands = await api("/api/commands"); } catch (_) { /* offline */ }
   }
+  try {
+    state.presets = (await api("/api/presets")).presets;
+  } catch (_) { /* keep whatever boot loaded */ }
   const data = await api("/api/agents");
   state.toolsets = data.toolsets;
   state.agents = data.agents;
@@ -1583,16 +1590,28 @@ function agentCard(agent, isNew) {
     return l;
   };
 
+  // Only models that exist. "default model" meant an endpoint nobody had
+  // defined — with providers gone there is no such thing, and picking it sent
+  // the agent at a localhost that may not be running.
   const preset = el("select", "compact");
-  const inherit = el("option", null, "default model");
-  inherit.value = "";
-  preset.append(inherit);
-  state.presets.forEach((m) => {
+  const models = state.presets || [];
+  if (!models.length) {
+    const none = el("option", null, "no models defined — add one in ⚙");
+    none.value = "";
+    preset.append(none);
+    preset.disabled = true;
+  }
+  models.forEach((m) => {
     const opt = el("option", null, `${m.name} — ${m.model}`);
     opt.value = m.name;
     if (m.name === agent.preset) opt.selected = true;
     preset.append(opt);
   });
+  // An agent saved before, pointing at a model since deleted, would otherwise
+  // show whatever happened to be first while still holding the old name.
+  if (models.length && !models.some((m) => m.name === agent.preset)) {
+    preset.value = models[0].name;
+  }
   grid.append(wrap("Model", preset));
 
   const description = el("input", "compact");
