@@ -126,6 +126,21 @@ developer fixes it, tester runs again, until it passes or a count runs out. Each
 block's `SUCCESS`, `FAILED` and `CHECK FAILED` points at another block or leaves
 the loop, and the number on an arrow bounds it. A step runs an agent *or* a loop.
 
+An outcome can also take arrows in **tiers**, which is how a loop changes tactic
+instead of repeating one:
+
+```
+on FAILED   1st–2nd  → developer                        [ ] backup model
+            3rd–4th  → developer                        [x] backup model
+            after 4, the loop halts
+```
+
+The first two failures go back to the developer as usual; the next two go back
+to the same developer on its **backup model**, and the fifth stops. An ordinary
+retry varies the prompt and never the model, so "try again" and "try again with
+something stronger" are different arrows rather than the same one hoping for a
+different result.
+
 Deliberately not a general graph language: every arrow is labelled with an
 outcome the engine already computes, so a loop cannot express a condition trance
 has no way to evaluate.
@@ -212,7 +227,7 @@ trance stats      samples/sample-app
 ## Tests
 
 ```bash
-pytest                  # 422 tests
+pytest                  # 450 tests
 node tools/check_ui.js  # loads app.js in a DOM-less harness and drives it
 ```
 

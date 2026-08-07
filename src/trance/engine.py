@@ -198,6 +198,7 @@ class FlowEngine:
         runs: dict[str, int] = {}
         carry: Handoff | None = None
         walked = 0
+        on_backup_route = False        # set by a route that asks for the backup
 
         while node is not None and walked < loop.max_steps:
             self.session.wait_if_paused()
@@ -231,7 +232,11 @@ class FlowEngine:
                 steering.append(f"What the previous block did:\n{carry.body}")
 
             runs[role.name] = runs.get(role.name, 0) + 1
-            model_config, on_backup = self._model_for(role, step, runs[role.name])
+            # A route's backup applies to the block it points at, and only that
+            # one: the tier after it may well be an ordinary arrow again.
+            forced, on_backup_route = on_backup_route, False
+            model_config, on_backup = self._model_for(
+                role, step, runs[role.name], force_backup=forced)
             turn = run_agent(
                 role=role,
                 # Three prompts, narrowing: what the project is, what this step
@@ -278,7 +283,19 @@ class FlowEngine:
             })
 
             carry = build_handoff(turn.transcript, turn.text)
-            edge = node.edge(exit_name)
+            key = (node.id, exit_name)
+            edge = node.route(exit_name, visits.get(key, 0))
+            if edge is None:
+                # Every tier of this exit is spent. This is the deliberate end
+                # of a tiered route, not a bug: the plan said stop here.
+                allowed = node.allowance(exit_name)
+                self._emit("loop_exhausted", agent=role.name, step_id=step.id, payload={
+                    "loop": loop.name, "edge": f"{node.role} {exit_name}",
+                    "max_visits": allowed,
+                    "message": (f"{node.role}'s {exit_name} route has been taken "
+                                f"{allowed} time(s) — the loop is not converging."),
+                })
+                break
             if edge.target == EXIT_LOOP:
                 step.status = "done"
                 self._emit("step_finished", agent=role.name, step_id=step.id, payload={
@@ -290,17 +307,15 @@ class FlowEngine:
             if edge.target == FAIL_LOOP:
                 break
 
-            key = (node.id, exit_name)
             visits[key] = visits.get(key, 0) + 1
-            if visits[key] > edge.max_visits:
-                self._emit("loop_exhausted", agent=role.name, step_id=step.id, payload={
-                    "loop": loop.name, "edge": f"{node.role} {exit_name}",
-                    "max_visits": edge.max_visits,
-                    "message": (f"{node.role}'s {exit_name} route has been taken "
-                                f"{edge.max_visits} times — the loop is not converging."),
-                })
-                break
+            on_backup_route = edge.backup
             node = loop.node(edge.target)
+            if on_backup_route and node is not None:
+                self._emit("loop_route", agent=role.name, step_id=step.id, payload={
+                    "loop": loop.name, "to": node.role, "backup": True,
+                    "message": (f"{exit_name} #{visits[key]} routes to {node.role} "
+                                f"on its backup model."),
+                })
 
         step.status = "failed"
         last = step.attempts[-1] if step.attempts else None
@@ -954,7 +969,15 @@ class FlowEngine:
         """
         after = max(1, int(getattr(role, "tries", 2) or 2))
         backup = getattr(role, "backup_preset", "") or ""
-        if not backup or (attempt <= after and not force_backup):
+        if not backup:
+            if force_backup:
+                # Asked for by a loop route or a re-run button, so silence here
+                # would look like the backup ran and made no difference.
+                self._emit("warning", agent=role.name, step_id=step.id, payload={
+                    "message": (f"{role.name} has no backup model set, so this runs "
+                                f"on its usual one.")})
+            return self.config.for_role(role), False
+        if attempt <= after and not force_backup:
             return self.config.for_role(role), False
         if backup not in self.config.presets:
             self._emit("warning", agent=role.name, step_id=step.id, payload={

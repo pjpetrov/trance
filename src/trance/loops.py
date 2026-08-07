@@ -9,10 +9,18 @@ A loop names that shape once. It is a small state machine:
 
     node = an agent + the prompt that focuses it on its part
     exit  = one of SUCCESS / FAILED / CHECK_FAILED on that node
-    edge  = where each exit goes: another node, or out of the loop
+    route = where each exit goes: another node, or out of the loop
 
-The engine walks it. `max_visits` on an edge is what makes it finite: follow
-that edge more than N times and the loop stops rather than turning forever.
+The engine walks it. `max_visits` on a route is what makes it finite: follow
+that route more than N times and the loop stops rather than turning forever.
+
+An exit may have more than one route, in tiers. The first covers the first N
+times that exit is taken, the next covers the ones after it, and running past
+the last one ends the loop. That is what lets a loop change tactic instead of
+repeating one: the first three failures go back to the developer, the next two
+go to a senior agent, and the sixth stops. A route may also ask for its target's
+*backup* model, so "try again" and "try again with something stronger" are
+different arrows rather than the same one hoping for a different result.
 
 Deliberately not a general graph language. Every edge is labelled by an outcome
 the engine already computes, so a loop cannot express a condition trance has no
@@ -45,13 +53,18 @@ def new_node_id() -> str:
 
 @dataclass
 class Edge:
-    """What happens on one outcome of one node."""
+    """One route out of one outcome: where it goes, and for how many turns."""
 
     #: A node id, or EXIT_LOOP / FAIL_LOOP.
     target: str = FAIL_LOOP
-    #: How many times this edge may be followed before the loop gives up.
-    #: Only meaningful when it points back at a node.
+    #: How many times this route may be followed before the next tier takes
+    #: over — or, if it is the last, before the loop gives up. Only meaningful
+    #: when it points back at a node.
     max_visits: int = DEFAULT_MAX_VISITS
+    #: Run the target on its backup model rather than its usual one. The point
+    #: of a later tier is usually that the earlier one did not work, and the
+    #: model is the one thing an ordinary retry never changes.
+    backup: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -63,7 +76,8 @@ class Edge:
         data = data or {}
         return cls(target=data.get("target") or FAIL_LOOP,
                    max_visits=max(1, min(HARD_VISIT_CEILING,
-                                         int(data.get("max_visits") or DEFAULT_MAX_VISITS))))
+                                         int(data.get("max_visits") or DEFAULT_MAX_VISITS))),
+                   backup=bool(data.get("backup")))
 
 
 @dataclass
@@ -80,17 +94,47 @@ class LoopNode:
     #: Undo this block's changes when it does not succeed. Useful mid-loop: a
     #: fixer that made things worse should not hand its mess to the next agent.
     revert_on_fail: bool = False
-    #: outcome -> Edge. A missing exit fails the loop, which is the safe default:
-    #: an unrouted outcome means the author did not think about it.
-    on: dict[str, Edge] = field(default_factory=dict)
+    #: outcome -> the routes for it, in order. A missing exit fails the loop,
+    #: which is the safe default: an unrouted outcome means the author did not
+    #: think about it. One route is the ordinary case; several are tiers.
+    on: dict[str, list[Edge]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Written as a single Edge almost everywhere, since one route is the
+        # common case. Normalise so everything downstream sees a list.
+        self.on = {k: ([v] if isinstance(v, Edge) else list(v))
+                   for k, v in (self.on or {}).items()}
+
+    def routes(self, outcome: str) -> list[Edge]:
+        return self.on.get(outcome) or []
 
     def edge(self, outcome: str) -> Edge:
-        return self.on.get(outcome) or Edge(target=FAIL_LOOP)
+        """The first route for an outcome — what an unvisited node will do."""
+        routes = self.routes(outcome)
+        return routes[0] if routes else Edge(target=FAIL_LOOP)
+
+    def route(self, outcome: str, taken: int) -> Edge | None:
+        """Which route applies the `taken`-th time this exit is taken (0-based).
+
+        None means every tier is spent, and the loop is over: this is the "and
+        after that, halt" end of a tiered exit.
+        """
+        for edge in self.routes(outcome):
+            if edge.target in STOP:
+                return edge          # leaving never runs out
+            if taken < edge.max_visits:
+                return edge
+            taken -= edge.max_visits
+        return None
+
+    def allowance(self, outcome: str) -> int:
+        """How many times this exit may be taken in all, across its tiers."""
+        return sum(e.max_visits for e in self.routes(outcome) if e.target not in STOP)
 
     def to_dict(self) -> dict:
         return {"id": self.id, "role": self.role, "focus": self.focus,
                 "check": self.check, "revert_on_fail": self.revert_on_fail,
-                "on": {k: e.to_dict() for k, e in self.on.items()}}
+                "on": {k: [e.to_dict() for e in routes] for k, routes in self.on.items()}}
 
     @classmethod
     def from_dict(cls, data: dict) -> "LoopNode":
@@ -100,8 +144,8 @@ class LoopNode:
             focus=data.get("focus") or "",
             check=data.get("check") or None,
             revert_on_fail=bool(data.get("revert_on_fail")),
-            on={k: Edge.from_dict(v) for k, v in (data.get("on") or {}).items()
-                if k in EXITS},
+            on={k: [Edge.from_dict(e) for e in (v if isinstance(v, list) else [v])]
+                for k, v in (data.get("on") or {}).items() if k in EXITS},
         )
 
 
@@ -175,11 +219,21 @@ def validate(loop: Loop, known_roles, verifiers) -> str | None:
         if node.check and node.check not in verifiers:
             return (f"{node.check!r} cannot check work — pick an agent marked "
                     f"'can verify', or none")
-        for outcome, edge in node.on.items():
+        for outcome, routes in node.on.items():
             if outcome not in EXITS:
                 return f"unknown outcome {outcome!r} on the {node.role} block"
-            if edge.target not in STOP and edge.target not in ids:
-                return f"the {outcome} arrow on the {node.role} block points nowhere"
+            for n, edge in enumerate(routes, start=1):
+                where = (f"the {outcome} arrow on the {node.role} block"
+                         if len(routes) == 1 else
+                         f"{outcome} arrow {n} on the {node.role} block")
+                if edge.target not in STOP and edge.target not in ids:
+                    return f"{where} points nowhere"
+                # Anything after a route that leaves the loop can never run.
+                if edge.target in STOP and n < len(routes):
+                    left = len(routes) - n
+                    return (f"{where} leaves the loop, so the {left} "
+                            f"arrow{'' if left == 1 else 's'} after it can never "
+                            f"be taken")
         if node.check is None and CHECK_FAILED in node.on:
             return (f"the {node.role} block routes CHECK_FAILED but has no check — "
                     f"that outcome can never happen")
@@ -189,8 +243,8 @@ def validate(loop: Loop, known_roles, verifiers) -> str | None:
 
     # A loop with no way out runs until max_steps and then reports failure,
     # which looks like a broken agent rather than a broken plan.
-    reachable_exit = any(edge.target == EXIT_LOOP
-                         for node in loop.nodes for edge in node.on.values())
+    reachable_exit = any(edge.target == EXIT_LOOP for node in loop.nodes
+                         for routes in node.on.values() for edge in routes)
     if not reachable_exit:
         return ("nothing in this loop exits successfully — give at least one outcome "
                 "the 'leave the loop' action")

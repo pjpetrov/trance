@@ -5731,3 +5731,136 @@ def test_a_dev_command_that_dies_is_reported(tmp_path):
     project.mkdir()
     server = preview.start_dev(project, "echo 'command not found'; exit 1", wait_s=5)
     assert server.url == "" and server.running is False
+
+
+def _tiered_loop():
+    """A loop whose FAILED exit changes tactic twice and then gives up."""
+    from trance.loops import (EXIT_LOOP, FAIL_LOOP, Edge, FAILED, Loop,
+                              LoopNode, SUCCESS)
+    return Loop(name="escalating", nodes=[
+        LoopNode(id="n_test", role="tester",
+                 on={SUCCESS: Edge(EXIT_LOOP),
+                     # twice back to the developer, then twice to the developer
+                     # on its backup model, then nothing — the loop halts.
+                     FAILED: [Edge("n_dev", max_visits=2),
+                              Edge("n_dev", max_visits=2, backup=True)]}),
+        LoopNode(id="n_dev", role="backend",
+                 on={SUCCESS: Edge("n_test", max_visits=9), FAILED: Edge(FAIL_LOOP)}),
+    ])
+
+
+def test_a_tiered_exit_routes_by_how_often_it_was_taken():
+    loop = _tiered_loop()
+    from trance.loops import FAILED
+    tester = loop.node("n_test")
+
+    first, second = tester.route(FAILED, 0), tester.route(FAILED, 1)
+    assert (first.target, first.backup) == ("n_dev", False)
+    assert (second.target, second.backup) == ("n_dev", False)
+
+    third, fourth = tester.route(FAILED, 2), tester.route(FAILED, 3)
+    assert (third.target, third.backup) == ("n_dev", True)
+    assert (fourth.target, fourth.backup) == ("n_dev", True)
+
+    # The fifth failure has nowhere left to go, which is the point.
+    assert tester.route(FAILED, 4) is None
+    assert tester.allowance(FAILED) == 4
+
+
+def test_a_tier_that_leaves_the_loop_makes_the_rest_dead():
+    from trance.loops import EXIT_LOOP, Edge, FAILED, Loop, LoopNode, SUCCESS, validate
+    loop = Loop(name="dead", nodes=[LoopNode(id="a", role="tester", on={
+        SUCCESS: Edge(EXIT_LOOP),
+        FAILED: [Edge("fail"), Edge("a", max_visits=3)]})])
+    problem = validate(loop, {"tester"}, {"tester"})
+    assert problem and "can never be taken" in problem
+
+
+def test_tiers_survive_a_round_trip():
+    from trance.loops import Loop
+    loop = _tiered_loop()
+    again = Loop.from_dict(loop.to_dict())
+    routes = again.node("n_test").on["FAILED"]
+    assert [(r.target, r.max_visits, r.backup) for r in routes] == [
+        ("n_dev", 2, False), ("n_dev", 2, True)]
+
+
+def test_a_single_edge_still_reads_as_one_route():
+    """Every loop written before tiers existed keeps working."""
+    from trance.loops import Loop
+    loop = Loop.from_dict({"name": "old", "nodes": [
+        {"id": "a", "role": "tester",
+         "on": {"SUCCESS": {"target": "exit"}, "FAILED": {"target": "a", "max_visits": 2}}}]})
+    node = loop.node("a")
+    assert node.edge("FAILED").target == "a"
+    assert node.route("FAILED", 1).target == "a"
+    assert node.route("FAILED", 2) is None
+
+
+def test_a_route_can_send_the_next_agent_to_its_backup_model(tmp_path, monkeypatch):
+    """Two failures go back to the developer as usual; the next two go back to
+    the same developer on its backup model, and the fifth halts the loop.
+
+    The point of a later tier is that the earlier one did not work, and the
+    model is the one thing an ordinary retry never changes."""
+    from trance.agents.store import LoopStore
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=99)      # never switches on its own
+    store = LoopStore(tmp_path / "l.json", seed=False)
+    store.upsert(_tiered_loop())
+    engine.loops = store
+
+    seen = []
+
+    def fake(**kw):
+        seen.append((kw["role"].name, kw["config"].model))
+        return _Turn(None, "x", outcome=("FAILED", "still red")
+                     if kw["role"].name == "tester" else ("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    step = Step(role="", loop="escalating", task="t")
+    engine._execute(step)
+
+    devs = [model for name, model in seen if name == "backend"]
+    assert devs == ["small-model", "small-model", "big-model", "big-model"]
+    assert step.status == "failed"
+
+    ended = [e for e in engine.bus.history(engine.session.id) if e.type == "loop_exhausted"]
+    assert ended and ended[-1].payload["max_visits"] == 4
+    switched = [e for e in engine.bus.history(engine.session.id) if e.type == "loop_route"]
+    assert len(switched) == 2 and switched[0].payload["backup"] is True
+
+
+def test_a_routes_backup_applies_to_that_block_only(tmp_path, monkeypatch):
+    """The tier says "this failure goes to the developer's backup", not
+    "everything from here on runs on backups"."""
+    from trance.agents.store import LoopStore
+    from trance.flow import Step
+    from trance.loops import EXIT_LOOP, FAIL_LOOP, Edge, FAILED, Loop, LoopNode, SUCCESS
+
+    engine = _backup_engine(tmp_path, after=99)
+    loop = Loop(name="once", start="n_test", nodes=[
+        LoopNode(id="n_test", role="tester",
+                 on={SUCCESS: Edge(EXIT_LOOP),
+                     FAILED: Edge("n_dev", max_visits=4, backup=True)}),
+        # Back to the tester afterwards — on its own model, not the developer's tier.
+        LoopNode(id="n_dev", role="backend",
+                 on={SUCCESS: Edge("n_test", max_visits=4), FAILED: Edge(FAIL_LOOP)}),
+    ])
+    store = LoopStore(tmp_path / "l.json", seed=False)
+    store.upsert(loop)
+    engine.loops = store
+
+    seen, results = [], iter(["FAILED", "SUCCESS", "SUCCESS"])
+
+    def fake(**kw):
+        seen.append((kw["role"].name, kw["config"].model))
+        return _Turn(None, "x", outcome=(next(results, "SUCCESS"), ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(Step(role="", loop="once", task="t"))
+
+    assert seen == [("tester", "small-model"),      # first pass, ordinary
+                    ("backend", "big-model"),       # the route asked for the backup
+                    ("tester", "small-model")]      # and it stopped there

@@ -3340,8 +3340,10 @@ function cloneLoop(loop) {
   });
   copy.nodes.forEach((node) => {
     node.id = renamed[node.id];
-    Object.values(node.on || {}).forEach((edge) => {
-      if (renamed[edge.target]) edge.target = renamed[edge.target];
+    Object.values(node.on || {}).forEach((routes) => {
+      (Array.isArray(routes) ? routes : [routes]).forEach((edge) => {
+        if (renamed[edge.target]) edge.target = renamed[edge.target];
+      });
     });
   });
   copy.start = renamed[loop.start] || (copy.nodes[0] ? copy.nodes[0].id : "");
@@ -3528,8 +3530,10 @@ function blockCard(loop, node, index, redraw) {
   remove.onclick = () => {
     loop.nodes = loop.nodes.filter((n) => n.id !== node.id);
     // Anything pointing at the removed block would dangle; fail out instead.
-    loop.nodes.forEach((n) => Object.values(n.on || {}).forEach((edge) => {
-      if (edge.target === node.id) edge.target = "fail";
+    loop.nodes.forEach((n) => Object.values(n.on || {}).forEach((routes) => {
+      (Array.isArray(routes) ? routes : [routes]).forEach((edge) => {
+        if (edge.target === node.id) edge.target = "fail";
+      });
     }));
     if (loop.start === node.id) loop.start = loop.nodes[0] ? loop.nodes[0].id : "";
     redraw();
@@ -3552,41 +3556,107 @@ function blockCard(loop, node, index, redraw) {
 
 function exitRow(loop, node, outcome, redraw) {
   const row = el("div", "loop-exit");
-  row.append(el("span", `exit-tag ${outcome.toLowerCase()}`, OUTCOME_LABEL[outcome]));
+  const head = el("div", "loop-exit-head");
+  head.append(el("span", `exit-tag ${outcome.toLowerCase()}`, OUTCOME_LABEL[outcome]));
 
-  const edge = node.on[outcome] || { target: "fail", max_visits: 3 };
-  const target = el("select", "compact");
-  [["exit", "leave the loop — step succeeded"],
-   ["fail", "leave the loop — step failed"]].forEach(([v, label]) => {
-    const opt = el("option", null, label);
-    opt.value = v;
-    target.append(opt);
-  });
-  loop.nodes.filter((n) => n.id !== node.id || true).forEach((n, i) => {
-    const opt = el("option", null, `→ ${i + 1}. ${n.role}${n.id === node.id ? " (again)" : ""}`);
-    opt.value = n.id;
-    target.append(opt);
-  });
-  target.value = edge.target;
+  // An outcome may take more than one arrow, in tiers: the first covers the
+  // first N times it happens, the next covers the ones after that, and running
+  // past the last one ends the loop.
+  let routes = node.on[outcome];
+  if (!routes) routes = [];
+  else if (!Array.isArray(routes)) routes = [routes];
+  node.on[outcome] = routes;
 
-  const visits = el("input", "compact tiny");
-  visits.type = "number";
-  visits.min = "1";
-  visits.value = edge.max_visits || 3;
-  visits.title = "How many times this arrow may be taken before the loop gives up";
-
-  const sync = () => {
-    node.on[outcome] = { target: target.value, max_visits: Number(visits.value) || 3 };
-    // A number on "leave the loop" means nothing — it is taken once by
-    // definition — so it only shows when the arrow points at a block.
-    visits.hidden = ["exit", "fail"].includes(target.value);
+  const add = el("button", "small ghost", "+ then");
+  add.title = "Add a tier: what to do once the arrows above have been used up";
+  add.onclick = () => {
+    routes.push({ target: routes.length ? routes[routes.length - 1].target : "fail",
+                  max_visits: 2, backup: true });
+    redraw();
   };
-  target.onchange = () => { sync(); redraw(); };
-  visits.oninput = sync;
-  sync();
+  head.append(add);
+  row.append(head);
 
-  row.append(target, visits);
+  if (!routes.length) routes.push({ target: "fail", max_visits: 3, backup: false });
+
+  let taken = 0;
+  routes.forEach((edge, index) => {
+    const line = el("div", "loop-route");
+    const leaves = ["exit", "fail"].includes(edge.target);
+    if (routes.length > 1) {
+      // Say which turns this arrow covers, since that is the whole point of
+      // having more than one and it is not obvious from a count alone.
+      const from = taken + 1;
+      const label = leaves ? "then" : (edge.max_visits > 1
+        ? `${ordinal(from)}–${ordinal(taken + edge.max_visits)}` : ordinal(from));
+      line.append(el("span", "muted small route-when", label));
+      if (!leaves) taken += Number(edge.max_visits) || 1;
+    }
+
+    const target = el("select", "compact");
+    [["exit", "leave the loop — step succeeded"],
+     ["fail", "leave the loop — step failed"]].forEach(([v, label]) => {
+      const opt = el("option", null, label);
+      opt.value = v;
+      target.append(opt);
+    });
+    loop.nodes.forEach((n, i) => {
+      const opt = el("option", null, `→ ${i + 1}. ${n.role}${n.id === node.id ? " (again)" : ""}`);
+      opt.value = n.id;
+      target.append(opt);
+    });
+    target.value = edge.target;
+
+    const visits = el("input", "compact tiny");
+    visits.type = "number";
+    visits.min = "1";
+    visits.value = edge.max_visits || 3;
+    visits.title = routes.length > 1
+      ? "How many times this arrow is taken before the next one takes over"
+      : "How many times this arrow may be taken before the loop gives up";
+
+    const backup = el("input");
+    backup.type = "checkbox";
+    backup.checked = !!edge.backup;
+    const backupLabel = el("label", "row small");
+    backupLabel.append(backup, document.createTextNode(" backup model"));
+    backupLabel.title = "Run that agent on its backup model rather than its usual one. "
+                        + "A retry changes the prompt; this is what changes the model.";
+
+    const drop = el("button", "small", "✕");
+    drop.title = "Remove this tier";
+    drop.onclick = () => { routes.splice(index, 1); redraw(); };
+
+    const sync = () => {
+      const gone = ["exit", "fail"].includes(target.value);
+      edge.target = target.value;
+      edge.max_visits = Number(visits.value) || 3;
+      edge.backup = backup.checked;
+      // A count on "leave the loop" means nothing — it is taken once by
+      // definition — and neither does a model for an agent that never runs.
+      visits.hidden = gone;
+      backupLabel.hidden = gone;
+    };
+    target.onchange = () => { sync(); redraw(); };
+    visits.oninput = () => { sync(); if (routes.length > 1) redraw(); };
+    backup.onchange = sync;
+    sync();
+
+    line.append(target, visits, backupLabel);
+    if (routes.length > 1) line.append(drop);
+    row.append(line);
+  });
+
+  if (routes.length > 1 && !["exit", "fail"].includes(routes[routes.length - 1].target)) {
+    row.append(el("div", "muted small route-end",
+                  `after ${taken}, the loop halts`));
+  }
   return row;
+}
+
+function ordinal(n) {
+  const tail = ["th", "st", "nd", "rd"][(n % 100 - 20) % 10] || ["th", "st", "nd", "rd"][n] || "th";
+  return `${n}${tail}`;
 }
 
 $("add-loop").onclick = () => {

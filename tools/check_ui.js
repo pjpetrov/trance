@@ -55,7 +55,10 @@ global.document = {
   addEventListener: (type, fn) => { listeners[type] = fn; },
   activeElement: null,
   getElementById: (id) => { if (!nodes.has(id)) nodes.set(id, makeEl()); return nodes.get(id); },
-  createElement: makeEl, createTextNode: (t) => ({ text: t }),
+  // A bare text node is a child like any other: `label.append(cb, text)` is how
+  // every checkbox in this UI is labelled, so a stub that drops the text cannot
+  // see whether any of them say anything.
+  createElement: makeEl, createTextNode: (t) => ({ textContent: t, children: [] }),
   createElementNS: (_ns, tag) => makeEl(tag),
   querySelectorAll: (sel) => (sel === ".modal.open" ? openModals : []),
   body: makeEl(),
@@ -105,8 +108,10 @@ const RESPONSES = {
                             start: "n_test", max_steps: 10, roles: ["tester", "backend"],
                             nodes: [{ id: "n_test", role: "tester", focus: "run tests",
                                       check: null,
-                                      on: { SUCCESS: { target: "exit", max_visits: 3 },
-                                            FAILED: { target: "n_fix", max_visits: 3 } } },
+                                      on: { SUCCESS: [{ target: "exit", max_visits: 3 }],
+                                            FAILED: [{ target: "n_fix", max_visits: 2 },
+                                                     { target: "n_fix", max_visits: 2,
+                                                       backup: true }] } },
                                     { id: "n_fix", role: "backend", focus: "fix it",
                                       check: "factchecker",
                                       on: { SUCCESS: { target: "n_test", max_visits: 3 },
@@ -446,6 +451,13 @@ try {
       console.log("BROKEN: the selected loop did not render");
       process.exit(1);
     }
+    // A tiered exit has to say which turns each arrow covers, and where it ends.
+    for (const want of ["1st–2nd", "3rd–4th", "backup model", "after 4, the loop halts"]) {
+      if (!shown.includes(want)) {
+        console.log(`BROKEN: a tiered exit does not show ${want}:`, shown.slice(-400));
+        process.exit(1);
+      }
+    }
   }
   api.state.commands = RESPONSES["/api/commands"];
   api.loopCard(JSON.parse(JSON.stringify(RESPONSES["/api/loops"].loops[0])), false);
@@ -472,10 +484,12 @@ try {
       process.exit(1);
     }
     for (const node of copy.nodes) {
-      for (const edge of Object.values(node.on || {})) {
-        if (!["exit", "fail"].includes(edge.target) && !ids.has(edge.target)) {
-          console.log("BROKEN: a cloned loop's arrow points outside the copy");
-          process.exit(1);
+      for (const routes of Object.values(node.on || {})) {
+        for (const edge of (Array.isArray(routes) ? routes : [routes])) {
+          if (!["exit", "fail"].includes(edge.target) && !ids.has(edge.target)) {
+            console.log("BROKEN: a cloned loop's arrow points outside the copy");
+            process.exit(1);
+          }
         }
       }
     }
