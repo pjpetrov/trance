@@ -3801,6 +3801,10 @@ function renderFileTree() {
 }
 
 async function openFile(path) {
+  // Clicking the file that is already open closes it, which is also how you get
+  // back to the general comment — the same click, in the same place.
+  if (path === fileState.path) return closeFile();
+
   let data;
   try {
     data = await api(`/api/sessions/${state.session.id}/file?path=${encodeURIComponent(path)}`);
@@ -3811,6 +3815,16 @@ async function openFile(path) {
   $("file-name").textContent = path;
   $("file-meta").textContent = `${data.lines} lines · ${Math.ceil(data.bytes / 1024)}k`
     + " · click a line number to comment on that line";
+  renderFileTree();
+  renderFileView();
+}
+
+function closeFile() {
+  fileState.path = "";
+  fileState.content = "";
+  fileState.editing = false;
+  $("file-name").textContent = "";
+  $("file-meta").textContent = "";
   renderFileTree();
   renderFileView();
 }
@@ -3849,9 +3863,7 @@ function renderFileView() {
   const box = $("file-view");
   if (!fileState.path) {
     if (editor) { editor.toDom = null; }
-    box.innerHTML = "";
-    box.append(el("p", "muted small", "Pick a file on the left."));
-    return;
+    return renderGeneralComment(box);
   }
 
   // No CodeMirror (the test harness, or a browser that failed to load it):
@@ -3996,43 +4008,67 @@ function renderReviewStatus() {
     : "Click a line number to comment on it, or say something about the whole thing."));
   $("review-finish").disabled = !pending;
 
-  // The comments themselves, so you can see what you have said and drop any of
-  // it before sending. A general comment has no line to sit against, so without
-  // this it would vanish the moment it was written.
-  const list = $("review-list");
-  if (!list) return;
-  list.innerHTML = "";
-  (state.session?.review || []).forEach((note) => {
-    const row = el("div", "review-note");
-    row.append(el("span", "muted small", note.path
-      ? `${note.path}:${note.line}` : "overall"));
-    row.append(el("span", null, note.note));
-    const drop = el("button", "small", "✕");
-    drop.title = "Remove this comment";
-    drop.onclick = async () => {
-      await api(`/api/sessions/${state.session.id}/review/${note.id}`, { method: "DELETE" });
-      state.session.review = state.session.review.filter((n) => n.id !== note.id);
-      renderReviewStatus();
-      if (fileState.path) renderFileView();
-    };
-    row.append(drop);
-    list.append(row);
-  });
 }
 
 /* Not everything worth saying is about a line. "The controls are unusable on a
  * phone" is about the result, and making it fit a line number means picking one
- * arbitrarily — or not writing it down at all. */
-async function addGeneralComment() {
-  const box = $("review-general");
-  const note = box.value.trim();
-  if (!note || !state.session) return;
-  const entry = await api(`/api/sessions/${state.session.id}/review`,
-                          { method: "POST", body: { note } });
-  state.session.review = (state.session.review || []).concat([entry]);
-  box.value = "";
-  renderReviewStatus();
-  toast("Added. It goes out with “Review finished”.");
+ * arbitrarily — or not writing it down at all.
+ *
+ * So it goes where the editor goes: no file selected means this pane is for
+ * comments about the whole thing, at the same size and in the same place as the
+ * code it is about. */
+function renderGeneralComment(box) {
+  box.innerHTML = "";
+  const wrap = el("div", "general-review");
+  wrap.append(el("h3", null, "A comment about the whole thing"));
+  wrap.append(el("p", "muted small",
+    "No file needed. Pick a file on the left to comment on particular lines — "
+    + "click it again to come back here."));
+
+  const text = el("textarea", "general-note");
+  text.rows = 4;
+  text.placeholder = "The controls are unusable on a phone.";
+  const add = el("button", "primary", "Add comment");
+  const send = async () => {
+    const note = text.value.trim();
+    if (!note || !state.session) return;
+    add.disabled = true;
+    try {
+      const entry = await api(`/api/sessions/${state.session.id}/review`,
+                              { method: "POST", body: { note } });
+      state.session.review = (state.session.review || []).concat([entry]);
+      text.value = "";
+      renderReviewStatus();
+      renderGeneralComment(box);
+    } finally { add.disabled = false; }
+  };
+  add.onclick = send;
+  // Enter for a newline, Ctrl/Cmd+Enter to add: this is a paragraph, not a
+  // search box, and a stray Enter should not send it half-written.
+  text.onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); };
+  wrap.append(text, add);
+
+  const waiting = state.session?.review || [];
+  if (waiting.length) {
+    wrap.append(el("h3", null, `Waiting to be sent (${waiting.length})`));
+    waiting.forEach((note) => {
+      const row = el("div", "review-note");
+      row.append(el("span", "muted small", note.path
+        ? `${note.path}:${note.line}` : "overall"));
+      row.append(el("span", null, note.note));
+      const drop = el("button", "small", "✕");
+      drop.title = "Remove this comment";
+      drop.onclick = async () => {
+        await api(`/api/sessions/${state.session.id}/review/${note.id}`, { method: "DELETE" });
+        state.session.review = state.session.review.filter((n) => n.id !== note.id);
+        renderReviewStatus();
+        renderGeneralComment(box);
+      };
+      row.append(drop);
+      wrap.append(row);
+    });
+  }
+  box.append(wrap);
 }
 
 async function openPreview(path) {
@@ -4149,9 +4185,6 @@ $("file-save").onclick = async () => {
   renderFileView();
   toast("Saved, and committed so it is in the history.");
 };
-
-$("review-general-add").onclick = addGeneralComment;
-$("review-general").onkeydown = (e) => { if (e.key === "Enter") addGeneralComment(); };
 
 $("review-finish").onclick = async () => {
   const result = await api(`/api/sessions/${state.session.id}/review/finish`,

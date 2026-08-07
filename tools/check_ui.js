@@ -142,7 +142,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,resetFiles};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -729,18 +729,24 @@ try {
   }
   api.commentOn(2, "app.listen(PORT);");
 
-  // A comment about the whole thing has no line to sit against, so the list of
-  // waiting comments is the only place it shows before the step is made.
+  // Clicking the open file again closes it, and the pane it leaves behind is
+  // where a comment about the whole thing is written.
   api.state.session.review = [
     { id: "rv_1", path: "server/app.js", line: 1, note: "read the port from the environment" },
     { id: "rv_2", path: "", line: 0, note: "the controls are unusable on a phone" },
   ];
-  api.renderReviewStatus();
+  await api.openFile("server/app.js");        // the same path: closes it
+  if (api.state.filePath && api.state.filePath()) {
+    console.log("BROKEN: clicking the open file again did not close it");
+    process.exit(1);
+  }
   {
-    const listed = flat(document.getElementById("review-list")).replace(/\s+/g, " ");
-    for (const want of ["server/app.js:1", "overall", "unusable on a phone"]) {
-      if (!listed.includes(want)) {
-        console.log("BROKEN: waiting review comments not shown:", listed.slice(0, 160));
+    const pane = flat(document.getElementById("file-view")).replace(/\s+/g, " ");
+    for (const want of ["comment about the whole thing", "Add comment",
+                        "server/app.js:1", "overall", "unusable on a phone"]) {
+      if (!pane.includes(want)) {
+        console.log("BROKEN: the general comment pane is missing", want, ":",
+                    pane.slice(0, 200));
         process.exit(1);
       }
     }

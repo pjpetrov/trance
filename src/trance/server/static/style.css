@@ -786,14 +786,16 @@ input.tiny { width: 68px; }
   padding: 1px 9px; font-size: 11px; text-decoration: none;
 }
 
-/* Comments waiting to be sent. A general one has no line to sit against, so
-   this is the only place it appears until the step is created. */
-.review-list { display: flex; flex-direction: column; gap: 3px; margin: 0 12px 8px; }
-.review-list:empty { display: none; }
+/* No file selected: the editor pane is where you say what you think of the
+   whole thing, at the size of the code it is about. */
+.general-review { padding: 16px 18px; max-width: 720px; }
+.general-review h3 { margin: 0 0 6px; font-size: 13px; }
+.general-review h3 + p { margin: 0 0 12px; }
+.general-review .general-note { width: 100%; margin-bottom: 8px; }
+.general-review h3:not(:first-child) { margin-top: 22px; }
 .review-note {
   display: flex; gap: 10px; align-items: baseline; font-size: 12px;
-  border-left: 2px solid var(--accent, #6ea8fe); padding: 2px 8px;
+  border-left: 2px solid var(--accent, #6ea8fe); padding: 3px 8px; margin-bottom: 3px;
 }
 .review-note > span:first-child { min-width: 130px; }
 .review-note button { margin-left: auto; }
-#review-general { min-width: 240px; }
