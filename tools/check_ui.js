@@ -101,7 +101,12 @@ global.navigator = {};
 global.location = { protocol: "http:", host: "x" };
 global.WebSocket = function () { return { onmessage: null, onclose: null, close() {} }; };
 const RESPONSES = {
-  "/api/config": { roles: {}, providers: [], kinds: {},
+  "/api/config": { roles: {}, providers: [],
+                   kinds: { llamacpp: { label: "llama.cpp", base_url: "http://x/v1",
+                                        context_window: 64000, needs_key: false },
+                            claudecode: { label: "Claude Code (subscription, local CLI)",
+                                          base_url: "", context_window: 200000,
+                                          needs_key: false, models: ["", "opus"] } },
                    presets: [
                      { name: "Qwen3.6-llama.cpp", kind: "llamacpp", model: "qwen",
                        base_url: "http://x/v1", context_window: 64000, max_tokens: 0,
@@ -244,7 +249,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,presetCard,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -527,6 +532,23 @@ try {
       console.log("BROKEN: the models list is empty when settings opens");
       process.exit(1);
     }
+    // Claude Code runs a local binary: no endpoint, no key, so the form must
+    // not ask for either.
+    {
+      const card = api.presetCard({ name: "cc", kind: "claudecode", model: "",
+                                    base_url: "", provider: "" }, true);
+      const labels = card.querySelectorAll("label").filter((l) => !l.hidden);
+      const text = labels.map((l) => flat(l)).join(" ");
+      if (text.includes("Base URL") || text.includes("API key")) {
+        console.log("BROKEN: the local-CLI model still asks for an endpoint or key");
+        process.exit(1);
+      }
+      if (!text.includes("Model id")) {
+        console.log("BROKEN: the model id field vanished with them");
+        process.exit(1);
+      }
+    }
+
     // What each model has been asked to do, all time, beside its name.
     const withSpend = flat(document.getElementById("preset-names")).replace(/\s+/g, " ");
     if (!withSpend.includes("1.5M tok")) {

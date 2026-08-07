@@ -91,6 +91,20 @@ one thing to pick.
 | `openai` | OpenAI-compatible `/chat/completions` |
 | `ollama` | OpenAI-compatible, local |
 | `llamacpp` | OpenAI-compatible, local (llama-server) |
+| `claudecode` | the local `claude` CLI, on its subscription — no key, no endpoint |
+
+**Claude Code as a backend.** `claudecode` runs `claude -p` for each call, so the
+model comes from whatever that CLI is signed in to rather than from an API key.
+Two things are worth knowing. Its own system prompt and tools are turned off
+(`--system-prompt`, `--tools ""`) — left on, every call carries ~13,100 tokens of
+instructions trance did not write; measured, not guessed. And it has no wire
+protocol for *returning* a tool call, since it normally executes them itself, so
+tools are described in the prompt and their calls come back as fenced JSON that
+trance parses. That works — a full step reads, edits and reports through
+trance's own tools, inside the remit — but it is convention rather than
+protocol, so a model that ignores the convention gets a retry rather than a
+clean error. Check that using it this way fits your Claude Code subscription;
+that is a licensing question, not a technical one.
 
 The model id offers what the endpoint says it has — trance asks `/models` and
 handles the OpenAI, llama-server and Anthropic shapes — and stays free text when

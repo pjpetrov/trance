@@ -1613,7 +1613,9 @@ function presetCard(preset, isNew) {
       baseUrl.value = "";
     }
     ctx.placeholder = spec.context_window ? String(spec.context_window) : "default";
-    discover();
+    localOnly();
+    if (kind.value === "claudecode") { baseUrl.value = ""; key.value = ""; }
+    else discover();
   };
   // Typing a URL or pasting a key changes the answer, so ask again — once the
   // typing stops, not on every keystroke.
@@ -1630,16 +1632,31 @@ function presetCard(preset, isNew) {
   const modelField = wrap("Model id", model);
   modelField.append(suggestions, modelNote);
 
+  const urlField = wrapHint("Base URL", baseUrl, "the root — /chat/completions is added");
+  const keyField = wrap("API key", key);
   grid.append(wrap("Name (agents pick this)", name), wrap("API", kind),
-              wrapHint("Base URL", baseUrl, "the root — /chat/completions is added"),
-              wrap("API key", key),
+              urlField, keyField,
               modelField, wrap("Context window", ctx),
               wrap("Max output", out));
+
+  // Claude Code has neither: it runs the `claude` binary on this machine and
+  // bills against whatever that CLI is logged in to. Asking for an endpoint
+  // and a key would be asking for something that cannot exist.
+  const localOnly = () => {
+    const runsLocally = kind.value === "claudecode";
+    urlField.hidden = runsLocally;
+    keyField.hidden = runsLocally;
+    modelNote.textContent = runsLocally
+      ? "Leave the model id empty for whatever `claude` is set to, or name one: "
+        + "opus, sonnet, haiku."
+      : modelNote.textContent;
+  };
 
   const spec = (state.kinds || {})[kind.value] || {};
   baseUrl.placeholder = spec.base_url || "default for this API";
   ctx.placeholder = spec.context_window ? String(spec.context_window) : "default";
-  discover();
+  localOnly();
+  if (kind.value !== "claudecode") discover();
 
   const actions = el("div", "row small");
   const probe = el("button", null, "Test");

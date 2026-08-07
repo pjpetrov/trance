@@ -20,7 +20,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-ProviderKind = Literal["anthropic", "openai", "ollama", "llamacpp"]
+ProviderKind = Literal["anthropic", "openai", "ollama", "llamacpp", "claudecode"]
 
 #: Sensible starting points per kind, used when the UI creates a provider.
 KIND_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -55,6 +55,16 @@ KIND_DEFAULTS: dict[str, dict[str, Any]] = {
         "context_window": 64_000,
         "needs_key": False,
         "models": [],
+    },
+    "claudecode": {
+        "label": "Claude Code (subscription, local CLI)",
+        # No endpoint and no key: it runs the `claude` binary on this machine
+        # and bills against whatever that CLI is logged in to.
+        "base_url": "",
+        "model": "",
+        "context_window": 200_000,
+        "needs_key": False,
+        "models": ["", "opus", "sonnet", "haiku"],
     },
 }
 
@@ -163,10 +173,16 @@ class ModelPreset:
             self.model = self.model or defaults["model"]
             self.context_window = self.context_window or defaults["context_window"]
 
+    #: Kinds that reach their model without a URL — a local binary rather than
+    #: an endpoint. They are as self-contained as it gets: there is nothing to
+    #: borrow from a provider, and borrowing one sends them somewhere else
+    #: entirely.
+    LOCAL_KINDS = ("claudecode",)
+
     @property
     def self_contained(self) -> bool:
         """Whether this model defines its own endpoint rather than borrowing one."""
-        return bool(self.kind and self.base_url)
+        return bool(self.kind) and (bool(self.base_url) or self.kind in self.LOCAL_KINDS)
 
     def as_provider(self) -> "ProviderConfig":
         """The connection this model implies, for the client factory."""

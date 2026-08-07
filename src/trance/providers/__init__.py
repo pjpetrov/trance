@@ -36,6 +36,11 @@ def client_for(config):
 
         return AnthropicClient(config)
 
+    if getattr(config, "kind", "") == "claudecode":
+        from .claudecode_client import ClaudeCodeClient
+
+        return ClaudeCodeClient(config)
+
     from ..worker.client import ChatClient
 
     return ChatClient(config)

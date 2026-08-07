@@ -515,7 +515,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 f"choose the API this model speaks: {', '.join(KIND_DEFAULTS)}"))
         candidate = ModelPreset.from_dict({**body, "kind": kind, "name": name})
         model = (candidate.model or "").strip()
-        if not model:
+        # Claude Code picks up whatever the CLI is signed in to when no id is
+        # named, which is the normal way to use it — so an empty id is a choice
+        # there rather than an omission.
+        if not model and kind != "claudecode":
             raise HTTPException(400, "a model id is required")
         window = candidate.context_window
         reserved = int(body.get("max_tokens") or 0)
