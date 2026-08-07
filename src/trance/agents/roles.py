@@ -206,6 +206,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "backend": AgentRole(
         name="backend",
+        tool_rounds=24,
         title="Backend engineer",
         description="Server-side code: APIs, business logic, persistence.",
         system_prompt=(
@@ -229,6 +230,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "frontend": AgentRole(
         name="frontend",
+        tool_rounds=24,
         title="Frontend engineer",
         description="Client-side code: UI components, state, API calls.",
         system_prompt=(
@@ -243,6 +245,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "tester": AgentRole(
         name="tester",
+        tool_rounds=24,
         verifier=True,
         title="Tester",
         description="Writes and runs tests; reports what actually happened.",
@@ -355,6 +358,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "reviewer": AgentRole(
         name="reviewer",
+        tool_rounds=20,
         verifier=True,
         title="Reviewer",
         description="Reads code for defects; does not edit.",

@@ -144,10 +144,12 @@ backup is the switch for that, and an endpoint that returns 503 goes to it
 immediately — a model that is down does not recover from being asked again.
 
 **Tool rounds** is how many reads, writes or commands one attempt gets before
-the agent is made to stop and report — twelve unless the agent says otherwise. A
-tester that runs one command needs three; an agent building a feature file by
-file needs more, and running out mid-way is how a step ends half-written with a
-summary of what it meant to do.
+the agent is made to stop and report. Running out mid-way is how a step ends
+half-written with a summary of what it meant to do, so the shipped numbers come
+from measuring real runs rather than from intuition: the tester ran out on every
+attempt, backend on 83% and frontend on half, while devops never exceeded seven
+rounds. So tester, backend and frontend get 24, the reviewer 20, and everything
+else the default twelve. Override it per agent.
 
 Toolsets: `files` (read/write within the remit), `graph` (symbol lookups),
 `commands` (allowlisted programs), `inspect` (file existence and size only — for

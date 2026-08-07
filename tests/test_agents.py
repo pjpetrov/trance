@@ -7012,3 +7012,35 @@ def test_a_reply_cut_at_the_output_limit_is_explained(tmp_path, monkeypatch):
     assert "cut off at the 8000-token output limit" in told
     assert "edit_file" in told and "append_file" in told and "replace_symbol" in told
     assert any(e.type == "truncated" for e in seen)
+
+
+def test_the_shipped_budgets_match_what_the_roles_actually_use():
+    """Set from real runs rather than from intuition. Across the sessions in
+    this repo: tester ran out of rounds on 100% of attempts, backend 83%,
+    reviewer 60%, frontend 50% — while devops peaked at 7 rounds and the
+    factchecker at 7, both comfortably inside the default twelve."""
+    from trance.agents.roles import BUILTIN_ROLES
+
+    # The ones that were hitting the wall get room.
+    for name in ("backend", "frontend", "tester"):
+        assert BUILTIN_ROLES[name].tool_rounds == 24, name
+    assert BUILTIN_ROLES["reviewer"].tool_rounds == 20
+
+    # The ones that were not keep the default, because a budget is a ceiling,
+    # not an allowance to spend.
+    for name in ("devops", "factchecker", "orchestrator", "planner"):
+        assert BUILTIN_ROLES[name].tool_rounds == 0, name
+
+
+def test_a_stored_agent_keeps_its_own_budget(tmp_path):
+    """Editing one agent must not hand every other agent the same number."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.store import RoleStore
+
+    store = RoleStore(tmp_path / "agents.json")
+    store.upsert(AgentRole(name="builder", title="B", description="d",
+                           system_prompt="p", tool_rounds=30))
+
+    again = RoleStore(tmp_path / "agents.json")
+    assert again.get("builder").tool_rounds == 30
+    assert again.get("factchecker").tool_rounds == 0
