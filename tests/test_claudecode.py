@@ -166,3 +166,105 @@ def test_client_for_routes_to_it(monkeypatch):
 
     client = client_for(ModelConfig(kind="claudecode"))
     assert type(client).__name__ == "ClaudeCodeClient"
+
+
+def test_claudes_own_tool_syntax_is_understood_too(monkeypatch):
+    """Claude writes tool calls in Claude's syntax because that is what it
+    always writes. Insisting on ours and discarding the rest would throw away
+    a turn that said exactly what it wanted to do."""
+    fake_cli(monkeypatch, "I'll look first.\n"
+                          "<invoke_tool>\n<tool_name>read_file</tool_name>\n"
+                          '<parameter name="path">src/renderer.ts</parameter>\n'
+                          "</invoke_tool>")
+
+    response = ClaudeCodeClient(ModelConfig(kind="claudecode")).complete(
+        [{"role": "user", "content": "read it"}], tools=TOOLS)
+
+    assert [(c.name, c.arguments) for c in response.tool_calls] == [
+        ("read_file", {"path": "src/renderer.ts"})]
+    assert response.finish_reason == "tool_calls"
+    assert response.text == "I'll look first."      # the block is not left in the prose
+
+
+def test_the_asked_for_form_wins_when_both_appear(monkeypatch):
+    fake_cli(monkeypatch,
+             '```tool_call\n{"name": "read_file", "arguments": {"path": "a.js"}}\n```\n'
+             "<invoke_tool><tool_name>read_file</tool_name>"
+             '<parameter name="path">b.js</parameter></invoke_tool>')
+    response = ClaudeCodeClient(ModelConfig(kind="claudecode")).complete(
+        [{"role": "user", "content": "x"}], tools=TOOLS)
+    assert [c.arguments["path"] for c in response.tool_calls] == ["a.js"]
+
+
+def test_a_turn_that_never_reached_the_model_is_retried(monkeypatch):
+    """"is_error, stop_sequence, zero tokens, zero cost" is the CLI giving up
+    before it sent anything. Measured at about one call in two, on a
+    conversation that then works — so it is retried, not reported."""
+    import subprocess
+
+    from trance.providers import claudecode_client as cc
+
+    monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/claude")
+    monkeypatch.setattr(cc.time, "sleep", lambda _: None)
+
+    aborted = json.dumps({"is_error": True, "stop_reason": "stop_sequence",
+                          "result": "", "usage": {"input_tokens": 0, "output_tokens": 0}})
+    answered = json.dumps({"is_error": False, "stop_reason": "end_turn",
+                           "result": "OK", "usage": {"input_tokens": 5, "output_tokens": 2}})
+    replies = [aborted, aborted, answered]
+
+    def run(command, **kwargs):
+        return type("D", (), {"returncode": 0, "stdout": replies.pop(0), "stderr": ""})
+
+    monkeypatch.setattr(subprocess, "run", run)
+    response = ClaudeCodeClient(ModelConfig(kind="claudecode")).complete(
+        [{"role": "user", "content": "hi"}], tools=TOOLS)
+    assert response.text == "OK" and not replies       # it took all three
+
+
+def test_giving_up_says_it_is_the_cli_and_not_you(monkeypatch):
+    import subprocess
+
+    from trance.providers import claudecode_client as cc
+
+    monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/claude")
+    monkeypatch.setattr(cc.time, "sleep", lambda _: None)
+    aborted = json.dumps({"is_error": True, "stop_reason": "stop_sequence",
+                          "result": "", "usage": {}})
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: type("D", (), {"returncode": 0, "stdout": aborted,
+                                                       "stderr": ""}))
+    with pytest.raises(BackendError) as raised:
+        ClaudeCodeClient(ModelConfig(kind="claudecode")).complete(
+            [{"role": "user", "content": "hi"}])
+    said = str(raised.value)
+    assert "That is the CLI, not the prompt" in said
+
+
+def test_a_real_failure_is_not_mistaken_for_an_abort():
+    """Time on the wire and money spent are the signal, not tokens: a refused
+    request can still report cache reads, while a turn that never left has
+    neither."""
+    from trance.providers.claudecode_client import _is_abort
+
+    assert _is_abort(json.dumps({"is_error": True, "duration_api_ms": 0,
+                                 "total_cost_usd": 0})) is True
+    # It reached the model and came back unhappy: that is an answer, not a miss.
+    assert _is_abort(json.dumps({"is_error": True, "duration_api_ms": 11345,
+                                 "total_cost_usd": 0.03})) is False
+    assert _is_abort(json.dumps({"is_error": True, "duration_api_ms": 0,
+                                 "total_cost_usd": 0.01})) is False
+    assert _is_abort(json.dumps({"is_error": False, "duration_api_ms": 0,
+                                 "total_cost_usd": 0})) is False
+    assert _is_abort("not json at all") is False
+
+
+def test_the_cli_is_not_left_waiting_for_input(monkeypatch):
+    """It waits three seconds for stdin that is never coming, on every call."""
+    import subprocess
+
+    seen: dict = {}
+    fake_cli(monkeypatch, "OK", capture=seen)
+    ClaudeCodeClient(ModelConfig(kind="claudecode")).complete(
+        [{"role": "user", "content": "hi"}])
+    assert seen["kwargs"].get("stdin") == subprocess.DEVNULL

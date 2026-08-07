@@ -12,14 +12,19 @@ Two things make that possible, both measured rather than assumed:
   instructions trance did not write and does not want; with them, zero.
 * Claude Code has no wire protocol for returning tool calls — it *executes*
   them. So the tools are described in the prompt and their calls come back as
-  JSON in the text, which is parsed here. trance has done this for years for
-  local models with weak tool support; the same machinery applies.
+  text, which is parsed here. trance has done this for years for local models
+  with weak tool support; the same machinery applies.
 
-That second point is the honest cost of this backend: tool calling is by
-convention rather than by protocol, so a model that ignores the convention gets
-one round of "you did not call a tool" rather than a hard error. Everything
-trance enforces — remits, context budgets, the graph — still runs on trance's
-side, which is the whole reason not to let Claude Code do the work itself.
+That second point is the honest cost of this backend, and it bites harder than
+"the model might not follow instructions". Claude writes tool calls in Claude's
+own XML syntax because that is what it always writes, and the CLI *watches* for
+that syntax — a turn that begins one comes back empty with stop_reason
+"stop_sequence" and is_error true. So both forms are accepted: the fenced JSON
+that is asked for, and the native syntax for when the habit wins.
+
+Everything trance enforces — remits, context budgets, the graph — still runs on
+trance's side, which is the whole reason not to let Claude Code do the work
+itself.
 
 Deliberately not: an MCP server. MCP servers are things Claude Code *calls*, so
 they cannot make it a backend for something else — that is the opposite plumbing.
@@ -31,6 +36,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from typing import Any
 
 from .base import BackendError, ChatResponse, ToolCall
@@ -38,6 +44,13 @@ from .base import BackendError, ChatResponse, ToolCall
 #: What a call is allowed to take. A subscription model still thinks for a while
 #: on a hard step, and the CLI starts a process each time.
 DEFAULT_TIMEOUT_S = 600.0
+
+#: The CLI sometimes gives up before it has sent anything: is_error, zero
+#: duration, zero cost. It is not the prompt — the same conversation fails in a
+#: burst and succeeds on its own a minute later, which is what a rate limit
+#: looks like from the outside. So: wait, and try again.
+ABORT_RETRIES = 4
+ABORT_BACKOFF_S = 4.0
 
 #: How the model is told to call a tool. One JSON object per call, fenced, so
 #: it can be found in prose without a parser for the prose.
@@ -53,10 +66,26 @@ You may emit several blocks to make several calls in one turn. Do not describe
 the call in prose instead of making it, and do not invent tools. When you have
 finished and need no tool, answer normally with no block.
 
+Use exactly the fenced form above. Do not use XML tags such as <invoke_tool>,
+<function> or <parameter> — that syntax is intercepted before it reaches the
+program running you, and the turn is thrown away.
+
 The tools available to you:
 """
 
 _BLOCK = re.compile(r"```tool_call\s*(\{.*?\})\s*```", re.DOTALL)
+
+#: What the model reaches for when it forgets the instructions above: Claude's
+#: own tool syntax. It writes this because it is what it always writes — and the
+#: CLI watches for it, which is why a turn that starts one comes back with
+#: stop_reason "stop_sequence" and nothing else. Accepted rather than fought:
+#: the instruction stays, and this is here for when the instruction loses.
+_NATIVE = re.compile(
+    r"<(?:invoke_tool|function|antml:invoke)[^>]*>(.*?)</(?:invoke_tool|function|antml:invoke)\s*>",
+    re.DOTALL)
+_NATIVE_NAME = re.compile(r"<tool_name>\s*([\w.-]+)\s*</tool_name>|name=\"([\w.-]+)\"")
+_NATIVE_PARAM = re.compile(
+    r"<parameter\s+name=\"([\w.-]+)\"\s*>(.*?)</parameter\s*>", re.DOTALL)
 
 
 def available() -> str:
@@ -81,6 +110,26 @@ class ClaudeCodeClient:
 
     def complete(self, messages: list[dict], tools: list[dict] | None = None,
                  cancel_token: str = "") -> ChatResponse:
+        last = ""
+        for attempt in range(ABORT_RETRIES):
+            try:
+                return self._once(messages, tools)
+            except _Aborted as stopped:
+                last = str(stopped)
+                if attempt + 1 < ABORT_RETRIES:
+                    # Backing off properly rather than hammering: whatever is
+                    # refusing wants time, not another identical request.
+                    time.sleep(ABORT_BACKOFF_S * (2 ** attempt))
+        raise BackendError(
+            f"claude -p refused to send, {ABORT_RETRIES} times over "
+            f"{int(ABORT_BACKOFF_S * (2 ** ABORT_RETRIES - 1))}s — no tokens, no cost, "
+            f"no request. The same conversation goes through when it is left alone for "
+            f"a while, so this is Claude Code throttling programmatic use rather than "
+            f"anything wrong with the prompt. An agent loop makes five or more calls a "
+            f"step, which is more than it will allow: use this model for the odd step "
+            f"or as a backup, and an API model for the loop. ({last})")
+
+    def _once(self, messages: list[dict], tools: list[dict] | None) -> ChatResponse:
         system, prompt = self._render(messages, tools)
         command = [self.binary, "-p", prompt,
                    "--output-format", "json",
@@ -94,6 +143,9 @@ class ClaudeCodeClient:
         try:
             done = subprocess.run(
                 command, capture_output=True, text=True,
+                # Without this the CLI waits three seconds for input that is
+                # never coming, on every single call.
+                stdin=subprocess.DEVNULL,
                 timeout=self.config.timeout_s or DEFAULT_TIMEOUT_S)
         except subprocess.TimeoutExpired as exc:
             raise BackendError(
@@ -103,6 +155,8 @@ class ClaudeCodeClient:
             raise BackendError(f"could not run the claude CLI: {exc}") from exc
 
         if done.returncode != 0:
+            if _is_abort(done.stdout):
+                raise _Aborted("exited without sending")
             raise BackendError(_why(done.stderr or done.stdout, done.returncode))
 
         try:
@@ -113,6 +167,8 @@ class ClaudeCodeClient:
                 f"{(done.stdout or '')[:200]}") from exc
 
         if body.get("is_error"):
+            if _is_abort(done.stdout):
+                raise _Aborted("stopped before sending")
             raise BackendError(_why(body.get("result") or "", done.returncode))
 
         text = body.get("result") or ""
@@ -165,6 +221,25 @@ class ClaudeCodeClient:
         return system, "\n\n".join(lines).strip()
 
     def _tool_calls(self, text: str) -> list[ToolCall]:
+        calls = self._fenced(text)
+        return calls or self._native(text)
+
+    def _native(self, text: str) -> list[ToolCall]:
+        """Claude's own tool syntax, when it used that instead of ours."""
+        calls: list[ToolCall] = []
+        for n, block in enumerate(_NATIVE.finditer(text or "")):
+            inner = block.group(1)
+            named = _NATIVE_NAME.search(block.group(0))
+            name = (named.group(1) or named.group(2)) if named else ""
+            arguments = {key: value.strip()
+                         for key, value in _NATIVE_PARAM.findall(inner)}
+            if not name:
+                continue
+            calls.append(ToolCall(id=f"cc_native_{n}", name=name, arguments=arguments,
+                                  raw_arguments=json.dumps(arguments)))
+        return calls
+
+    def _fenced(self, text: str) -> list[ToolCall]:
         calls: list[ToolCall] = []
         for n, found in enumerate(_BLOCK.finditer(text or "")):
             raw = found.group(1)
@@ -197,7 +272,8 @@ def _describe(tools: list[dict]) -> str:
 
 
 def _without_blocks(text: str) -> str:
-    return _BLOCK.sub("", text or "").strip()
+    """The prose, minus whichever call syntax was used to carry the calls."""
+    return _NATIVE.sub("", _BLOCK.sub("", text or "")).strip()
 
 
 def _usage(raw: dict) -> dict[str, Any]:
@@ -221,3 +297,24 @@ def _why(output: str, code: int) -> str:
     if "usage limit" in text.lower() or "rate limit" in text.lower():
         return f"Claude Code says you are over its limit: {text[:200]}"
     return text[:300] or f"claude -p exited with status {code}"
+
+
+class _Aborted(RuntimeError):
+    """The CLI stopped before making a request. Retryable, and not the prompt."""
+
+
+def _is_abort(stdout: str) -> bool:
+    """A turn that never reached the model: no time on the wire, nothing spent.
+
+    Those two are the signal, not the tokens — a refused request can still
+    report cache reads. An answer that was cut off has duration and cost; this
+    has neither, and the same conversation goes through a minute later.
+    """
+    try:
+        body = json.loads(stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    if not body.get("is_error"):
+        return False
+    return (not float(body.get("duration_api_ms") or 0)
+            and not float(body.get("total_cost_usd") or 0))
