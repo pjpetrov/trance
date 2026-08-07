@@ -4694,3 +4694,100 @@ def test_a_reconnect_ends_on_the_current_state_not_the_history(tmp_path):
     assert frames.index(last_snapshot) > frames.index(replayed[0])
     assert [s["status"] for s in last_snapshot["payload"]["flow"]["steps"]] \
         == ["done", "pending"]
+
+
+# ============================ the trace outlives the process that made it
+
+def test_a_finished_step_can_still_be_explored_after_a_restart(tmp_path):
+    """Restart the server and every prompt, command and loop block a step went
+    through was gone, leaving a finished step you could no longer explain."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    sessions = tmp_path / "sessions"
+
+    app = app_module.create_app(config, sessions)
+    client = TestClient(app)
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+
+    bus = app.state.bus
+    bus.emit("loop_node", sid, agent="tester", step_id="st1",
+             payload={"loop": "test-and-fix", "visit": 1, "role": "tester"})
+    bus.emit("tool_call", sid, agent="tester", step_id="st1",
+             payload={"name": "run_command", "ok": True,
+                      "detail": {"kind": "command", "command": "npm test",
+                                 "exit_code": 1, "output": "1 failing"}})
+    bus.emit("step_outcome", sid, agent="tester", step_id="st1",
+             payload={"outcome": "FAILED", "reason": "the ball passes through"})
+
+    # A whole new process, reading the same directory.
+    reborn = app_module.create_app(config, sessions)
+    events = TestClient(reborn).get(f"/api/sessions/{sid}/events").json()
+
+    kinds = [e["type"] for e in events]
+    assert kinds == ["session_created", "loop_node", "tool_call", "step_outcome"]
+    assert events[2]["payload"]["detail"]["command"] == "npm test"
+    assert events[3]["payload"]["reason"] == "the ball passes through"
+    assert all(e["step_id"] in (None, "st1") for e in events)
+
+
+def test_the_live_run_is_not_duplicated_by_the_stored_one(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    app.state.bus.emit("chat", sid, payload={"content": "hello"})
+
+    events = client.get(f"/api/sessions/{sid}/events").json()
+    assert [e["id"] for e in events] == sorted({e["id"] for e in events},
+                                               key=[e["id"] for e in events].index)
+    assert len(events) == 2                       # created + chat, each once
+
+
+def test_an_enormous_prompt_does_not_go_on_disk_whole(tmp_path):
+    """A model_call carries the whole prompt; a long run would be hundreds of
+    megabytes of mostly-repeated context."""
+    from trance.events import Event
+    from trance.trace.session_log import SessionLog
+
+    log = SessionLog(tmp_path)
+    log.append(Event(type="model_call", session_id="s", step_id="st1", agent="backend",
+                     payload={"model": "big", "round": 3,
+                              "messages": [{"role": "user", "content": "x" * 400_000}],
+                              "response_text": "done"}))
+
+    stored = log.read()
+    assert len(stored) == 1
+    kept = stored[0].payload
+    assert kept["model"] == "big" and kept["round"] == 3       # the shape survives
+    assert kept["response_text"] == "done"
+    assert "not kept on disk" in kept["messages"]              # the bulk does not
+    assert kept["truncated_on_disk"] == ["messages"]
+    assert tmp_path.joinpath("events.jsonl").stat().st_size < 100_000
+
+
+def test_a_torn_last_line_costs_one_event_not_the_file(tmp_path):
+    """JSON Lines so a kill mid-write does not take the trace with it."""
+    from trance.events import Event
+    from trance.trace.session_log import SessionLog
+
+    log = SessionLog(tmp_path)
+    log.append(Event(type="chat", session_id="s", payload={"content": "first"}))
+    log.append(Event(type="chat", session_id="s", payload={"content": "second"}))
+    with log.path.open("a", encoding="utf8") as handle:
+        handle.write('{"type": "chat", "sess')          # killed mid-write
+
+    kept = log.read()
+    assert [e.payload["content"] for e in kept] == ["first", "second"]

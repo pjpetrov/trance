@@ -1836,8 +1836,8 @@ function openStep(step, index) {
 
   if (!blocks.length) {
     body.append(el("p", "muted small",
-      "Nothing recorded for this step in this view — it may have run before the "
-      + "page was opened."));
+      "Nothing recorded for this step. It may have been skipped, or it ran "
+      + "before this session kept a trace."));
   }
   blocks.forEach((block, i) => body.append(
     blockSection(block, i === blocks.length - 1 && step.status === "running")));

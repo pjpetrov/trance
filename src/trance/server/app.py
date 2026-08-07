@@ -17,6 +17,7 @@ from ..agents.orchestrator import POINTS
 from ..agents.approval import ALWAYS, ApprovalBroker, DECISIONS
 from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
+from ..trace.session_log import SessionLog
 from ..agents.store import (
     CommandStore, DEFAULT_LIST, LoopStore, PROTECTED, RoleStore,
     validate as validate_agent,
@@ -52,6 +53,38 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     config.providers = {p.name: p for p in providers.all()}
     config.presets = {m.name: m for m in providers.all_presets()}
     bus = EventBus()
+
+    #: The trace on disk, one log per session. Without it a restart leaves a
+    #: finished step you can no longer explain.
+    logs: dict[str, SessionLog] = {}
+    logs_lock = threading.Lock()
+
+    def log_for(session_id: str) -> SessionLog:
+        with logs_lock:
+            existing = logs.get(session_id)
+            if existing is None:
+                existing = SessionLog(store.root / session_id)
+                logs[session_id] = existing
+            return existing
+
+    def persist(event) -> None:
+        if event.session_id and event.session_id != "system":
+            log_for(event.session_id).append(event)
+
+    bus.subscribe_sync(persist)
+
+    def history_for(session_id: str):
+        """This run's events, plus everything earlier runs recorded.
+
+        The bus only knows what this process has seen, so a session that
+        started before a restart has its whole first half on disk and nothing
+        in memory.
+        """
+        live = bus.history(session_id)
+        seen = {e.id for e in live}
+        stored = [e for e in log_for(session_id).read() if e.id not in seen]
+        return stored + live
+
     app = FastAPI(title="trance")
     app.state.config = config
     app.state.store = store
@@ -662,7 +695,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     @app.get("/api/sessions/{session_id}/events")
     def get_events(session_id: str):
         _need(store, session_id)
-        return [e.to_dict() for e in bus.history(session_id)]
+        return [e.to_dict() for e in history_for(session_id)]
 
     @app.get("/api/sessions/{session_id}/memory")
     def get_memory(session_id: str):
@@ -1098,7 +1131,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 # flow_updated holds the flow as it was when it fired. Sending
                 # the snapshot first let that stale copy win, which is how a
                 # refreshed page showed finished steps as pending.
-                for event in bus.history(session_id):
+                for event in history_for(session_id):
                     await ws.send_text(json.dumps({**event.to_dict(), "replay": True}))
                 await ws.send_text(json.dumps({"type": "snapshot",
                                                "payload": session.to_dict()}))
