@@ -699,7 +699,10 @@ try {
 
     // A dev server reports its own URL, not a port trance picked.
     api.renderPreviewStatus(RESPONSES["/api/sessions/s1/preview"]);
-    const status = flat(document.getElementById("files-status")).replace(/\s+/g, " ");
+    // Writing a review comment re-renders the review status. That must not take
+    // the share link off screen — they used to share one container.
+    api.renderReviewStatus();
+    const status = flat(document.getElementById("preview-status")).replace(/\s+/g, " ");
     // The address shown is the one you can type into a phone.
     if (!status.includes("serving") || !status.includes("192.168.10.59:44817")) {
       console.log("BROKEN: the running preview is not shown:", status.slice(0, 100));

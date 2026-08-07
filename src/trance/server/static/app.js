@@ -4131,9 +4131,14 @@ function warnAboutBuild(served) {
 }
 
 function renderPreviewStatus(served) {
-  const box = $("files-status");
-  const existing = box.querySelector(".preview-note");
-  if (existing && existing.remove) existing.remove();
+  // Its own element. It used to share one with the review status, which clears
+  // what is there before rendering — so writing a comment took the share link
+  // off the screen, and the only way back was to serve the page again.
+  if (served !== undefined) state.preview = served;
+  const box = $("preview-status");
+  if (!box) return;
+  box.innerHTML = "";
+  served = state.preview;
   if (!served || !served.url) return;
 
   const note = el("span", "preview-note");
