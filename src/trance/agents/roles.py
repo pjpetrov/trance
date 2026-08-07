@@ -53,9 +53,19 @@ class AgentRole:
     #: The loop varies the prompt and what it was told; this varies the one
     #: thing a retry otherwise never changes.
     backup_preset: str | None = None
-    #: Tries on the usual model before the backup takes over. 0 = never.
-    #: Only useful below the step's loop limit — above it, nothing reaches it.
+    #: Tries on the usual model before the backup takes over.
+    tries: int = 2
+    #: Tries on the backup after that. Ignored without a backup model, so an
+    #: agent with none simply gets `tries` and stops.
+    backup_tries: int = 2
+    #: Legacy name for `tries`, still read from older stored agents.
     backup_after: int = 0
+
+    @property
+    def total_tries(self) -> int:
+        """How many attempts this agent gets before a step gives up on it."""
+        main = max(1, self.tries or 1)
+        return main + (max(0, self.backup_tries) if self.backup_preset else 0)
     #: Named provider. None = the configured worker default.
     provider: str | None = None
     #: Per-role model overrides; None means "use the provider's default".
@@ -75,7 +85,11 @@ class AgentRole:
     @classmethod
     def from_dict(cls, data: dict) -> "AgentRole":
         known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        clean = {k: v for k, v in data.items() if k in known}
+        # `backup_after` was the switch point before it was called `tries`.
+        if clean.get("backup_after") and "tries" not in data:
+            clean["tries"] = clean["backup_after"]
+        return cls(**clean)
 
 
 _CODER_RULES = """

@@ -92,9 +92,10 @@ class Step:
     #: Who tries to fix a failed check. Empty means this step's own role has
     #: another go. Either way the block then runs again.
     on_fail: str | None = None
-    #: How many times the block may run before the flow is halted. The loop can
-    #: only be left by succeeding — exhausting it stops the run.
-    max_loops: int = 2
+    #: How many times the block may run before the flow is halted, overriding
+    #: the agent's own count. 0 means "however many tries that agent gets",
+    #: which is the usual case — the agent knows what it is worth retrying.
+    max_loops: int = 0
     #: Roll the project back to the checkpoint taken before this step when it
     #: fails. Off by default: throwing away work is not something to do on a
     #: guess, and a half-finished step is often still worth reading.
@@ -137,7 +138,13 @@ class Step:
 
     @property
     def loop_limit(self) -> int:
-        return max(1, self.max_loops or self.max_attempts or 1)
+        """The override, or 2 when nothing knows better. The engine prefers the
+        agent's own count when this step does not name one."""
+        return max(1, self.max_loops or self.max_attempts or 2)
+
+    @property
+    def overrides_tries(self) -> bool:
+        return bool(self.max_loops)
 
     @property
     def checks(self) -> list[str]:
@@ -155,6 +162,7 @@ class Step:
         data["checker"] = self.checker
         data["fixer"] = self.fixer
         data["loop_limit"] = self.loop_limit
+        data["overrides_tries"] = self.overrides_tries
         return data
 
     @classmethod
@@ -164,7 +172,8 @@ class Step:
         # every finished step with no history and no record of what it cost.
         attempts = [Attempt.from_dict(a) for a in (data.pop("attempts", None) or [])
                     if isinstance(a, dict)]
-        for derived in ("checks", "checker", "fixer", "loop_limit", "runs_a_loop"):
+        for derived in ("checks", "checker", "fixer", "loop_limit", "runs_a_loop",
+                        "overrides_tries"):
             data.pop(derived, None)
         # Older shapes fold into `check`.
         if not data.get("check"):
@@ -240,7 +249,7 @@ class Flow:
             existing.loop = incoming.loop
             existing.check = incoming.checker
             existing.on_fail = incoming.on_fail
-            existing.max_loops = incoming.loop_limit
+            existing.max_loops = incoming.max_loops
             existing.gates, existing.verify_with = [], None
             existing.entry = incoming.entry
             if changed and existing.status in self.TERMINAL:

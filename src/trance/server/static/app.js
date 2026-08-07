@@ -339,6 +339,15 @@ function splittingMark(step) {
   return mark;
 }
 
+//: What an agent gets before a step gives up on it: its own tries, plus the
+//: ones on its backup when it has one.
+function agentTotalTries(name) {
+  const agent = state.roles[name];
+  if (!agent) return 2;
+  const main = Math.max(1, agent.tries ?? 2);
+  return main + (agent.backup_preset ? Math.max(0, agent.backup_tries ?? 2) : 0);
+}
+
 //: A step you can no longer be waiting on — safe to fold away.
 const FINISHED = new Set(["done", "failed", "skipped", "blocked"]);
 
@@ -553,14 +562,21 @@ function stepCard(step, index) {
     // No "on fail" agent here any more. Handing a failure to a *different*
     // agent is what a loop is, and having two ways to say it left the step
     // editor pretending to a power it could only half express.
+    // Blank means the agent's own count, which is the usual case: the agent
+    // knows what it is worth retrying, the step only overrides when it differs.
+    const agentTries = agentTotalTries(step.role);
     const loops = el("input", "compact tiny");
     loops.type = "number";
     loops.min = 1;
-    loops.value = step.max_loops ?? 2;
+    loops.value = step.max_loops || "";
+    loops.placeholder = String(agentTries);
     loops.disabled = !editable;
-    loops.title = `How many times ${step.role || "this agent"} may try before the flow `
-                  + "is halted. To bring in another agent on failure, use a loop.";
-    loops.onchange = () => { step.max_loops = Number(loops.value) || 1; drawGates(); };
+    loops.title = `Blank uses ${step.role || "the agent"}'s own count (${agentTries}). `
+                  + "Set a number to override it for this step alone.";
+    loops.onchange = () => {
+      step.max_loops = Number(loops.value) || 0;
+      drawGates();
+    };
 
     const revert = el("input");
     revert.type = "checkbox";
@@ -572,7 +588,10 @@ function stepCard(step, index) {
     revertLabel.title = "Put the project back to where it was before this step ran, "
                         + "if the step does not succeed. The work stays in git history.";
 
-    row.append(field("check", check), field("tries", loops), revertLabel);
+    row.append(field("check", check), field("tries", loops));
+    // Blank is the common case, so say whose number is filling it in.
+    if (!step.max_loops) row.append(el("span", "hint", `${step.role}'s own`));
+    row.append(revertLabel);
     if (step.on_fail) {
       // A flow built before loops existed. Say what it will do, and let it go.
       const legacy = el("span", "badge", `on fail → ${step.on_fail}`);
@@ -584,7 +603,7 @@ function stepCard(step, index) {
     }
     gatesBox.append(row);
 
-    const limit = step.max_loops ?? 2;
+    const limit = step.max_loops || agentTries;
     gatesBox.append(el("div", "loop-note",
       `${step.role} reports SUCCESS → next step. Anything else → ${step.role} tries `
       + `again (${limit} tr${limit > 1 ? "ies" : "y"} in all, then the flow halts). `
@@ -1578,7 +1597,8 @@ function agentCard(agent, isNew) {
   if (agent.protected) head.append(el("span", "badge", "built-in"));
   if (agent.backup_preset) {
     head.append(el("span", "badge",
-                   `backup: ${agent.backup_preset} after ${agent.backup_after}`));
+                   `${agent.tries ?? 2} tries, then ${agent.backup_tries ?? 2} on `
+                   + `${agent.backup_preset}`));
   }
   if (agent.verifier) head.append(el("span", "badge", "verifier"));
   if (agent.resolved) {
@@ -1641,25 +1661,39 @@ function agentCard(agent, isNew) {
     backup.append(opt);
   });
 
-  const backupAfter = el("input", "compact tiny");
-  backupAfter.type = "number";
-  backupAfter.min = "1";
-  backupAfter.value = agent.backup_after || "";
-  backupAfter.placeholder = "2";
-  backupAfter.title = "Tries on the usual model before the backup takes over. Keep it "
-                      + "below a step's loop limit, or nothing ever reaches it.";
+  const tries = el("input", "compact tiny");
+  tries.type = "number";
+  tries.min = "1";
+  tries.value = agent.tries ?? 2;
+  tries.title = "Attempts on the model above before the backup takes over.";
 
-  const afterWrap = el("span", "row small after-tries");
-  afterWrap.append(el("span", "muted small", "after"), backupAfter,
-                   el("span", "muted small", "tries"));
-  const backupRow = rowField("Backup model", backup, afterWrap);
+  const backupTries = el("input", "compact tiny");
+  backupTries.type = "number";
+  backupTries.min = "0";
+  backupTries.value = agent.backup_tries ?? 2;
+  backupTries.title = "Attempts on the backup after that. The two added together are "
+                      + "what a step gets unless the step says otherwise.";
+
+  const triesWrap = el("span", "row small after-tries");
+  triesWrap.append(tries, el("span", "muted small", "tries"));
+  const backupWrap = el("span", "row small after-tries");
+  backupWrap.append(el("span", "muted small", "then"), backupTries,
+                    el("span", "muted small", "tries"));
+
+  const total = el("span", "hint");
   const syncBackup = () => {
-    afterWrap.hidden = !backup.value;
-    if (backup.value && !backupAfter.value) backupAfter.value = "2";
+    backupWrap.hidden = !backup.value;
+    const main = Math.max(1, Number(tries.value) || 1);
+    const extra = backup.value ? Math.max(0, Number(backupTries.value) || 0) : 0;
+    total.textContent = `${main + extra} tries in all, unless a step says otherwise`;
   };
   backup.onchange = syncBackup;
+  tries.addEventListener("input", syncBackup);
+  backupTries.addEventListener("input", syncBackup);
   syncBackup();
-  grid.append(backupRow);
+
+  grid.append(rowField("Backup model", backup, backupWrap));
+  grid.append(rowField("Tries", triesWrap, total));
 
   const description = el("input", "compact");
   description.value = agent.description || "";
@@ -1780,7 +1814,8 @@ function agentCard(agent, isNew) {
       toolsets: Object.keys(boxes).filter((t) => boxes[t].checked),
       command_list: listSel.value,
       backup_preset: backup.value || null,
-      backup_after: backup.value ? Math.max(1, Number(backupAfter.value) || 2) : 0,
+      tries: Math.max(1, Number(tries.value) || 2),
+      backup_tries: Math.max(0, Number(backupTries.value) || 0),
       verifier: verifierBox.checked,
       commands: commands.value.split(/[\s,]+/).filter(Boolean),
       shell: shellSel.value === "" ? null : shellSel.value === "yes",
@@ -3252,7 +3287,9 @@ function loopCard(loop, isNew) {
       if (!loop.start) loop.start = id;
       redraw();
     };
-    blocks.append(el("div", "row small").appendChild(add).parentNode);
+    const addRow = el("div", "row small");
+    addRow.append(add);
+    blocks.append(addRow);
   };
   redraw();
 

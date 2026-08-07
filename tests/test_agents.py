@@ -5057,7 +5057,8 @@ def _backup_engine(tmp_path, team=("backend", "tester"), after=1):
     for role in engine.session.team:
         role.preset = "everyday"
         role.backup_preset = "clever"
-        role.backup_after = after
+        role.tries = after
+        role.backup_tries = 2
     return engine
 
 
@@ -5105,7 +5106,9 @@ def test_the_threshold_is_what_decides(tmp_path, monkeypatch):
 def test_no_backup_configured_changes_nothing(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _backup_engine(tmp_path, after=0)       # 0 = never
+    engine = _backup_engine(tmp_path)
+    for role in engine.session.team:
+        role.backup_preset = None                    # nothing to fall back to
     step = Step(role="backend", task="t", max_loops=3)
     used = []
 
@@ -5122,14 +5125,14 @@ def test_a_backup_that_does_not_exist_says_so_and_carries_on(tmp_path, monkeypat
     engine = _backup_engine(tmp_path, after=1)
     for role in engine.session.team:
         role.backup_preset = "deleted-last-week"
-    step = Step(role="backend", task="t", max_loops=2)
+    step = Step(role="backend", task="t", max_loops=3)
     used = []
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
         used.append(kw["config"].model) or _Turn(None, "x", outcome=("FAILED", "no"))))
     engine._execute(step)
 
-    assert used == ["small-model", "small-model"]
+    assert used == ["small-model"] * 3
     warned = [e for e in engine.bus.history(engine.session.id) if e.type == "warning"]
     assert any("not defined" in e.payload["message"] for e in warned)
 
@@ -5164,3 +5167,76 @@ def test_in_a_loop_the_count_is_per_agent(tmp_path, monkeypatch):
     testers = [model for name, model in seen if name == "tester"]
     assert testers[:2] == ["small-model", "small-model"]
     assert testers[2] == "big-model"          # its third run, its own count
+
+
+def test_an_agent_gets_two_tries_then_two_on_its_backup(tmp_path, monkeypatch):
+    """Four attempts in all, without the step having to say so."""
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=2)
+    step = Step(role="backend", task="t")            # no max_loops: the agent decides
+    used = []
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        used.append(kw["config"].model) or _Turn(None, "x", outcome=("FAILED", "no"))))
+    engine._execute(step)
+
+    assert used == ["small-model", "small-model", "big-model", "big-model"]
+    assert len(step.attempts) == 4
+
+
+def test_an_agent_with_no_backup_just_gets_its_own_tries(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=3)
+    for role in engine.session.team:
+        role.backup_preset = None
+    step = Step(role="backend", task="t")
+    used = []
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        used.append(kw["config"].model) or _Turn(None, "x", outcome=("FAILED", "no"))))
+    engine._execute(step)
+    assert used == ["small-model"] * 3
+
+
+def test_a_step_can_override_the_agents_count(tmp_path, monkeypatch):
+    """Some work is worth one try and some is worth six, and the step is where
+    that is known."""
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=2)       # the agent would give 4
+    used = []
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        used.append(kw["config"].model) or _Turn(None, "x", outcome=("FAILED", "no"))))
+
+    engine._execute(Step(role="backend", task="t", max_loops=1))
+    assert used == ["small-model"]
+
+    used.clear()
+    engine.session.clear_stop()          # the first halt would stop the second
+    engine._execute(Step(role="backend", task="t", max_loops=3))
+    assert used == ["small-model", "small-model", "big-model"]
+
+
+def test_the_default_agent_is_two_and_two(tmp_path):
+    from trance.agents.roles import BUILTIN_ROLES
+
+    backend = BUILTIN_ROLES["backend"]
+    assert backend.tries == 2 and backend.backup_tries == 2
+    assert backend.total_tries == 2                  # no backup set, so just its own
+
+    import copy
+    with_backup = copy.deepcopy(backend)
+    with_backup.backup_preset = "clever"
+    assert with_backup.total_tries == 4
+
+
+def test_an_older_agent_keeps_the_switch_point_it_had():
+    """`backup_after` was the name before it was `tries`."""
+    from trance.agents.roles import AgentRole
+
+    role = AgentRole.from_dict({
+        "name": "backend", "title": "B", "description": "d", "system_prompt": "p",
+        "backup_preset": "clever", "backup_after": 3})
+    assert role.tries == 3 and role.total_tries == 5

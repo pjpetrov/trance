@@ -327,7 +327,7 @@ class FlowEngine:
             self._emit("step_failed", step_id=step.id, payload={"reason": step.summary})
             return
 
-        limit = step.loop_limit
+        limit = self._tries_for(role, step)
         feedback = ""
         #: What the previous pass did, carried into the next one.
         carry: Handoff | None = None
@@ -457,7 +457,7 @@ class FlowEngine:
         step.status = "failed"
         last = step.attempts[-1] if step.attempts else None
         self._emit("step_failed", agent=role.name, step_id=step.id, payload={
-            "reason": (f"the step never reported success in {limit} loop(s)"
+            "reason": (f"the step never reported success in {limit} tr(y/ies)"
                        + (f" — last: {last.outcome_reason}" if last and last.outcome_reason
                           else "")),
             "attempts": len(step.attempts), "max_loops": limit, "halts_flow": True,
@@ -870,6 +870,17 @@ class FlowEngine:
         result = self.memory.compact(rewrite)
         self._emit("memory_compacted", agent="orchestrator", payload=result)
 
+    def _tries_for(self, role, step: Step) -> int:
+        """How many attempts this block gets: the step's say, else the agent's.
+
+        The agent knows what it is worth retrying — two on its usual model and
+        two on its backup, by default. A step overrides that only when it was
+        given an explicit number.
+        """
+        if step.overrides_tries:
+            return step.loop_limit
+        return max(1, getattr(role, "total_tries", 2))
+
     def _model_for(self, role, step: Step, attempt: int):
         """This agent's model, or its backup once it has failed enough times.
 
@@ -878,9 +889,9 @@ class FlowEngine:
         the same way a third time. This is the per-agent version of that switch,
         decided by the agent rather than globally.
         """
-        after = int(getattr(role, "backup_after", 0) or 0)
+        after = max(1, int(getattr(role, "tries", 2) or 2))
         backup = getattr(role, "backup_preset", "") or ""
-        if not backup or not after or attempt <= after:
+        if not backup or attempt <= after:
             return self.config.for_role(role), False
         if backup not in self.config.presets:
             self._emit("warning", agent=role.name, step_id=step.id, payload={

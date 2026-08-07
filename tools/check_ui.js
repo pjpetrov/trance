@@ -4,13 +4,31 @@ const fs = require("fs");
 const src = fs.readFileSync("src/trance/server/static/app.js", "utf8");
 
 const nodes = new Map();
+/* Appending is where a real DOM does two things a stub forgets: a selector can
+   then find the child, and a <select> takes its value from its options. Both
+   have hidden a bug here before. */
+function adopt(parent, children) {
+  for (const child of children) {
+    if (child === undefined || child === null) continue;
+    parent.children.push(child);
+    for (const cls of String((child && child.className) || "").split(" ")) {
+      if (cls) parent._found[`.${cls}`] = parent._found[`.${cls}`] || child;
+    }
+    if (parent.tagName === "SELECT" && child.tagName === "OPTION") {
+      if (child.selected || parent.value === "") parent.value = child.value;
+    }
+  }
+}
+
 const makeEl = (tag = "div") => {
   const el = {
     tagName: tag.toUpperCase(), className: "", style: {}, dataset: {}, children: [],
     textContent: "", innerHTML: "", value: "", checked: false, disabled: false,
     title: "", placeholder: "", type: "",
-    append: (...c) => el.children.push(...c), prepend: () => {}, remove: () => {},
-    appendChild: (c) => el.children.push(c),
+    append: (...c) => adopt(el, c), prepend: (...c) => adopt(el, c),
+    remove: () => {},
+    // Returns the child, as a real one does.
+    appendChild: (c) => { adopt(el, [c]); return c; },
     addEventListener: () => {}, removeEventListener: () => {},
     // Null, like a real one that finds nothing. Returning an element made every
     // "is this here?" check pass, which is how a missing .c-head went unseen.
@@ -155,22 +173,44 @@ try {
     const card = api.agentCard({ name: "backend", title: "Backend", description: "d",
                                  system_prompt: "p", paths: [], toolsets: ["files"],
                                  preset: "Qwen3.6-llama.cpp", backup_preset: "claude",
-                                 backup_after: 2, color: "#7aa2f7", commands: [],
-                                 command_list: "", verifier: false }, false);
-    if (!flat(card).includes("backup: claude after 2")) {
+                                 tries: 2, backup_tries: 2, color: "#7aa2f7",
+                                 commands: [], command_list: "", verifier: false }, false);
+    const text = flat(card).replace(/\s+/g, " ");
+    if (!text.includes("2 tries, then 2 on claude")) {
       console.log("BROKEN: an agent's backup is not shown on its card");
+      process.exit(1);
+    }
+    if (!text.includes("4 tries in all")) {
+      console.log("BROKEN: the card does not add the tries up");
       process.exit(1);
     }
   }
   api.state.planning = { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] };
   // One step mid-split: the marker belongs on that card, not above the plan.
   api.state.splitting = { count: 1, threshold: 5, step_ids: ["s4"] };
+  api.state.roles.backend.tries = 2;
+  api.state.roles.backend.backup_preset = "claude";
+  api.state.roles.backend.backup_tries = 2;
   api.state.draftSteps = ["pending", "running", "done", "failed", "skipped", "blocked"]
     .map((status, i) => ({ id: `s${i}`, role: "backend", task: `task ${i}`, status,
-                           check: "tester", on_fail: null, max_loops: 2, checker: "tester",
-                           fixer: "backend", loop_limit: 2, attempts: [],
+                           check: "tester", on_fail: null, max_loops: 0, checker: "tester",
+                           fixer: "backend", loop_limit: 4, attempts: [],
                            points: [0, 1, 3, 5, 8, 13][i] }));
   api.state.draftSteps.forEach((step, i) => api.stepCard(step, i));   // every status
+  {
+    // A step with no override shows the agent's own count (2 + 2 on its backup).
+    const card = api.stepCard(api.state.draftSteps[0], 0);
+    const text = flat(card).replace(/\s+/g, " ");
+    if (!text.includes("4 tries in all") || !text.includes("backend's own")) {
+      console.log("BROKEN: a step does not fall back to its agent's try count");
+      process.exit(1);
+    }
+    const fixed = { ...api.state.draftSteps[0], max_loops: 6 };
+    if (!flat(api.stepCard(fixed, 0)).replace(/\s+/g, " ").includes("6 tries in all")) {
+      console.log("BROKEN: a step's own try count is ignored");
+      process.exit(1);
+    }
+  }
   const splitting = api.stepCard(api.state.draftSteps[4], 4);
   if (!flat(splitting).includes("splitting…")) {
     console.log("BROKEN: the step being split is not marked");
