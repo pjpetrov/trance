@@ -7044,3 +7044,48 @@ def test_a_stored_agent_keeps_its_own_budget(tmp_path):
     again = RoleStore(tmp_path / "agents.json")
     assert again.get("builder").tool_rounds == 30
     assert again.get("factchecker").tool_rounds == 0
+
+
+def test_a_setting_added_after_the_file_was_written_is_inherited(tmp_path):
+    """Nine stored agents, all written before tool_rounds existed. Reading the
+    absence as a choice would have meant the measured budgets reached nobody who
+    had ever opened the Agents screen — which is everybody."""
+    import json
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import RoleStore
+
+    old = {"agents": [
+        {"name": "tester", "title": "Tester", "description": "d", "system_prompt": "p",
+         "paths": [], "toolsets": ["commands"]},          # no tool_rounds at all
+        {"name": "devops", "title": "DevOps", "description": "d", "system_prompt": "p",
+         "paths": [], "toolsets": ["commands"]},
+    ]}
+    path = tmp_path / "agents.json"
+    path.write_text(json.dumps(old))
+
+    store = RoleStore(path)
+    assert store.get("tester").tool_rounds == BUILTIN_ROLES["tester"].tool_rounds == 24
+    assert store.get("devops").tool_rounds == 0           # its built-in has none either
+
+
+def test_a_setting_that_was_chosen_is_left_alone(tmp_path):
+    """Inheriting must not overwrite an answer, only fill in a blank."""
+    import json
+
+    from trance.agents.store import RoleStore
+
+    path = tmp_path / "agents.json"
+    path.write_text(json.dumps({"agents": [
+        {"name": "tester", "title": "Tester", "description": "d", "system_prompt": "p",
+         "paths": [], "toolsets": ["commands"], "tool_rounds": 5},
+    ]}))
+
+    assert RoleStore(path).get("tester").tool_rounds == 5
+
+    # ...including a deliberate zero, which means "use the default".
+    path.write_text(json.dumps({"agents": [
+        {"name": "tester", "title": "Tester", "description": "d", "system_prompt": "p",
+         "paths": [], "toolsets": ["commands"], "tool_rounds": 0},
+    ]}))
+    assert RoleStore(path).get("tester").tool_rounds == 0

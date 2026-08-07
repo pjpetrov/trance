@@ -27,6 +27,11 @@ from .tools import ALLOWED_COMMANDS, CommandPolicy
 PROTECTED = frozenset(BUILTIN_ROLES)
 
 
+#: Settings a stored agent inherits from its built-in when the file predates
+#: them. The value that means "not chosen", per field.
+INHERITED_WHEN_UNSET = {"tool_rounds": 0}
+
+
 class RoleStore:
     def __init__(self, path: Path, seed: dict[str, AgentRole] | None = None):
         self.path = Path(path)
@@ -57,8 +62,19 @@ class RoleStore:
                 role = AgentRole.from_dict(item)
             except TypeError:
                 continue
-            if role.name:
-                self._roles[role.name] = role
+            if not role.name:
+                continue
+            # A setting the stored copy has never heard of is not a choice to
+            # respect — it is a field that did not exist when the file was
+            # written. Take the built-in's value, so improvements to the shipped
+            # agents reach anyone who never touched that setting, while anything
+            # actually chosen is left alone.
+            builtin = BUILTIN_ROLES.get(role.name)
+            if builtin is not None:
+                for field, unset in INHERITED_WHEN_UNSET.items():
+                    if field not in item and getattr(builtin, field) != unset:
+                        setattr(role, field, getattr(builtin, field))
+            self._roles[role.name] = role
 
     def _save(self) -> None:
         payload = {"agents": [r.to_dict() for r in self._roles.values()]}
