@@ -1203,7 +1203,14 @@ try {
         payload: { name: "read_file", arguments: { path: "a.js" }, ok: true,
                    result: "contents" } },
     ];
-    api.state.events = [];                       // nothing replayed for it
+    // Not empty: a couple of stray events, which is what a console tail leaves
+    // behind. The old condition compared that count against the attempt count
+    // and decided it had everything.
+    api.state.events = [
+      { id: "s1", type: "tool_call", step_id: "st9", agent: "backend",
+        ts: "2026-08-07T19:00:00+00:00",
+        payload: { name: "list_files", arguments: {}, ok: true } },
+    ];
     const far = { id: "st9", role: "backend", task: "t", status: "done",
                   check: null, on_fail: null, max_loops: 2,
                   attempts: [{ n: 1, outcome: "SUCCESS" }] };

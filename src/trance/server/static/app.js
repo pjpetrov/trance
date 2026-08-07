@@ -2459,29 +2459,35 @@ function openStep(step, index) {
  * thousands of events, so a page that loaded after one of those showed a step
  * with no history at all. Its events were on the server the whole time. */
 async function paintStepHistory(box, step) {
-  let events = state.events.filter((e) => e.step_id === step.id);
-  const expected = (step.attempts || []).length;
+  // Always ask. The first version compared how many events the console happened
+  // to hold against how many attempts the step had — which are different things
+  // measured in different units, so a step with five attempts and six stray
+  // events in the console tail decided it had everything and rendered the six.
+  // One request, filtered on the server, beats guessing about it.
+  const held = state.events.filter((e) => e.step_id === step.id);
+  paint(held, "Loading this step's history…");
 
-  if (events.length < expected || !events.length) {
+  let fetched = [];
+  try {
+    fetched = await api(
+      `/api/sessions/${state.session.id}/events?step=${encodeURIComponent(step.id)}`);
+  } catch (_) { /* keep whatever the console had */ }
+  if (fetched.length > held.length) paint(fetched, "");
+  else if (!held.length) paint(held, "");
+
+  function paint(events, waiting) {
     box.innerHTML = "";
-    box.append(el("p", "muted small", "Loading this step's history…"));
-    try {
-      const fetched = await api(
-        `/api/sessions/${state.session.id}/events?step=${encodeURIComponent(step.id)}`);
-      if (fetched.length >= events.length) events = fetched;
-    } catch (_) { /* fall back to whatever the console has */ }
+    const blocks = groupStepEvents(events, step);
+    blocks.forEach((block, i) => box.append(
+      blockSection(block, i === blocks.length - 1 && step.status === "running")));
+    if (waiting) {
+      box.append(el("p", "muted small", waiting));
+    } else if (!blocks.length) {
+      box.append(el("p", "muted small",
+        "Nothing recorded for this step. It may have been skipped, or it ran "
+        + "before this session kept a trace."));
+    }
   }
-
-  box.innerHTML = "";
-  const blocks = groupStepEvents(events, step);
-  if (!blocks.length) {
-    box.append(el("p", "muted small",
-      "Nothing recorded for this step. It may have been skipped, or it ran "
-      + "before this session kept a trace."));
-    return;
-  }
-  blocks.forEach((block, i) => box.append(
-    blockSection(block, i === blocks.length - 1 && step.status === "running")));
 }
 
 /* Split a step's events into the blocks that produced them. Each block starts
