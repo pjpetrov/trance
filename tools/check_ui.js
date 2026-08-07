@@ -53,6 +53,11 @@ const RESPONSES = {
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
                       suggested_dir: "/w/project", state_dir: "/s" },
   "/api/sessions": [],
+  "/api/presets": { presets: [
+    { name: "Qwen3.6-llama.cpp", kind: "llamacpp", model: "qwen", base_url: "http://x/v1",
+      context_window: 64000, max_tokens: 0, has_key: false, self_contained: true },
+    { name: "claude", kind: "anthropic", model: "claude-opus-5", base_url: "https://y",
+      context_window: 1000000, max_tokens: 0, has_key: true, self_contained: true }] },
   "/api/sessions/s1/files": { root: "/p", files: [
     { path: "server/app.js", bytes: 2048 }, { path: "README.md", bytes: 300 }] },
   "/api/sessions/s1/file?path=server%2Fapp.js": {
@@ -93,7 +98,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,openStep,groupStepEvents,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,openStep,groupStepEvents,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -106,7 +111,10 @@ const session = {
   progress: { total: 1, done: 1 },
 };
 global.state = undefined;
-const flat = (n) => !n ? "" : (n.textContent || "") + (n.children || []).map(flat).join(" ");
+// Values count as visible text: a model name lives in an input, not a label.
+const flat = (n) => !n ? ""
+  : [n.textContent || "", n.value || "", n.placeholder || ""].join(" ")
+    + (n.children || []).map(flat).join(" ");
 (async () => {
 try {
   // state lives inside the module scope; exercise the renderers that read it
@@ -285,6 +293,20 @@ try {
   if (document.getElementById("memory-list").hidden) {
     console.log("BROKEN: the cards did not come back after cancelling");
     process.exit(1);
+  }
+  // Opening settings must actually list the models and the orchestrator.
+  await api.openSettings();
+  {
+    const shown = flat(document.getElementById("preset-list")).replace(/\s+/g, " ");
+    if (!shown.includes("Qwen3.6-llama.cpp") || !shown.includes("claude")) {
+      console.log("BROKEN: the models list is empty when settings opens");
+      process.exit(1);
+    }
+    const orch = flat(document.getElementById("orchestrator-settings")).replace(/\s+/g, " ");
+    if (!orch.includes("claude")) {
+      console.log("BROKEN: the orchestrator picker is empty when settings opens");
+      process.exit(1);
+    }
   }
   api.renderStepSize();
   // The loops editor: an existing loop, and an empty one being created.

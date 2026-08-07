@@ -1176,6 +1176,10 @@ $("settings").onclick = (e) => { if (e.target.id === "settings") e.currentTarget
 
 async function openSettings() {
   $("settings").classList.add("open");
+  // These used to be called by the provider renderer, which no longer exists.
+  // Deleting it took the models list and the orchestrator picker with it.
+  await renderPresets();
+  renderOrchestratorSettings();
   renderStepSize();
 }
 
