@@ -1487,11 +1487,41 @@ function renderStepSize() {
 async function renderPresets() {
   const { presets } = await api("/api/presets");
   state.presets = presets;
+  paintPresets();
+}
+
+/* Same shape as the agents: the list is what you have, the pane is the one you
+ * are changing. A model is a form — endpoint, key, model id — and several of
+ * them stacked is a page you scroll rather than a thing you read. */
+function paintPresets(selected) {
+  const presets = state.presets || [];
+  if (selected !== undefined) state.presetSelected = selected;
+  if (!presets.some((m) => m.name === state.presetSelected)) {
+    state.presetSelected = presets.length ? presets[0].name : "";
+  }
+
+  const names = $("preset-names");
+  names.innerHTML = "";
+  presets.forEach((preset) => {
+    const row = el("button", "agent-name"
+      + (preset.name === state.presetSelected ? " on" : ""));
+    row.append(el("span", "agent-name-text", preset.name));
+    row.append(el("span", "muted small", KIND_SHORT[preset.kind] || preset.kind || ""));
+    row.title = `${preset.model || "no model id"} — ${preset.base_url || "default endpoint"}`;
+    row.onclick = () => paintPresets(preset.name);
+    names.append(row);
+  });
+
   const box = $("preset-list");
   box.innerHTML = "";
-  if (!presets.length) box.append(el("p", "muted small", "No models defined yet."));
-  presets.forEach((m) => box.append(presetCard(m, false)));
+  const showing = presets.find((m) => m.name === state.presetSelected);
+  if (showing) box.append(presetCard(showing, false));
+  else box.append(el("p", "muted small", "No models defined yet — add one on the right."));
 }
+
+//: Enough to tell two rows apart without spelling out the API each time.
+const KIND_SHORT = { anthropic: "anthropic", openai: "openai",
+                     ollama: "ollama", llamacpp: "llama.cpp" };
 
 function presetCard(preset, isNew) {
   const card = el("div", "provider-card preset-card");
@@ -1678,6 +1708,7 @@ function presetCard(preset, isNew) {
       },
     });
     if (target === preset.name) toast(`Saved model “${target}”.`);
+    state.presetSelected = target;        // stay on the one you just edited
     await renderPresets();
     await refreshConfig();
     if (state.session) state.session = await api(`/api/sessions/${state.session.id}`);
@@ -1686,7 +1717,7 @@ function presetCard(preset, isNew) {
 
   if (isNew) {
     const cancel = el("button", null, "Cancel");
-    cancel.onclick = () => paintAgents(state.agents?.[0]?.name || "");
+    cancel.onclick = () => paintPresets(state.presets?.[0]?.name || "");
     actions.append(cancel);
   } else {
     const del = el("button", "danger", "Delete");
@@ -1741,8 +1772,12 @@ async function refreshConfig() {
 $("add-preset").onclick = () => {
   // A new model brings its own endpoint. Nothing else has to exist first.
   const kind = Object.keys(state.kinds || {})[0] || "llamacpp";
-  $("preset-list").append(presetCard(
-    { name: "", kind, base_url: "", model: "", provider: "" }, true));
+  state.presetSelected = "";
+  $("preset-names").querySelectorAll(".agent-name").forEach(
+    (row) => row.classList.remove("on"));
+  const box = $("preset-list");
+  box.innerHTML = "";
+  box.append(presetCard({ name: "", kind, base_url: "", model: "", provider: "" }, true));
 };
 
 /* ──────────────────────────── agents modal ────────────────────────── */
@@ -2566,15 +2601,17 @@ async function renderCommands(select) {
     : names.includes(state.commandList) ? state.commandList : data.default;
   state.commandList = current;
 
-  const picker = $("cmd-which");
+  const picker = $("cmd-names");
   picker.innerHTML = "";
   names.forEach((name) => {
-    const opt = el("option", null, name === data.default ? `${name} (default)` : name);
-    opt.value = name;
-    if (name === current) opt.selected = true;
-    picker.append(opt);
+    const row = el("button", "agent-name" + (name === current ? " on" : ""));
+    row.append(el("span", "agent-name-text", name));
+    if (name === data.default) row.append(el("span", "muted small", "default"));
+    const size = ((data.lists || {})[name] || {}).allowed || [];
+    row.title = size.length ? `${size.length} program(s)` : "empty";
+    row.onclick = () => renderCommands(name);
+    picker.append(row);
   });
-  picker.onchange = () => renderCommands(picker.value);
   $("cmd-delete").disabled = current === data.default;
 
   const users = Object.entries(data.usage || {})
@@ -3569,16 +3606,18 @@ async function renderLoops(select) {
     : names.includes(state.loopName) ? state.loopName : names[0];
   state.loopName = current;
 
-  const picker = $("loop-which");
+  // The same shape as the agents and the models: what you have down the side,
+  // the one you are editing in the pane. A dropdown hides how many there are.
+  const picker = $("loop-names");
   picker.innerHTML = "";
-  names.forEach((name) => {
-    const opt = el("option", null, name);
-    opt.value = name;
-    if (name === current) opt.selected = true;
-    picker.append(opt);
+  data.loops.forEach((entry) => {
+    const row = el("button", "agent-name" + (entry.name === current ? " on" : ""));
+    row.append(el("span", "agent-name-text", entry.name));
+    row.append(el("span", "muted small", `${entry.nodes.length}`));
+    row.title = entry.description || (entry.roles || []).join(" → ");
+    row.onclick = () => renderLoops(entry.name);
+    picker.append(row);
   });
-  picker.disabled = !names.length;
-  picker.onchange = () => renderLoops(picker.value);
 
   const box = $("loop-list");
   box.innerHTML = "";

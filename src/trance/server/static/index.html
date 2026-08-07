@@ -180,8 +180,13 @@
     <p class="muted small">A model is everything needed to call it: the API it speaks, where it
       lives, the key, and the model id. Its <b>name</b> is the handle you attach to an agent —
       one thing to define, one thing to pick.</p>
-    <div id="preset-list" class="provider-list"></div>
-    <div class="row"><button id="add-preset" class="primary">+ Add model</button></div>
+    <div class="agents-split">
+      <div id="preset-list" class="provider-list"></div>
+      <div class="agent-picker">
+        <div id="preset-names"></div>
+        <button id="add-preset" class="primary">+ Add model</button>
+      </div>
+    </div>
 
 
     <h3>Orchestrator</h3>
@@ -284,13 +289,15 @@
       leaves the loop. The number on an arrow is how many times it may be taken before the
       loop gives up.</p>
     <div class="row" style="margin-top:12px">
-      <label class="inline-field">Loop
-        <select id="loop-which" class="compact"></select>
-      </label>
-      <button id="add-loop" class="primary">+ New loop</button>
       <span id="loop-summary" class="muted small"></span>
     </div>
-    <div id="loop-list" class="provider-list"></div>
+    <div class="agents-split">
+      <div id="loop-list" class="provider-list"></div>
+      <div class="agent-picker">
+        <div id="loop-names"></div>
+        <button id="add-loop" class="primary">+ New loop</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -333,30 +340,34 @@
       nothing else. Keep several lists — a tester needs a build toolchain, a reviewer needs
       almost nothing — and point each agent at the one that fits, in <b>👥 Agents</b>.</p>
 
-    <div class="row" style="margin-top:12px">
-      <label class="inline-field">List
-        <select id="cmd-which" class="compact"></select>
-      </label>
-      <button id="cmd-new">+ New list</button>
-      <button id="cmd-delete" class="danger">Delete list</button>
-      <span id="cmd-used-by" class="muted small"></span>
-    </div>
+    <div class="agents-split">
+      <div class="provider-list">
+        <div class="row">
+          <button id="cmd-delete" class="danger">Delete list</button>
+          <span id="cmd-used-by" class="muted small"></span>
+        </div>
 
-    <label class="row small" style="margin-top:12px">
-      <input type="checkbox" id="cmd-shell">
-      <span>Allow pipes, redirects and <code>&amp;&amp;</code></span>
-    </label>
-    <p class="hint">With this on, every program in the line is checked — <code>pytest | head</code>
-      needs both. With it off, one plain command per call.</p>
+        <label class="row small" style="margin-top:12px">
+          <input type="checkbox" id="cmd-shell">
+          <span>Allow pipes, redirects and <code>&amp;&amp;</code></span>
+        </label>
+        <p class="hint">With this on, every program in the line is checked — <code>pytest | head</code>
+          needs both. With it off, one plain command per call.</p>
 
-    <label>Programs<textarea id="cmd-list" rows="7"
-      placeholder="pytest&#10;npm&#10;node"></textarea>
-      <span class="hint">One per line or space-separated. Names only — no paths or arguments.</span></label>
+        <label>Programs<textarea id="cmd-list" rows="7"
+          placeholder="pytest&#10;npm&#10;node"></textarea>
+          <span class="hint">One per line or space-separated. Names only — no paths or arguments.</span></label>
 
-    <div class="row">
-      <button id="cmd-save" class="primary">Save</button>
-      <button id="cmd-reset">Reset to defaults</button>
-      <span id="cmd-result" class="check-result"></span>
+        <div class="row">
+          <button id="cmd-save" class="primary">Save</button>
+          <button id="cmd-reset">Reset to defaults</button>
+          <span id="cmd-result" class="check-result"></span>
+        </div>
+      </div>
+      <div class="agent-picker">
+        <div id="cmd-names"></div>
+        <button id="cmd-new" class="primary">+ New list</button>
+      </div>
     </div>
 
     <h3>Per-agent overrides</h3>

@@ -222,7 +222,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,paintPresets,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -499,15 +499,29 @@ try {
   // Opening settings must actually list the models and the orchestrator.
   await api.openSettings();
   {
-    const shown = flat(document.getElementById("preset-list")).replace(/\s+/g, " ");
-    if (!shown.includes("Qwen3.6-llama.cpp") || !shown.includes("claude")) {
+    // The names are the picker; the pane is the one you selected.
+    const listed = flat(document.getElementById("preset-names")).replace(/\s+/g, " ");
+    if (!listed.includes("Qwen3.6-llama.cpp") || !listed.includes("claude")) {
       console.log("BROKEN: the models list is empty when settings opens");
       process.exit(1);
     }
     // Discovery runs on render; the suggestions land under the model field.
     await new Promise((r) => setTimeout(r, 0));
-    if (!shown.includes("model id")) {
+    const pane = flat(document.getElementById("preset-list")).replace(/\s+/g, " ");
+    if (!pane.includes("model id")) {
       console.log("BROKEN: the model field lost its placeholder");
+      process.exit(1);
+    }
+    // One model at a time, and picking another swaps the pane.
+    const rows = document.getElementById("preset-names").querySelectorAll(".agent-name");
+    if (rows.length < 2) {
+      console.log("BROKEN: expected a row per model, got", rows.length);
+      process.exit(1);
+    }
+    rows[1].onclick();
+    const swapped = flat(document.getElementById("preset-list")).replace(/\s+/g, " ");
+    if (!swapped.includes("claude")) {
+      console.log("BROKEN: picking a model did not change the pane:", swapped.slice(0, 140));
       process.exit(1);
     }
     const orch = flat(document.getElementById("orchestrator-settings")).replace(/\s+/g, " ");
@@ -748,6 +762,14 @@ try {
       console.log("BROKEN: the loops modal rendered more than the selected loop");
       process.exit(1);
     }
+    // Every loop is named down the side, whichever one the pane is showing.
+    const sidebar = flat(document.getElementById("loop-names")).replace(/\s+/g, " ");
+    for (const name of ["another-loop", "test-and-fix"]) {
+      if (!sidebar.includes(name)) {
+        console.log("BROKEN: the loop picker is missing", name, ":", sidebar);
+        process.exit(1);
+      }
+    }
     if (!shown.includes("on SUCCESS")) {
       console.log("BROKEN: the selected loop did not render");
       process.exit(1);
@@ -831,6 +853,26 @@ try {
     }
     if (card.includes("server/**")) {
       console.log("BROKEN: adding an agent left the previous one on screen");
+      process.exit(1);
+    }
+  }
+
+  // Commands: the lists down the side, the one you picked in the pane.
+  await api.renderCommands();
+  {
+    const listed = flat(document.getElementById("cmd-names")).replace(/\s+/g, " ");
+    if (!listed.includes("default")) {
+      console.log("BROKEN: the command lists are not listed:", listed);
+      process.exit(1);
+    }
+    const rows = document.getElementById("cmd-names").querySelectorAll(".agent-name");
+    if (!rows.length) {
+      console.log("BROKEN: no command list rows");
+      process.exit(1);
+    }
+    const on = rows.filter((r) => (r.className || "").includes("on"));
+    if (on.length !== 1) {
+      console.log("BROKEN: expected one selected command list, got", on.length);
       process.exit(1);
     }
   }
