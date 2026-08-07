@@ -115,8 +115,10 @@ states — `OUTCOME: SUCCESS` or `OUTCOME: FAILED — why` — and anything othe
 success is retried, bounded by that agent's try count or the step's override.
 
 A step may also carry a **check**: an independent agent confirming the report is
-true. A check that fails a claimed success halts the run rather than looping,
-because a report you cannot trust is not worth retrying. Every step that writes
+true. When a check contradicts a claimed success, the agent is told exactly what
+the check found and tries again — a missing file is usually something forgotten,
+and it can be finished. Only a check that keeps failing halts the run, because
+later steps must not build on work that is not there. Every step that writes
 files gets a factchecker by default.
 
 A **loop** is a reusable block of agents wired by outcome — tester finds a bug,

@@ -805,7 +805,7 @@ def test_a_failed_outcome_sends_the_work_to_the_fixer_then_loops(tmp_path, monke
     assert "divide() raises on zero" in prompts["reviewer"]
 
 
-def test_a_dishonest_report_halts_instead_of_looping(tmp_path, monkeypatch):
+def test_a_failed_check_sends_the_agent_back_to_finish_the_job(tmp_path, monkeypatch):
     """Claimed success + the check disagreeing means the report cannot be
     trusted; looping would just repeat it."""
     from trance.events import EventBus
@@ -828,7 +828,13 @@ def test_a_dishonest_report_halts_instead_of_looping(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert order == ["backend", "factchecker"]      # no fixer, no second loop
+    # A failed check is usually something forgotten, so the agent that reported
+    # success gets told what was missing and tries again — the fixer is for the
+    # step's own FAILED outcome, not for this.
+    assert order == ["backend", "factchecker"] * 3
+    assert "reviewer" not in order
+    assert step.status == "failed"                  # and it still halts in the end
+    assert engine.session.status == "error"
     assert step.status == "failed"
     assert engine.session.stopping
     halted = [e for e in seen if e.type == "run_halted"]
@@ -1481,7 +1487,7 @@ def test_the_tester_is_forbidden_from_weakening_tests():
 
 # ------------------------- the check never routes work to the fixer
 
-def test_a_failing_check_never_sends_work_to_the_fixer(tmp_path, monkeypatch):
+def test_a_failing_check_still_never_sends_work_to_the_fixer(tmp_path, monkeypatch):
     """The check only decides whether to halt. Only the outcome loops."""
     from trance.flow import Step
 
@@ -5351,3 +5357,70 @@ def test_an_unreachable_model_with_no_backup_still_ends_the_step_cleanly(
     assert len(step.attempts) == 2                       # it tried, it did not crash
     assert "endpoint failed" in step.attempts[-1].outcome_reason
     assert engine.session.status == "error"              # halted, with a reason
+
+
+def test_the_agent_is_told_what_the_check_found(tmp_path, monkeypatch):
+    """A retry is only worth anything if it knows what was missing."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker"])
+    step = Step(role="backend", task="build the page", check="factchecker", max_loops=2)
+    steering = []
+    checks = []
+
+    def fake(**kw):
+        if kw["role"].name == "factchecker":
+            checks.append(1)
+            return _Turn("FAIL", "index.html is MISSING — it was never written")
+        steering.append("\n".join(kw.get("steering") or []))
+        return _Turn(None, "all done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert steering[0] == ""                        # nothing to say on the first try
+    assert "factchecker checked and disagreed" in steering[1]
+    assert "index.html is MISSING" in steering[1]
+    assert "Do not report success again until that is actually true" in steering[1]
+
+
+def test_a_check_that_passes_on_the_retry_finishes_the_step(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker"])
+    step = Step(role="backend", task="t", check="factchecker", max_loops=3)
+    seen = {"checks": 0}
+
+    def fake(**kw):
+        if kw["role"].name == "factchecker":
+            seen["checks"] += 1
+            return _Turn("FAIL", "not there yet") if seen["checks"] == 1 \
+                else _Turn("PASS", "it is there")
+        return _Turn(None, "done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert step.status == "done"
+    assert [a.outcome for a in step.attempts] == ["CHECK_FAILED", "SUCCESS"]
+    assert engine.session.status != "error"
+
+
+def test_a_check_that_keeps_failing_still_halts_the_run(tmp_path, monkeypatch):
+    """It had its chances to make the report true. Later steps must not build
+    on work that is not there."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["backend", "factchecker"])
+    step = Step(role="backend", task="t", check="factchecker", max_loops=2)
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        _Turn("FAIL", "still nothing on disk") if kw["role"].name == "factchecker"
+        else _Turn(None, "done", outcome=("SUCCESS", ""))))
+    engine._execute(step)
+
+    assert step.status == "failed"
+    assert engine.session.status == "error"
+    halted = next(e for e in engine.bus.history(engine.session.id)
+                  if e.type == "run_halted")
+    assert halted.payload["lied"] is True           # the honest description of it

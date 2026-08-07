@@ -439,16 +439,39 @@ class FlowEngine:
             integrity = self._run_check(step, attempt)
 
             if integrity == "FAIL" and outcome == "SUCCESS":
-                # It claimed the work was done and the check says otherwise.
-                # Looping would just repeat a report we cannot trust.
-                step.status = "failed"
-                self._emit("step_failed", agent=role.name, step_id=step.id, payload={
-                    "reason": (f"{role.title} reported success but {step.checker} found "
-                               f"otherwise: {attempt.feedback[:200]}"),
-                    "attempts": len(step.attempts), "halts_flow": True, "lied": True,
+                # It reported success and the check disagrees. Usually that is
+                # something forgotten rather than something invented — a file
+                # not written, a claim about work that stopped half way — and
+                # the agent can put it right if it is told what was missing.
+                # So this opens the loop like any other failure, and only the
+                # loop running out halts the flow.
+                attempt.outcome = "CHECK_FAILED"
+                attempt.outcome_reason = (
+                    f"{step.checker} checked the work and disagrees: {attempt.feedback}")
+                self._emit("check_failed", agent=role.name, step_id=step.id, payload={
+                    "checker": step.checker, "detail": attempt.feedback,
+                    "attempt": loop, "of": limit,
+                    "message": (f"{role.title} reported success but {step.checker} found "
+                                f"otherwise. {'Trying again.' if loop < limit else ''}"),
                 })
-                self._halt(step, lied=True)
-                return
+                feedback = (
+                    f"You reported SUCCESS, and {step.checker} checked and disagreed:\n\n"
+                    f"{attempt.feedback}\n\n"
+                    f"Do not report success again until that is actually true. If it is "
+                    f"something you did not finish, finish it; if you believe the check "
+                    f"is wrong, say precisely what you did and where the file is.")
+                if loop >= limit:
+                    break
+                # The same agent tries again, not the fixer. A check reports on
+                # whether the work is there, and the one who should make it
+                # there is whoever said it was.
+                carry = build_handoff(turn.transcript, turn.text)
+                self._emit("step_retry", agent=role.name, step_id=step.id, payload={
+                    "attempt": loop, "feedback": feedback,
+                    "message": (f"{role.name} will try again with what {step.checker} "
+                                f"found (try {loop + 1} of {limit})."),
+                })
+                continue
 
             if outcome == "SUCCESS":
                 step.status = "blocked" if integrity == "UNKNOWN" else "done"
@@ -481,13 +504,17 @@ class FlowEngine:
 
         step.status = "failed"
         last = step.attempts[-1] if step.attempts else None
+        # A step whose last word was a failed check halts as one that lied: it
+        # had its chances to make the report true and did not.
+        lied = bool(last and last.outcome == "CHECK_FAILED")
         self._emit("step_failed", agent=role.name, step_id=step.id, payload={
             "reason": (f"the step never reported success in {limit} tr(y/ies)"
                        + (f" — last: {last.outcome_reason}" if last and last.outcome_reason
                           else "")),
             "attempts": len(step.attempts), "max_loops": limit, "halts_flow": True,
+            "lied": lied,
         })
-        self._halt(step)
+        self._halt(step, lied=lied)
 
     def _escalate(self, step: Step, feedback: str, carry) -> bool:
         """One final attempt on the escalation model. True if it succeeded.
@@ -632,12 +659,12 @@ class FlowEngine:
         self.session.status = "error"
         if lied:
             self.session.error = (
-                f"Halted at the {step.role} step: it reported success, but "
-                f"{step.checker} found the work was not actually done."
+                f"Halted at the {step.role} step: it kept reporting success, and "
+                f"{step.checker} kept finding the work was not actually done."
             )
-            hint = ("Open the step to see what was claimed and what was found. "
-                    "A report that cannot be trusted is not worth retrying — "
-                    "check the model and prompt for that agent.")
+            hint = ("Open the step to see what was claimed and what was found. It was "
+                    "sent back with the check's findings and still did not make them "
+                    "true, so look at the model and the prompt for that agent.")
         else:
             self.session.error = (
                 f"Halted at the {step.role} step: it never reported success within "

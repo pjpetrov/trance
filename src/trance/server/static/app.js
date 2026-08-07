@@ -616,9 +616,9 @@ function stepCard(step, index) {
     }
     gatesBox.append(el("div", step.check ? "loop-note check-note" : "loop-note muted",
       step.check
-        ? `${step.check} separately checks that the report is true. It never sends work `
-          + `back — if ${step.role} claims SUCCESS and ${step.check} disagrees, the flow `
-          + "stops."
+        ? `${step.check} separately checks that the report is true. If ${step.role} `
+          + `claims SUCCESS and ${step.check} disagrees, ${step.role} is told what was `
+          + "missing and tries again; the run halts only if it never becomes true."
         : `No fact check — ${step.role}'s report of its own outcome is taken at face value.`));
   };
   drawGates();
@@ -1028,6 +1028,7 @@ function headline(event) {
              (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
     case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
     case "git": return `${p.message || p.action}${p.sha ? ` (${p.sha.slice(0, 8)})` : ""}`;
+    case "check_failed": return p.message || "";
     case "model_switched": return p.message || "";
     case "steering_delivered": return `hint delivered: “${clip(p.note, 70)}”`;
     case "loop_node": return p.message || "";
@@ -1936,7 +1937,7 @@ function renderFlowView() {
     } else {
       if (step.checker) {
         meta.append(el("div", "flow-chain",
-          `↳ fact-checked by ${step.checker} · a false report halts the run`));
+          `↳ fact-checked by ${step.checker} · a false report is sent back, then halts`));
       }
       meta.append(el("div", "flow-chain",
         step.on_fail
@@ -2971,6 +2972,15 @@ function consoleAppend(event) {
       consolePush(consoleEntry({
         kind: "cmd", icon: "↻", time, tag: event.agent, failed: true,
         label: p.message || "the loop is not converging",
+      }));
+      return;
+
+    case "check_failed":
+      consolePush(consoleEntry({
+        kind: "cmd", icon: "↺", time, tag: event.agent, failed: true,
+        label: p.message || "the check disagreed",
+        body: () => el("pre", null, p.detail || ""),
+        open: true,
       }));
       return;
 
