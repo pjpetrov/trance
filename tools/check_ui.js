@@ -118,7 +118,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -223,6 +223,22 @@ try {
   }
   api.state.splitting = null;
 
+  // The run clock: a total that ticks while working and freezes when not.
+  api.trackClock({ run_seconds: 125, working: true });
+  api.renderRun();
+  {
+    const shown = flat(document.getElementById("run-status")).replace(/\s+/g, " ");
+    if (!shown.includes("worked") || !shown.includes("2m 05s")) {
+      console.log("BROKEN: the run clock is missing or wrong:", shown.slice(0, 120));
+      process.exit(1);
+    }
+  }
+  api.trackClock({ run_seconds: 3725, working: false });
+  api.renderRun();
+  if (!flat(document.getElementById("run-status")).includes("1h 02m")) {
+    console.log("BROKEN: the run clock does not carry hours");
+    process.exit(1);
+  }
   api.renderSessionBar(); api.renderChat(); api.renderFlowEditor();
   api.renderFlowView(); api.renderRun(); api.paintPaused();
   api.consoleReset();

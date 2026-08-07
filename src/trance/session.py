@@ -6,6 +6,7 @@ One session == one project == one directory == one live view in the UI.
 from __future__ import annotations
 
 import json
+import time
 import shutil
 import threading
 import uuid
@@ -41,6 +42,11 @@ class Session:
     flow: Flow = field(default_factory=Flow)
     #: Rolling record of what each step produced, fed to later agents.
     history: list[dict] = field(default_factory=list)
+    #: Seconds this flow has actually been working, across every start, pause,
+    #: halt and rerun. A total rather than a stopwatch: a run that stopped
+    #: twice and was restarted did not take a fresh five minutes, it took the
+    #: sum of what it spent, and that is the number worth knowing.
+    run_seconds: float = 0.0
     #: Line comments the user has left but not yet sent as work.
     review: list[dict] = field(default_factory=list)
     #: Reviews already turned into steps, with the commit range that answered
@@ -56,6 +62,8 @@ class Session:
     #: Waits for a stopping engine to exit, then starts a fresh one. A stop only
     #: takes effect when the current model call returns, which can be minutes.
     _handover: object = field(default=None, repr=False)
+    #: When the current working stretch began, or None while not working.
+    _clock_from: float | None = field(default=None, repr=False)
 
     # ---------------------------------------------------------------- state
 
@@ -68,13 +76,40 @@ class Session:
 
     def pause(self) -> None:
         self._pause.set()
+        self.stop_clock()          # paused is not working
 
     def resume(self) -> None:
         self._pause.clear()
+        self.start_clock()
 
     def stop(self) -> None:
         self._stop.set()
         self._pause.clear()
+        self.stop_clock()
+
+    # ---------------------------------------------------------------- clock
+
+    def start_clock(self) -> None:
+        if self._clock_from is None:
+            self._clock_from = time.monotonic()
+
+    def stop_clock(self) -> None:
+        """Bank the current stretch. Monotonic, so a clock change cannot
+        make a run appear to have taken a negative amount of time."""
+        if self._clock_from is not None:
+            self.run_seconds += max(0.0, time.monotonic() - self._clock_from)
+            self._clock_from = None
+
+    @property
+    def working(self) -> bool:
+        return self._clock_from is not None
+
+    @property
+    def elapsed(self) -> float:
+        """Everything banked, plus the stretch in progress."""
+        if self._clock_from is None:
+            return self.run_seconds
+        return self.run_seconds + max(0.0, time.monotonic() - self._clock_from)
 
     def clear_stop(self) -> None:
         """Allow a stopped session to run again.
@@ -105,6 +140,8 @@ class Session:
             "chat": [vars(m) for m in self.chat],
             "team": [r.to_dict() for r in self.team],
             "history": self.history,
+            "run_seconds": round(self.elapsed, 1),
+            "working": self.working,
             "review": self.review,
             "reviews": self.reviews,
             "error": self.error,
@@ -129,6 +166,7 @@ class Session:
             status=data.get("status", "planning"), created_at=data.get("created_at", ""),
             history=data.get("history", []), goal=data.get("goal", ""),
             review=data.get("review", []), reviews=data.get("reviews", []),
+            run_seconds=float(data.get("run_seconds") or 0.0),
         )
         session.chat = [ChatMessage(**m) for m in data.get("chat", [])]
         session.team = [AgentRole.from_dict(r) for r in data.get("team", [])] or default_team()

@@ -115,7 +115,9 @@ class FlowEngine:
         session = self.session
         session.status = "running"
         session._stop.clear()
-        self._emit("run_started", payload={"steps": len(session.flow.steps)})
+        session.start_clock()
+        self._emit("run_started", payload={"steps": len(session.flow.steps),
+                                           "run_seconds": round(session.elapsed, 1)})
         self.on_change()
 
         try:
@@ -161,6 +163,9 @@ class FlowEngine:
             self._emit("error", payload={"message": session.error, "traceback": traceback.format_exc()})
         finally:
             session.status = "finished" if session.status == "running" else session.status
+            # Whatever ended it — finished, stopped, halted, crashed — the flow
+            # is not working any more, so the clock stops.
+            session.stop_clock()
             self.on_change()
 
     # ---------------------------------------------------------------- step

@@ -407,3 +407,90 @@ def test_only_one_handover_is_armed_per_session(tmp_path, monkeypatch):
         assert len(engines) == 2        # the original and exactly one successor
     finally:
         release.set()
+
+
+# --------------------------------------------- how long a flow has worked
+
+def test_the_clock_adds_up_across_stops_and_restarts(tmp_path):
+    """A flow stopped twice and restarted did not take a fresh five minutes —
+    it took the sum of what it spent."""
+    import time
+
+    from trance.session import Session
+
+    session = Session(name="p", project_dir="/tmp/p")
+    assert session.elapsed == 0 and session.working is False
+
+    session.start_clock()
+    time.sleep(0.15)
+    session.stop()                                  # halted
+    banked = session.elapsed
+    assert 0.1 < banked < 0.5 and session.working is False
+
+    time.sleep(0.15)
+    assert session.elapsed == banked                # a stopped clock does not run
+
+    session.start_clock()                           # started again
+    time.sleep(0.15)
+    assert session.elapsed > banked                 # it adds, it does not reset
+
+
+def test_pausing_stops_the_clock(tmp_path):
+    import time
+
+    from trance.session import Session
+
+    session = Session(name="p", project_dir="/tmp/p")
+    session.start_clock()
+    time.sleep(0.1)
+    session.pause()
+    paused_at = session.elapsed
+
+    time.sleep(0.15)
+    assert session.elapsed == paused_at
+    session.resume()
+    time.sleep(0.1)
+    assert session.elapsed > paused_at
+
+
+def test_the_total_survives_a_restart(tmp_path):
+    import time
+
+    from trance.session import SessionStore
+
+    store = SessionStore(tmp_path)
+    session = store.create("p", "/tmp/p")
+    session.start_clock()
+    time.sleep(0.15)
+    session.stop_clock()
+    store.save(session)
+
+    again = SessionStore(tmp_path).get(session.id)
+    assert again.run_seconds >= 0.1
+    assert again.working is False                   # a reloaded session is not running
+
+
+def test_the_engine_runs_the_clock(tmp_path, monkeypatch):
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Step
+    from trance.session import Session
+
+    session = Session(name="p", project_dir=str(tmp_path))
+    session.flow.steps = [Step(role="backend", task="t")]
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+
+    class Turn:
+        text, files_written, remit_violations = "OUTCOME: SUCCESS", [], []
+        usage, transcript, context = {}, [], {}
+        tool_calls = rounds = 1
+        model_event_ids, stop_reason = ["ev"], "stop"
+        outcome, reported_outcome, verdict = ("SUCCESS", ""), True, None
+        salvaged_calls = truncated_calls = notes_written = 0
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: Turn())
+    engine._run()
+
+    assert session.elapsed > 0
+    assert session.working is False                 # the clock stopped with the run

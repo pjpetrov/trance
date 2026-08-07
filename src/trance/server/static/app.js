@@ -205,6 +205,7 @@ $("create-session").onclick = async () => {
 
 async function openSession(id) {
   state.session = await api(`/api/sessions/${id}`);
+  trackClock(state.session);
   // A question asked before this page existed is still blocking an agent.
   api(`/api/sessions/${id}/approvals`).then((data) => {
     (data.pending || []).forEach((request) => consolePush(approvalEntry({
@@ -695,6 +696,7 @@ function renderRun() {
   status.append(el("b", null, session.name), el("span", "badge", session.status));
   status.append(el("span", "muted small",
     `${progress.done || 0} done · ${progress.pending || 0} pending · ${progress.failed || 0} failed`));
+  status.append(runClock());
   if (session.error) status.append(el("span", "badge", session.error));
 
   renderFlowView();
@@ -779,6 +781,56 @@ function approvalEntry(event) {
       + "this is refused, which is what would have happened anyway."));
   }
   return wrap;
+}
+
+/* ───────────────────────── how long it has run ─────────────────────── */
+
+/* A total, not a stopwatch. A flow that was stopped twice and restarted did not
+ * take a fresh five minutes — it took the sum of what it spent, and that is the
+ * number worth knowing. The server banks each stretch; the browser only ticks
+ * the one in progress. */
+
+const clock = { base: 0, since: 0, working: false };
+let clockTimer = null;
+
+function trackClock(session) {
+  clock.base = Number(session.run_seconds) || 0;
+  clock.working = !!session.working;
+  clock.since = Date.now();
+  paintClock();
+  if (clock.working && !clockTimer) clockTimer = setInterval(paintClock, 1000);
+  if (!clock.working && clockTimer) {
+    clearInterval(clockTimer);
+    clockTimer = null;
+  }
+}
+
+function clockSeconds() {
+  return clock.base + (clock.working ? (Date.now() - clock.since) / 1000 : 0);
+}
+
+function runClock() {
+  const node = el("span", "run-clock");
+  node.id = "run-clock";
+  node.title = "Total time this flow has been working, across every start, "
+               + "pause and restart. It stops when the flow does.";
+  paintClock(node);
+  return node;
+}
+
+function paintClock(node) {
+  const box = node || document.getElementById("run-clock");
+  if (!box) return;
+  const total = Math.round(clockSeconds());
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const text = h ? `${h}h ${String(m).padStart(2, "0")}m`
+    : m ? `${m}m ${String(seconds).padStart(2, "0")}s`
+    : `${seconds}s`;
+  box.innerHTML = "";
+  box.classList.toggle("ticking", clock.working);
+  box.append(el("span", "muted small", "worked"), el("b", null, text));
 }
 
 /* ───────────────── the team's shared memory ───────────────────────── */
@@ -953,6 +1005,7 @@ function connect(sessionId) {
     const event = JSON.parse(msg.data);
     if (event.type === "snapshot") {
       state.session = event.payload;
+      trackClock(state.session);
       paintPaused();
       if (!["running", "paused"].includes(state.session.status)) clearActivity();
       renderRun();

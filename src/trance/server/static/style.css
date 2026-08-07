@@ -718,3 +718,14 @@ input.tiny { width: 68px; }
   padding: 5px 9px; border-radius: 6px; background: var(--panel-2);
 }
 .tries-total b { color: var(--fg); font-variant-numeric: tabular-nums; }
+
+
+/* ── run clock ─────────────────────────────────────────────────────────
+   A total, so it does not reset when a flow is restarted. */
+.run-clock {
+  display: inline-flex; gap: 6px; align-items: baseline;
+  padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.run-clock.ticking { border-color: var(--accent); }
+.run-clock.ticking b { color: var(--accent); }
