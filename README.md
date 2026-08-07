@@ -244,7 +244,13 @@ Import-able, documented in their docstrings, and honest about it — they raise
   instead of name matching, for cross-file resolution the parser cannot do.
 - **Frontend ↔ backend linker** (`linker/`) — connecting `fetch` calls to the
   route handlers that serve them.
-- **Call-graph visualization** in the UI (`ui/README.md`).
+- **Call-graph visualization.** Every trace already carries what it needs:
+  `graph_slice.nodes/edges` is the subset the curator walked, and each edge has
+  a `resolution` (`same_file`, `ambiguous`, `unresolved`). Drawing the whole
+  repo graph dimmed with that slice lit up — edges coloured by resolution, so
+  the gaps in static analysis are visible — is the clearest statement of what
+  this project is for. A curated slice is 10–50 nodes, so it needs no heavy
+  graph library.
 
 One known sharp edge: remit globs use `fnmatch`, whose `*` crosses `/`, so
 `*.js` matches `server/app.js` as well as `app.js`. Narrow globs are unaffected.
