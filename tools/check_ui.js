@@ -1159,6 +1159,35 @@ try {
     }
   }
 
+  // History goes in before the socket is connected. In parallel, the fetched
+  // entries land on top of whatever the socket already delivered and the next
+  // live event clears them — content appearing and then vanishing.
+  {
+    const order = [];
+    const realConnect = global.WebSocket;
+    global.WebSocket = function (url) {
+      order.push("socket");
+      return { close() {}, set onmessage(_) {}, set onclose(_) {} };
+    };
+    RESPONSES["/api/sessions/s1/events?tail=true"] = { total: 1, shown: 1, events: [
+      { id: "t1", type: "tool_call", step_id: "st1", agent: "backend",
+        ts: "2026-08-07T19:00:00+00:00",
+        payload: { name: "read_file", arguments: { path: "history.js" }, ok: true } }] };
+    const realFetch = global.fetch;
+    global.fetch = async (path, init) => {
+      if (String(path).includes("events?tail=true")) order.push("history");
+      return realFetch(path, init);
+    };
+    await api.openSession("s1");
+    global.fetch = realFetch;
+    global.WebSocket = realConnect;
+    if (order.indexOf("history") === -1 || order.indexOf("socket") === -1
+        || order.indexOf("history") > order.indexOf("socket")) {
+      console.log("BROKEN: the socket was connected before the history landed:", order);
+      process.exit(1);
+    }
+  }
+
   // The console asks for its own tail rather than being sent one, and is told
   // how much it is not seeing.
   {
@@ -1221,6 +1250,70 @@ try {
     if (!shown.includes("read_file")) {
       console.log("BROKEN: a step's history was not fetched when missing:",
                   shown.slice(0, 160));
+      process.exit(1);
+    }
+  }
+
+  // What is on screen never gets replaced by less of it. A slow or failing
+  // fetch must not blank a panel that already had content.
+  {
+    api.state.events = [
+      { id: "k1", type: "step_started", step_id: "st7", agent: "backend",
+        ts: "2026-08-07T19:00:00+00:00", payload: { task: "t", attempt: 1 } },
+      { id: "k2", type: "tool_call", step_id: "st7", agent: "backend",
+        ts: "2026-08-07T19:00:01+00:00",
+        payload: { name: "edit_file", arguments: { path: "keep.js" }, ok: true } },
+    ];
+    RESPONSES["/api/sessions/s1/events?step=st7"] = [];      // the fetch finds nothing
+    const step7 = { id: "st7", role: "backend", task: "t", status: "done", check: null,
+                    on_fail: null, max_loops: 2, attempts: [{ n: 1, outcome: "SUCCESS" }] };
+    api.openStep(step7, 0);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    const after = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
+    if (!after.includes("keep.js")) {
+      console.log("BROKEN: an empty answer wiped history that was already shown:",
+                  after.slice(0, 160));
+      process.exit(1);
+    }
+    if (after.includes("Nothing recorded")) {
+      console.log("BROKEN: said nothing was recorded while showing something");
+      process.exit(1);
+    }
+    if (after.includes("Loading this step")) {
+      console.log("BROKEN: still says it is loading after the fetch returned");
+      process.exit(1);
+    }
+  }
+
+  // Clicking one step and then another: the first answer must not land in the
+  // second's panel. Both requests are in flight at once.
+  {
+    api.state.events = [];
+    RESPONSES["/api/sessions/s1/events?step=stA"] = [
+      { id: "a1", type: "step_started", step_id: "stA", agent: "backend",
+        ts: "2026-08-07T19:00:00+00:00", payload: { task: "t", attempt: 1 } },
+      { id: "a2", type: "tool_call", step_id: "stA", agent: "backend",
+        ts: "2026-08-07T19:00:01+00:00",
+        payload: { name: "read_file", arguments: { path: "FIRST.js" }, ok: true } },
+    ];
+    RESPONSES["/api/sessions/s1/events?step=stB"] = [
+      { id: "b1", type: "step_started", step_id: "stB", agent: "frontend",
+        ts: "2026-08-07T19:00:02+00:00", payload: { task: "t", attempt: 1 } },
+      { id: "b2", type: "tool_call", step_id: "stB", agent: "frontend",
+        ts: "2026-08-07T19:00:03+00:00",
+        payload: { name: "read_file", arguments: { path: "SECOND.js" }, ok: true } },
+    ];
+    const mk = (id, role) => ({ id, role, task: "t", status: "done", check: null,
+                                on_fail: null, max_loops: 2,
+                                attempts: [{ n: 1, outcome: "SUCCESS" }] });
+    api.openStep(mk("stA", "backend"), 0);       // not awaited: still in flight
+    api.openStep(mk("stB", "frontend"), 1);
+    for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+    const panel = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
+    if (!panel.includes("SECOND.js") || panel.includes("FIRST.js")) {
+      console.log("BROKEN: a slow answer landed in another step's panel:",
+                  panel.slice(0, 180));
       process.exit(1);
     }
   }

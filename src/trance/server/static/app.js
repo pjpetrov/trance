@@ -217,7 +217,11 @@ async function openSession(id) {
   consoleStep = null;
   consoleReset();
   resetFiles();
-  loadConsoleTail(id);
+  // Before the socket, not alongside it. Fired off in parallel, the history
+  // lands *after* whatever the socket has already delivered — old entries
+  // appended below new ones, the console's scope set back to an older step,
+  // and the next live event clearing the lot. History first, then live.
+  await loadConsoleTail(id);
   connect(id);
   renderSessionBar();
   renderChat();
@@ -2459,11 +2463,29 @@ function openStep(step, index) {
  * thousands of events, so a page that loaded after one of those showed a step
  * with no history at all. Its events were on the server the whole time. */
 async function paintStepHistory(box, step) {
-  // Always ask. The first version compared how many events the console happened
-  // to hold against how many attempts the step had — which are different things
-  // measured in different units, so a step with five attempts and six stray
-  // events in the console tail decided it had everything and rendered the six.
-  // One request, filtered on the server, beats guessing about it.
+  // Two rules, because a detail panel that flickers is worse than one that is
+  // slow. Never show less than is already up, and never let a slow answer
+  // overwrite a newer one — clicking two steps quickly used to leave whichever
+  // request happened to land last.
+  const mine = ++openedStep;
+  let shown = -1;
+
+  const paint = (events, waiting) => {
+    if (mine !== openedStep) return;             // a different step is open now
+    if (events.length < shown) return;           // never go backwards
+    shown = events.length;
+    box.innerHTML = "";
+    const blocks = groupStepEvents(events, step);
+    blocks.forEach((block, i) => box.append(
+      blockSection(block, i === blocks.length - 1 && step.status === "running")));
+    if (waiting) box.append(el("p", "muted small", waiting));
+    else if (!blocks.length) {
+      box.append(el("p", "muted small",
+        "Nothing recorded for this step. It may have been skipped, or it ran "
+        + "before this session kept a trace."));
+    }
+  };
+
   const held = state.events.filter((e) => e.step_id === step.id);
   paint(held, "Loading this step's history…");
 
@@ -2472,23 +2494,12 @@ async function paintStepHistory(box, step) {
     fetched = await api(
       `/api/sessions/${state.session.id}/events?step=${encodeURIComponent(step.id)}`);
   } catch (_) { /* keep whatever the console had */ }
-  if (fetched.length > held.length) paint(fetched, "");
-  else if (!held.length) paint(held, "");
-
-  function paint(events, waiting) {
-    box.innerHTML = "";
-    const blocks = groupStepEvents(events, step);
-    blocks.forEach((block, i) => box.append(
-      blockSection(block, i === blocks.length - 1 && step.status === "running")));
-    if (waiting) {
-      box.append(el("p", "muted small", waiting));
-    } else if (!blocks.length) {
-      box.append(el("p", "muted small",
-        "Nothing recorded for this step. It may have been skipped, or it ran "
-        + "before this session kept a trace."));
-    }
-  }
+  paint(Array.isArray(fetched) && fetched.length >= held.length ? fetched : held, "");
 }
+
+//: Bumped each time a step is opened, so an answer for the previous one is
+//: dropped instead of painted over the current.
+let openedStep = 0;
 
 /* Split a step's events into the blocks that produced them. Each block starts
  * where the engine says one starts — a step attempt, a loop node, a fixer, an
