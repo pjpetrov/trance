@@ -119,3 +119,40 @@ def test_a_lookup_that_throws_is_reported_to_the_model(tmp_path, monkeypatch):
     result = server.call("get_definition", {"symbol": "total"})
     assert result["isError"] is True
     assert "db is gone" in result["content"][0]["text"]
+
+
+def test_every_lookup_is_written_down(tmp_path):
+    """A delegated step is opaque for minutes — the tool calls happen inside
+    Claude Code's process. These come back through trance, so they are worth
+    keeping rather than losing."""
+    import json as _json
+
+    project = indexed_project(tmp_path)
+    drive(project, [
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": "get_definition", "arguments": {"symbol": "total"}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "get_definition", "arguments": {"symbol": "nope"}}},
+    ])
+
+    from trance.mcp_server import CALL_LOG
+
+    lines = (project / ".trance" / CALL_LOG).read_text().splitlines()
+    rows = [_json.loads(line) for line in lines]
+    assert [r["name"] for r in rows] == ["get_definition", "get_definition"]
+    assert rows[0]["hit"] is True and rows[0]["chars"] > 0
+    assert rows[1]["hit"] is False                 # a miss is worth showing too
+    assert rows[0]["arguments"] == {"symbol": "total"}
+
+
+def test_a_log_that_cannot_be_written_is_not_fatal(tmp_path, monkeypatch):
+    """An answer that failed to be written down is still an answer."""
+    from trance.mcp_server import GraphServer
+
+    project = indexed_project(tmp_path)
+    server = GraphServer(project, log=tmp_path / "nope" / "deeper" / "log.jsonl")
+    monkeypatch.setattr("pathlib.Path.mkdir",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only")))
+
+    result = server.call("get_definition", {"symbol": "total"})
+    assert result["isError"] is False and "reduce" in result["content"][0]["text"]

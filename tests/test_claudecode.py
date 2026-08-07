@@ -572,3 +572,52 @@ def test_stop_kills_a_delegated_step(tmp_path, monkeypatch):
 
     assert killed.is_set(), "stopping did not kill the process"
     assert "stopped" in outcome, outcome
+
+
+def test_a_delegated_steps_graph_lookups_are_reported(tmp_path, monkeypatch):
+    """"How do I know it is working?" — for minutes, you could not. What it
+    asked the graph comes back through trance, so it is shown."""
+    import json as _json
+
+    from trance import vcs
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.db import GraphDB
+    from trance.events import Event, EventBus
+    from trance.indexer.service import default_db_path, index_repo
+    from trance.mcp_server import CALL_LOG
+
+    project = tmp_path / "shop"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "cart.js").write_text("export function total(i){ return 1; }\n")
+    index_repo(project, GraphDB(default_db_path(project)))
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+
+    # One lookup from an earlier step: it must not be reported again.
+    log = project / ".trance" / CALL_LOG
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(_json.dumps({"name": "search_symbols", "arguments": {"pattern": "old"},
+                                "hit": True, "chars": 10}) + "\n")
+
+    def lookups():
+        with log.open("a", encoding="utf8") as handle:
+            handle.write(_json.dumps({"name": "get_callers",
+                                      "arguments": {"symbol": "total"},
+                                      "hit": True, "chars": 200}) + "\n")
+
+    delegate = fake_delegate(monkeypatch, "OUTCOME: SUCCESS", side_effect=lookups)
+    seen: list[Event] = []
+    bus = EventBus()
+    bus.subscribe_sync(seen.append)
+
+    delegate.run_delegated(role=BUILTIN_ROLES["frontend"], task="t", project=project,
+                           config=ModelConfig(kind="claudecode"), bus=bus,
+                           session_id="s", step_id="st")
+
+    graph_calls = [e for e in seen if e.type == "tool_call"
+                   and (e.payload.get("detail") or {}).get("via") == "mcp"]
+    assert len(graph_calls) == 1, "only this step's lookups belong to this step"
+    assert graph_calls[0].payload["name"] == "get_callers"
+    assert graph_calls[0].payload["arguments"] == {"symbol": "total"}
+    assert graph_calls[0].payload["ok"] is True

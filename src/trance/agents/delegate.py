@@ -121,6 +121,8 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
     before = vcs.head(project)
 
     indexed = _indexed(project)
+    # Wound forward before the run, so only this step's lookups are reported.
+    seen_before = len(_lookups_logged(project))
     prompt = _prompt(role=role, task=task, goal=goal, placement=placement,
                      memory=memory, steering=steering or [], indexed=indexed)
     allowed = TOOLS + (GRAPH_TOOLS if indexed else [])
@@ -179,6 +181,17 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
 
     text = body.get("result") or ""
     usage = _usage(body.get("usage") or {})
+
+    # What it asked the graph. The rest of a delegated step is opaque by
+    # construction — the tool calls happen inside Claude Code — but these come
+    # back through trance, so they are worth showing rather than losing.
+    for lookup in _lookups_logged(project)[seen_before:]:
+        bus.emit("tool_call", session_id, agent=role.name, step_id=step_id, payload={
+            "name": lookup.get("name") or "graph", "arguments": lookup.get("arguments") or {},
+            "ok": bool(lookup.get("hit")), "result_tokens": (lookup.get("chars") or 0) // 4,
+            "result": ("answered" if lookup.get("hit") else "no match"),
+            "detail": {"kind": "graph", "via": "mcp"},
+        })
     touched = _touched(project, before)
     outside = [p for p in touched if not _may_write(role, p)]
 
@@ -208,6 +221,24 @@ def _binary() -> str:
     if not found:
         raise BackendError("the `claude` CLI is not on trance's PATH")
     return found
+
+
+def _lookups_logged(project: Path) -> list[dict]:
+    """Every graph lookup the MCP server has written down for this project."""
+    from ..mcp_server import CALL_LOG
+
+    path = Path(project) / ".trance" / CALL_LOG
+    try:
+        lines = path.read_text(encoding="utf8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
 
 
 def _indexed(project: Path) -> bool:

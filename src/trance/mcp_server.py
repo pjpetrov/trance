@@ -82,15 +82,33 @@ TOOLS = [
 ]
 
 
+#: Where each lookup is recorded, so the agent that delegated the step can show
+#: what was asked. A delegated run is otherwise a black box for minutes: the
+#: tool calls happen inside Claude Code's process and trance sees none of them.
+CALL_LOG = "mcp-calls.jsonl"
+
+
 class GraphServer:
     """The four lookups, over MCP."""
 
-    def __init__(self, project: Path):
+    def __init__(self, project: Path, log: Path | None = None):
         self.project = Path(project).resolve()
         self.tools: ContextTools | None = None
+        self.log = Path(log) if log is not None else self.project / ".trance" / CALL_LOG
         db_path = default_db_path(self.project)
         if db_path.exists():
             self.tools = ContextTools(GraphDB(db_path), self.project)
+
+    def _record(self, name: str, arguments: dict, hit: bool, chars: int) -> None:
+        """Append one line per lookup. Never fatal: a lookup that answered and
+        then failed to be written down is still an answer."""
+        try:
+            self.log.parent.mkdir(parents=True, exist_ok=True)
+            with self.log.open("a", encoding="utf8") as handle:
+                handle.write(json.dumps({"name": name, "arguments": arguments,
+                                         "hit": hit, "chars": chars}) + "\n")
+        except OSError:
+            pass
 
     # ------------------------------------------------------------ dispatch
 
@@ -137,8 +155,10 @@ class GraphServer:
             else:
                 return _content(f"no such tool: {name}", is_error=True)
         except Exception as exc:            # noqa: BLE001 — never kill the server
+            self._record(name, arguments, False, 0)
             return _content(f"the lookup failed: {type(exc).__name__}: {exc}",
                             is_error=True)
+        self._record(name, arguments, found.hit, len(found.text or ""))
         return _content(found.text, is_error=not found.hit)
 
 

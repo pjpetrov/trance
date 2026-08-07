@@ -116,7 +116,9 @@ Two things that trade away, stated rather than hidden:
   what it likes after that and carries tens of thousands of tokens of its own
   preamble and tools. The graph is the exception: it is handed over as an MCP
   server, so the delegated agent can ask `get_definition` and `get_callers`
-  instead of grepping — which is the one habit worth keeping.
+  instead of grepping — which is the one habit worth keeping. Those lookups come
+  back through trance and appear in the console, so a step that is otherwise
+  opaque for minutes still shows what it asked the index.
 
 Whether using it this way fits your Claude Code subscription is a licensing
 question, not a technical one.
