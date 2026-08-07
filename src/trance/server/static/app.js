@@ -1404,49 +1404,19 @@ async function openSettings() {
   // Deleting it took the models list and the orchestrator picker with it.
   await renderPresets();
   renderOrchestratorSettings();
-  renderStepSize();
+  renderGitSettings();
 }
 
-function renderStepSize() {
-  const select = $("max-step-points");
-  const planning = state.planning || { max_step_points: 0, scale: [1, 2, 3, 5, 8, 13] };
-  select.innerHTML = "";
-  const off = el("option", null, "never split");
-  off.value = "0";
-  select.append(off);
-  for (const p of planning.scale) {
-    const opt = el("option", null, `${p} points${POINT_LABEL[p] ? ` — ${POINT_LABEL[p]}` : ""}`);
-    opt.value = String(p);
-    select.append(opt);
-  }
-  select.value = String(planning.max_step_points || 0);
-
-  const model = $("escalation-preset");
-  model.innerHTML = "";
-  const noEscalation = el("option", null, "none — halt instead");
-  noEscalation.value = "";
-  model.append(noEscalation);
-  state.presets.forEach((m) => {
-    const opt = el("option", null, `${m.name} — ${m.model}`);
-    opt.value = m.name;
-    model.append(opt);
-  });
-  model.value = planning.escalation_preset || "";
-
-  const who = $("escalation-role");
-  who.innerHTML = "";
-  const same = el("option", null, "the step's own agent");
-  same.value = "";
-  who.append(same);
-  Object.values(state.roles).filter((r) => r.name !== "orchestrator").forEach((r) => {
-    const opt = el("option", null, r.name);
-    opt.value = r.name;
-    who.append(opt);
-  });
-  who.value = planning.escalation_role || "";
-
+/* Settings that are still settings. Step size and escalation went with the
+ * automatic splitting: both read like instructions for behaviour that no longer
+ * happens on its own. The values behind them survive — max_step_points is what
+ * marks a step "large" and what the split button argues against — they are just
+ * not presented as knobs on a screen that would then be describing a machine
+ * that is not running. */
+function renderGitSettings() {
   const git = $("git-commits");
   const autoInit = $("git-auto-init");
+  const planning = state.planning || {};
   git.checked = planning.git_commits !== false;
   autoInit.checked = planning.git_auto_init !== false;
   const saveGit = async () => {
@@ -1460,28 +1430,6 @@ function renderStepSize() {
   };
   git.onchange = saveGit;
   autoInit.onchange = saveGit;
-
-  const saveEscalation = async () => {
-    const body = await api("/api/config/planning", {
-      method: "PUT",
-      body: { escalation_preset: model.value, escalation_role: who.value },
-    });
-    state.planning = { ...state.planning, ...body };
-    toast(body.escalation_preset
-      ? `Exhausted steps get one more try on ${body.escalation_preset}.`
-      : "Exhausted steps will halt the run, as before.");
-  };
-  model.onchange = saveEscalation;
-  who.onchange = saveEscalation;
-  select.onchange = async () => {
-    const body = await api("/api/config/planning",
-                           { method: "PUT", body: { max_step_points: Number(select.value) } });
-    state.planning = { ...state.planning, ...body };
-    toast(body.max_step_points
-      ? `Steps above ${body.max_step_points} points will be split.`
-      : "Steps will be estimated but never split.");
-    if (state.draftSteps) redrawEditor();
-  };
 }
 
 async function renderPresets() {

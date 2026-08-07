@@ -236,7 +236,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,paintPresets,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,renderAgents,paintAgents,loadMemory,paintMemoryCount,renderGitSettings,openSettings,renderPresets,paintPresets,renderCommands,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -544,7 +544,7 @@ try {
       process.exit(1);
     }
   }
-  api.renderStepSize();
+  api.renderGitSettings();
   // The loops editor: an existing loop, and an empty one being created.
   // A replayed event must not touch the flow the snapshot just established.
   api.state.session.flow = { steps: [{ id: "keep", role: "backend", task: "t",
