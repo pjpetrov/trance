@@ -837,3 +837,18 @@ input.tiny { width: 68px; }
 .commit-stat { margin: 0; padding: 6px 10px; font-size: 11px; color: var(--muted, #8b93a7);
                white-space: pre-wrap; }
 .commit-body { border-top: 1px solid var(--line, #2a2f3a); }
+
+/* Review history: one fold per review, the newest already open. */
+.review-section { border-bottom: 1px solid var(--line, #2a2f3a); }
+.review-section > summary {
+  display: flex; gap: 10px; align-items: baseline; cursor: pointer;
+  padding: 10px 12px; list-style: none;
+}
+.review-section > summary::-webkit-details-marker { display: none; }
+.review-section > summary::before {
+  content: "\25B8"; color: var(--muted, #8b93a7); transition: transform .12s;
+}
+.review-section[open] > summary::before { transform: rotate(90deg); }
+.review-section > summary:hover { background: rgba(255, 255, 255, .03); }
+.review-when { font-variant-numeric: tabular-nums; font-size: 12px; }
+.review-body { padding-bottom: 10px; }

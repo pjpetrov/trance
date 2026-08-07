@@ -4366,44 +4366,68 @@ $("review-finish").onclick = async () => {
     : `Sent ${result.notes.length} comment(s) as a step. Press Run to start it.`);
 };
 
-$("review-changes").onclick = () => showReviewChanges();
+$("review-changes").onclick = () => showReviewHistory();
 
-async function showReviewChanges() {
-  const body = await api(`/api/sessions/${state.session.id}/review/changes`);
+/* Every review you have sent, newest first. The latest is open because it is
+ * the one you are waiting on; the rest are folded, because history is worth
+ * having and not worth scrolling past. */
+async function showReviewHistory() {
+  const body = await api(`/api/sessions/${state.session.id}/reviews`);
   const box = $("file-view");
   fileEditing(false);
   box.innerHTML = "";
-  $("file-name").textContent = "What was done about your review";
+  $("file-name").textContent = "Review history";
 
-  if (!body.review) {
+  const reviews = body.reviews || [];
+  $("file-meta").textContent = reviews.length
+    ? `${reviews.length} review(s) sent` : "";
+  if (!reviews.length) {
     box.append(el("p", "muted small", "No review has been sent yet."));
     return;
   }
-  $("file-meta").textContent = `${body.status} · ${body.files.length} file(s) changed`;
-  if (!body.diff) {
-    box.append(el("p", "muted small",
-      body.status === "done" ? "The step finished without changing any files."
-        : "The step has not finished yet — this fills in when it does."));
-  }
-  body.notes.forEach((note) => {
+  reviews.forEach((review, index) => box.append(reviewSection(review, index === 0)));
+}
+
+function reviewSection(review, open) {
+  const section = el("details", "review-section");
+  section.open = open;
+
+  const summary = el("summary");
+  summary.append(el("span", `badge ${review.status}`, review.status));
+  summary.append(el("span", "review-when", when(review.at)));
+  summary.append(el("span", "muted small",
+    `${review.notes.length} comment(s) · ${(review.commits || []).length} commit(s)`
+    + ` · ${review.files.length} file(s)`));
+  section.append(summary);
+
+  const inner = el("div", "review-body");
+  review.notes.forEach((note) => {
     const row = el("div", "code-note");
     row.append(el("span", "badge", note.path ? `${note.path}:${note.line}` : "overall"),
                el("span", null, note.note));
-    box.append(row);
+    inner.append(row);
   });
 
-  // The commits, in the order they were made. A run is one commit per step, so
-  // this is what each agent did — and "everything since you commented" as one
-  // diff hides which agent did what, and in what order.
-  const commits = body.commits || [];
+  const commits = review.commits || [];
   if (commits.length) {
-    box.append(el("h3", "changes-head", `${commits.length} commit(s)`));
-    commits.forEach((commit) => box.append(commitRow(commit)));
+    commits.forEach((commit) => inner.append(commitRow(commit)));
+  } else {
+    inner.append(el("p", "muted small",
+      review.status === "done" || review.status === "failed"
+        ? "That step finished without changing any files."
+        : "Nothing yet — this fills in as the step runs."));
   }
-  if (body.diff) {
-    box.append(el("h3", "changes-head", "Everything together"));
-    box.append(renderDiff(body.diff));
-  }
+  section.append(inner);
+  return section;
+}
+
+//: "2026-08-07T13:09:53+00:00" -> something you can read at a glance.
+function when(stamp) {
+  if (!stamp) return "";
+  const at = new Date(stamp);
+  if (isNaN(at)) return "";
+  const today = new Date().toDateString() === at.toDateString();
+  return today ? at.toLocaleTimeString() : at.toLocaleString();
 }
 
 /* One commit, folded. Opening it fetches its patch — a run can be dozens of

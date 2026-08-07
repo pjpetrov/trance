@@ -6563,3 +6563,45 @@ def test_an_index_already_committed_is_untracked_not_deleted(tmp_path):
     assert dropped == [".trance/graph.db"]
     assert ".trance/graph.db" not in vcs._run(project, "ls-files")[1]
     assert (project / ".trance" / "graph.db").exists()  # still on disk, still usable
+
+
+def test_the_review_history_is_every_review_newest_first(tmp_path):
+    """One review is a moment; the history is what you actually want when you
+    are deciding whether the last round of comments landed."""
+    from fastapi.testclient import TestClient
+
+    from trance import vcs
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "a.js").write_text("const PORT = 3000;\n")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    assert client.get(f"/api/sessions/{sid}/reviews").json()["reviews"] == []
+
+    client.post(f"/api/sessions/{sid}/review", json={"path": "a.js", "line": 1,
+                                                     "note": "read the port from env"})
+    client.post(f"/api/sessions/{sid}/review/finish", json={})
+    (project / "a.js").write_text("const PORT = process.env.PORT;\n")
+    vcs.commit_all(project, "backend: did that")
+
+    client.post(f"/api/sessions/{sid}/review", json={"note": "unusable on a phone"})
+    client.post(f"/api/sessions/{sid}/review/finish", json={})
+
+    history = client.get(f"/api/sessions/{sid}/reviews").json()["reviews"]
+    assert len(history) == 2
+    # Newest first: it is the one you are waiting on.
+    assert history[0]["notes"][0]["note"] == "unusable on a phone"
+    assert history[1]["notes"][0]["note"] == "read the port from env"
+    assert history[0]["at"] >= history[1]["at"]
+
+    # The older one carries the commit that answered it.
+    assert any("did that" in c["subject"] for c in history[1]["commits"])

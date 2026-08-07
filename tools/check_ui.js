@@ -127,6 +127,18 @@ const RESPONSES = {
   "/api/sessions/s1/file?path=server%2Fapp.js": {
     path: "server/app.js", content: "const PORT = 3000;\napp.listen(PORT);\n",
     bytes: 40, lines: 2 },
+  "/api/sessions/s1/reviews": { reviews: [
+    { review: "rev_2", status: "running", at: "2026-08-07T13:09:53+00:00",
+      before: "bbb", after: "ccc", files: ["app.js"],
+      notes: [{ path: "", line: 0, note: "the controls are unusable on a phone" }],
+      commits: [{ sha: "cccc2222dddd", short: "cccc2222", subject: "tester: cover the new default",
+                  when: "1 minute ago", who: "trance", files: 2, added: 30, removed: 0 }] },
+    { review: "rev_1", status: "done", at: "2026-08-07T11:02:00+00:00",
+      before: "aaa", after: "bbb", files: ["server/app.js"],
+      notes: [{ path: "server/app.js", line: 1, note: "use env" }],
+      commits: [{ sha: "aaaa1111bbbb", short: "aaaa1111", subject: "backend: read the port from env",
+                  when: "2 hours ago", who: "trance", files: 1, added: 3, removed: 1 }] },
+  ] },
   "/api/sessions/s1/review/changes": {
     review: "rev_1", status: "done", before: "aaa", after: "bbb",
     files: ["server/app.js"], notes: [{ path: "server/app.js", line: 1, note: "use env" }],
@@ -137,6 +149,10 @@ const RESPONSES = {
       { sha: "cccc2222dddd", short: "cccc2222", subject: "tester: cover the new default",
         when: "1 minute ago", who: "trance", files: 2, added: 30, removed: 0 },
     ] },
+  "/api/sessions/s1/commit/cccc2222dddd": {
+    sha: "cccc2222dddd", short: "cccc2222", subject: "tester: cover the new default",
+    when: "1 minute ago", who: "trance", stat: " app.test.js | 30 ++++", clipped: false,
+    diff: "--- /dev/null\n+++ b/app.test.js\n+test('default port', () => {});" },
   "/api/sessions/s1/commit/aaaa1111bbbb": {
     sha: "aaaa1111bbbb", short: "aaaa1111", subject: "backend: read the port from env",
     when: "2 minutes ago", who: "trance", stat: " server/app.js | 4 +++-",
@@ -181,7 +197,7 @@ global.fetch = async (path, init = {}) => {
 };
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewChanges,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,refreshPlan,saveFlowNow,queueFlowSave,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,showReviewHistory,renderPreviewStatus,warnAboutBuild,startShare,resetFiles,closeFile,renderGeneralComment,filePath:()=>fileState.path};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -487,11 +503,20 @@ try {
     process.exit(1);
   }
 
-  // "What was fixed" lists the commits the agents made, each opening onto its
-  // own patch — one combined diff hides which agent did what, and when.
+  // Review history: every review sent, newest first, the latest already open
+  // and the rest folded. Each commit opens onto its own patch.
   {
-    await api.showReviewChanges();
+    await api.showReviewHistory();
     const shown = flat(document.getElementById("file-view")).replace(/\s+/g, " ");
+    const sections = document.getElementById("file-view").querySelectorAll(".review-section");
+    if (sections.length !== 2) {
+      console.log("BROKEN: expected a section per review, got", sections.length);
+      process.exit(1);
+    }
+    if (!sections[0].open || sections[1].open) {
+      console.log("BROKEN: the newest review should be open and the older ones folded");
+      process.exit(1);
+    }
     for (const want of ["aaaa1111", "read the port from env", "cccc2222", "+30"]) {
       if (!shown.includes(want)) {
         console.log("BROKEN: the commit list is missing", want, ":", shown.slice(0, 200));
@@ -508,7 +533,7 @@ try {
     await rows[0].fire("toggle", {});
     await new Promise((r) => setTimeout(r, 0));
     const opened = flat(rows[0]).replace(/\s+/g, " ");
-    if (!opened.includes("process.env.PORT")) {
+    if (!opened.includes("default port")) {
       console.log("BROKEN: opening a commit did not show its diff:", opened.slice(0, 160));
       process.exit(1);
     }

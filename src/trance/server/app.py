@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from uuid import uuid4
 from pathlib import Path
 
@@ -956,6 +957,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "notes": list(session.review),
             "before": vcs.head(_project_of(session)),
             "after": "", "files": [],
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         session.reviews.append(record)
         session.review = []
@@ -1002,6 +1004,35 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             # order — more use than one combined diff when several ran.
             "commits": vcs.commits_between(root, record["before"], after) if after else [],
         }
+
+    @app.get("/api/sessions/{session_id}/reviews")
+    def review_history(session_id: str):
+        """Every review sent for this session, newest first.
+
+        Summaries only — what was asked for, whether it has run, and the commits
+        it produced. The patches come one at a time, when a commit is opened.
+        """
+        session = _need(store, session_id)
+        root = _project_of(session)
+
+        out = []
+        for record in reversed(session.reviews):
+            step = session.flow.find(record["step_id"])
+            done = step is not None and step.status in Flow.TERMINAL
+            after = record["after"] or (vcs.head(root) if done else "")
+            if done and not record["after"]:      # settle it once, on first sight
+                record["after"] = after
+                record["files"] = vcs.changed_between(root, record["before"], after)
+                touch(session)
+            out.append({
+                "review": record["id"], "at": record.get("at", ""),
+                "status": step.status if step else "gone",
+                "notes": record["notes"], "before": record["before"], "after": after,
+                "files": record["files"] or vcs.changed_between(root, record["before"], after),
+                "commits": vcs.commits_between(root, record["before"], after) if after
+                           else vcs.commits_between(root, record["before"]),
+            })
+        return {"reviews": out}
 
     @app.get("/api/sessions/{session_id}/commit/{sha}")
     def show_commit(session_id: str, sha: str):

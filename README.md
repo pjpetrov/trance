@@ -49,7 +49,9 @@ record of what each agent did — and a step that goes wrong can be undone with
 
 **Lets you review the result.** A Files screen with a real editor: read the code,
 click a line number to comment on it, and send the review as a step the flow
-runs. When it finishes, "what was fixed" answers from git. A page can be opened
+runs. **Review history** then answers what was done about it, from git: every
+review you have sent, newest open and the rest folded, each listing the commits
+the agents made — click one for its patch. A page can be opened
 in a browser from there — trance serves its folder as static files, on your
 network as well as locally so you can look at it on a phone, and never builds
 your project to do it. One button further, it can put that preview behind an
