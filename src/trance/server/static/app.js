@@ -1647,8 +1647,6 @@ function agentCard(agent, isNew) {
   }
   // Model and backup are the same decision made twice, so they stack rather
   // than sitting in grid columns that squeeze both into half a name.
-  grid.append(rowField("Model", preset));
-
   // The backup: what this agent moves to when the same model keeps failing.
   const backup = el("select", "compact");
   const noBackup = el("option", null, "none — keep trying the same model");
@@ -1674,26 +1672,34 @@ function agentCard(agent, isNew) {
   backupTries.title = "Attempts on the backup after that. The two added together are "
                       + "what a step gets unless the step says otherwise.";
 
+  // Each model sits on its own line with the number of tries that belongs to
+  // it, and the total is stated underneath — the question is "how many goes
+  // does this agent get on which model", and this is that sentence.
   const triesWrap = el("span", "row small after-tries");
-  triesWrap.append(tries, el("span", "muted small", "tries"));
+  triesWrap.append(el("span", "muted small", "tries"), tries);
   const backupWrap = el("span", "row small after-tries");
-  backupWrap.append(el("span", "muted small", "then"), backupTries,
-                    el("span", "muted small", "tries"));
+  backupWrap.append(el("span", "muted small", "tries"), backupTries);
 
-  const total = el("span", "hint");
+  const total = el("div", "tries-total");
   const syncBackup = () => {
     backupWrap.hidden = !backup.value;
     const main = Math.max(1, Number(tries.value) || 1);
     const extra = backup.value ? Math.max(0, Number(backupTries.value) || 0) : 0;
-    total.textContent = `${main + extra} tries in all, unless a step says otherwise`;
+    total.innerHTML = "";
+    total.append(el("b", null, String(main + extra)),
+                 el("span", "muted", backup.value
+                   ? ` tries in all — ${main} on the model, then ${extra} on the backup.`
+                   : " tries in all. Add a backup model to get more."),
+                 el("span", "muted", " A step can override this."));
   };
   backup.onchange = syncBackup;
   tries.addEventListener("input", syncBackup);
   backupTries.addEventListener("input", syncBackup);
   syncBackup();
 
-  grid.append(rowField("Backup model", backup, backupWrap));
-  grid.append(rowField("Tries", triesWrap, total));
+  grid.append(rowField("Model", preset, triesWrap),
+              rowField("Backup model", backup, backupWrap),
+              total);
 
   const description = el("input", "compact");
   description.value = agent.description || "";

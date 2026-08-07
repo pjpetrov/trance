@@ -5240,3 +5240,114 @@ def test_an_older_agent_keeps_the_switch_point_it_had():
         "name": "backend", "title": "B", "description": "d", "system_prompt": "p",
         "backup_preset": "clever", "backup_after": 3})
     assert role.tries == 3 and role.total_tries == 5
+
+
+# ============== an endpoint that is down is a failed try, not a failed step
+
+def test_a_transient_status_is_retried_before_giving_up(monkeypatch):
+    """A 503 is a busy gateway, not a wrong request — giving up on the first
+    one throws away a step for something that clears in a second."""
+    import io
+    import json
+    import urllib.error
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.worker import client as client_module
+
+    calls = []
+
+    def flaky(request, timeout=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise urllib.error.HTTPError("u", 503, "busy", {}, io.BytesIO(b""))
+
+        class Ok:
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": "hi"}}]}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return Ok()
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(client_module, "BACKOFF_S", 0)
+    reply = client_module.ChatClient(ModelConfig()).complete(
+        [{"role": "user", "content": "hi"}])
+
+    assert reply.text == "hi" and len(calls) == 3
+
+
+def test_a_bad_key_is_not_retried(monkeypatch):
+    """401 means you asked wrong; asking again is just slower."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.providers.base import BackendError
+    from trance.worker import client as client_module
+
+    calls = []
+
+    def refused(request, timeout=None):
+        calls.append(1)
+        raise urllib.error.HTTPError("u", 401, "nope", {}, io.BytesIO(b"bad key"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    monkeypatch.setattr(client_module, "BACKOFF_S", 0)
+    with pytest.raises(BackendError):
+        client_module.ChatClient(ModelConfig()).complete([{"role": "user", "content": "x"}])
+    assert len(calls) == 1
+
+
+def test_an_unreachable_model_moves_to_the_backup(tmp_path, monkeypatch):
+    """Regression: a 503 from the endpoint killed the whole step."""
+    from trance.flow import Step
+    from trance.providers.base import BackendError
+
+    engine = _backup_engine(tmp_path, after=2)
+    step = Step(role="backend", task="t")
+    used = []
+
+    def fake(**kw):
+        model = kw["config"].model
+        used.append(model)
+        if model == "small-model":
+            raise BackendError("https://zen/v1/chat/completions returned 503: ")
+        return _Turn(None, "done", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    # One dead try on the usual model, then straight to the backup — not two
+    # more on a URL that is down.
+    assert used == ["small-model", "big-model"]
+    assert step.status == "done"
+    told = [e for e in engine.bus.history(engine.session.id)
+            if e.type == "model_unreachable"]
+    assert told and "Trying clever next." in told[0].payload["message"]
+
+
+def test_an_unreachable_model_with_no_backup_still_ends_the_step_cleanly(
+        tmp_path, monkeypatch):
+    from trance.flow import Step
+    from trance.providers.base import BackendError
+
+    engine = _backup_engine(tmp_path, after=2)
+    for role in engine.session.team:
+        role.backup_preset = None
+    step = Step(role="backend", task="t", max_loops=2)
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (_ for _ in ()).throw(
+        BackendError("returned 503: ")))
+    engine._execute(step)
+
+    assert step.status == "failed"
+    assert len(step.attempts) == 2                       # it tried, it did not crash
+    assert "endpoint failed" in step.attempts[-1].outcome_reason
+    assert engine.session.status == "error"              # halted, with a reason

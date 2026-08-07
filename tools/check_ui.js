@@ -180,8 +180,9 @@ try {
       console.log("BROKEN: an agent's backup is not shown on its card");
       process.exit(1);
     }
-    if (!text.includes("4 tries in all")) {
-      console.log("BROKEN: the card does not add the tries up");
+    if (!text.includes("4") || !text.includes("tries in all")
+        || !text.includes("2 on the model, then 2 on the backup")) {
+      console.log("BROKEN: the card does not spell out where the tries go");
       process.exit(1);
     }
   }

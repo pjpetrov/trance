@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -50,6 +51,15 @@ class _Abortable:
 #: both the fix and the right thing to send.
 USER_AGENT = "trance/0.1 (+https://github.com/trance)"
 
+#: Statuses that mean "ask again later", not "you asked wrong". A 401 is a bad
+#: key and retrying it is pointless; a 503 is a busy gateway and giving up on
+#: the first one throws away a step for something that clears in a second.
+TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
+#: Three tries, ~1s then ~2s apart. Long enough for a gateway hiccup, short
+#: enough that a genuinely down endpoint is reported rather than waited on.
+RETRIES = 3
+BACKOFF_S = 1.0
+
 
 class ChatClient:
     def __init__(self, config: ModelConfig):
@@ -81,11 +91,11 @@ class ChatClient:
         handle = _Abortable()
         register_inflight(cancel_token, handle)
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout_s) as resp:
-                handle.response = resp
-                body = json.loads(resp.read())
+            body = self._send(request, handle)
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf8", errors="replace")
+            body = getattr(exc, "trance_body", None)
+            if body is None:
+                body = exc.read().decode("utf8", errors="replace")
             if _is_truncated_tool_call(body):
                 # llama.cpp parses tool arguments itself and 500s on a call the
                 # model did not finish writing. That is the same "ran out of
@@ -110,6 +120,31 @@ class ChatClient:
             clear_inflight(cancel_token, handle)
 
         return _parse(body)
+
+    def _send(self, request, handle):
+        """One request, retried while the endpoint says "later"."""
+        for attempt in range(1, RETRIES + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.config.timeout_s) as resp:
+                    handle.response = resp
+                    return json.loads(resp.read())
+            except urllib.error.HTTPError as exc:
+                # The body can only be read once, and both the truncation check
+                # here and the error message later need it.
+                exc.trance_body = exc.read().decode("utf8", errors="replace")
+                last = exc
+                if exc.code not in TRANSIENT_STATUS or attempt == RETRIES:
+                    raise
+                # A 500 carrying a truncated tool call is the model's doing, not
+                # the server's — retrying sends the same oversized reply again.
+                if exc.code == 500 and _is_truncated_tool_call(exc.trance_body):
+                    raise
+            except urllib.error.URLError as exc:
+                last = exc
+                if handle.aborted or attempt == RETRIES:
+                    raise
+            time.sleep(BACKOFF_S * (2 ** (attempt - 1)))
+        raise last
 
 
 #: A server-side complaint that the model's tool arguments were cut off.

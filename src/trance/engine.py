@@ -24,7 +24,7 @@ from .agents.handoff import Handoff, build as build_handoff
 from .agents.memory import COMPACT_PROMPT, ProjectMemory, write_plan
 from .agents.runner import OUTCOME_SUCCESS, run_agent
 from .config import Config
-from .providers import client_for
+from .providers import BackendError, client_for
 from .curator.walker import CuratorConfig, curate
 from .db import GraphDB
 from .events import EventBus
@@ -329,6 +329,9 @@ class FlowEngine:
 
         limit = self._tries_for(role, step)
         feedback = ""
+        #: Set when the endpoint itself failed, so the next try uses the backup
+        #: whatever the try count says.
+        endpoint_down = False
         #: What the previous pass did, carried into the next one.
         carry: Handoff | None = None
 
@@ -363,19 +366,41 @@ class FlowEngine:
                     f"reported:\n{feedback}{replay}"
                 )
 
-            model_config, on_backup = self._model_for(role, step, loop)
-            turn = run_agent(
-                role=role, task=step.task, project=self.project,
-                config=model_config, bus=self.bus,
-                session_id=session.id, step_id=step.id, context_bundle=bundle_text,
-                steering=steering, history=session.history,
-                graph_tools=self._graph_tools(role),
-                should_stop=lambda: session.stopping,
-                memory=self.memory, project_map=self._project_map(role, step.task),
-                goal=session.goal, placement=self._placement(step),
-                approve=self.approve, reindex=self._reindex,
-                steering_inbox=step.take_steering,
-            )
+            model_config, on_backup = self._model_for(role, step, loop,
+                                                      force_backup=endpoint_down)
+            try:
+                turn = run_agent(
+                    role=role, task=step.task, project=self.project,
+                    config=model_config, bus=self.bus,
+                    session_id=session.id, step_id=step.id, context_bundle=bundle_text,
+                    steering=steering, history=session.history,
+                    graph_tools=self._graph_tools(role),
+                    should_stop=lambda: session.stopping,
+                    memory=self.memory, project_map=self._project_map(role, step.task),
+                    goal=session.goal, placement=self._placement(step),
+                    approve=self.approve, reindex=self._reindex,
+                    steering_inbox=step.take_steering,
+                )
+            except BackendError as exc:
+                # The endpoint failed, not the agent. That is a failed try, not
+                # a failed step — and the next one goes to the backup, because a
+                # model that is down does not recover from being asked again.
+                endpoint_down = True
+                attempt.outcome, attempt.on_backup = "FAILED", on_backup
+                attempt.outcome_reason = f"the model endpoint failed: {exc}"
+                feedback = attempt.outcome_reason
+                backup = getattr(role, "backup_preset", "") or ""
+                self._emit("model_unreachable", agent=role.name, step_id=step.id, payload={
+                    "error": str(exc), "model": model_config.model,
+                    "attempt": loop, "of": limit, "backup": backup,
+                    "message": (f"{model_config.model} could not be reached. "
+                                + (f"Trying {backup} next." if backup and not on_backup
+                                   else "Trying again.")),
+                })
+                self.on_change()
+                if loop >= limit:
+                    break
+                continue
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
             attempt.context = turn.context
@@ -881,7 +906,7 @@ class FlowEngine:
             return step.loop_limit
         return max(1, getattr(role, "total_tries", 2))
 
-    def _model_for(self, role, step: Step, attempt: int):
+    def _model_for(self, role, step: Step, attempt: int, force_backup: bool = False):
         """This agent's model, or its backup once it has failed enough times.
 
         The retry loop changes the prompt and the feedback; the model is the one
@@ -891,7 +916,7 @@ class FlowEngine:
         """
         after = max(1, int(getattr(role, "tries", 2) or 2))
         backup = getattr(role, "backup_preset", "") or ""
-        if not backup or attempt <= after:
+        if not backup or (attempt <= after and not force_backup):
             return self.config.for_role(role), False
         if backup not in self.config.presets:
             self._emit("warning", agent=role.name, step_id=step.id, payload={
