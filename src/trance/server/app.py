@@ -754,35 +754,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         web_root = preview.web_root_for(root, (body or {}).get("path") or "")
         page = target.name if target.is_file() else ""
 
-        # A Vite or webpack app imports bare module names that only its own dev
-        # server can resolve. Serving the folder statically would give a page
-        # that loads and then fails, which looks like the code is broken.
-        dev = preview.dev_command(root, web_root)
-        if dev and dev["needed"]:
-            existing = previews.get(session_id)
-            if existing is not None and getattr(existing, "command", None) == dev["command"] \
-                    and existing.running:
-                started = existing
-            else:
-                if existing is not None:
-                    existing.stop()
-                started = preview.start_dev(Path(dev["dir"]), dev["command"])
-                previews[session_id] = started
-            if not started.url:
-                raise HTTPException(502, (
-                    f"`{dev['command']}` did not report a URL"
-                    + (". It exited — is `npm install` done?" if not started.running
-                       else " within 20s. Its output is in the console.")))
-            bus.emit("preview", session_id, agent="you", payload={
-                "url": started.url, "command": dev["command"], "root": started.root,
-                "message": f"Running `{dev['command']}` — {started.url}",
-            })
-            return {**started.to_dict(), "open": started.url, "kind": "dev",
-                    "port": 0, "command": dev["command"]}
-
         existing = previews.get(session_id)
-        if existing is not None and getattr(existing, "root", None) == str(web_root) \
-                and hasattr(existing, "port"):
+        if existing is not None and existing.root == str(web_root):
             served = existing
         else:
             if existing is not None:
@@ -790,11 +763,20 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             served = preview.serve(web_root)
             previews[session_id] = served
 
+        # A Vite or webpack app imports bare module names that a static server
+        # cannot resolve, so the page will load and then fail. Say so — but
+        # starting its dev server is the user's call, not trance's.
+        dev = preview.dev_command(root, web_root)
+        needs_build = bool(dev and dev["needed"])
         bus.emit("preview", session_id, agent="you", payload={
             "url": served.url + page, "root": served.root, "port": served.port,
-            "message": f"Serving {Path(served.root).name}/ at {served.url}",
+            "message": (f"Serving {Path(served.root).name}/ at {served.url}"
+                        + (f" — this project builds with `{dev['command']}`, which "
+                           f"a static server does not do." if needs_build else "")),
         })
-        return {**served.to_dict(), "open": served.url + page, "kind": "static"}
+        return {**served.to_dict(), "open": served.url + page,
+                "needs_build": needs_build,
+                "build_command": dev["command"] if needs_build else ""}
 
     @app.delete("/api/sessions/{session_id}/preview")
     def stop_preview(session_id: str):

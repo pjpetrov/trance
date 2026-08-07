@@ -89,9 +89,10 @@ const RESPONSES = {
     totals: [{ ext: "js", files: 1, lines: 80, bytes: 2048 },
              { ext: "html", files: 1, lines: 30, bytes: 900 },
              { ext: "md", files: 1, lines: 12, bytes: 300 }] },
-  "/api/sessions/s1/preview": { root: "/p", command: "npm run dev", kind: "dev",
-                                url: "http://localhost:3001/", port: 0,
-                                open: "http://localhost:3001/" },
+  "/api/sessions/s1/preview": { root: "/p/server/public", port: 44817,
+                                url: "http://127.0.0.1:44817/", needs_build: false,
+                                build_command: "",
+                                open: "http://127.0.0.1:44817/index.html" },
   "/api/sessions/s1/file?path=server%2Fapp.js": {
     path: "server/app.js", content: "const PORT = 3000;\napp.listen(PORT);\n",
     bytes: 40, lines: 2 },
@@ -677,7 +678,7 @@ try {
     // A dev server reports its own URL, not a port trance picked.
     api.renderPreviewStatus(RESPONSES["/api/sessions/s1/preview"]);
     const status = flat(document.getElementById("files-status")).replace(/\s+/g, " ");
-    if (!status.includes("npm run dev") || !status.includes("localhost:3001")) {
+    if (!status.includes("serving") || !status.includes("127.0.0.1:44817")) {
       console.log("BROKEN: the running preview is not shown:", status.slice(0, 100));
       process.exit(1);
     }

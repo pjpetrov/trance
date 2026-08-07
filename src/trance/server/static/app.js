@@ -3764,9 +3764,9 @@ function renderFileTree() {
       // it exists, and running it tells you whether the thing works.
       if (/\.(html?|svg)$/i.test(file.path)) {
         const open = el("button", "file-open", "▷");
-        open.title = "Open this page in a new tab. A project with a build step is "
-                     + "started with its own dev server; anything else is served "
-                     + "straight from its folder.";
+        open.title = "Serve this folder as files and open the page in a new tab. "
+                     + "Nothing is built or run — a project with a build step is "
+                     + "yours to start.";
         open.onclick = (e) => { e.stopPropagation(); openPreview(file.path); };
         row.append(open);
       }
@@ -3984,8 +3984,9 @@ async function openPreview(path) {
   // A new tab rather than an iframe: the page gets its own origin, its own
   // console and its own devtools, which is what you need to judge it.
   window.open(served.open, "_blank", "noopener");
-  toast(served.kind === "dev"
-    ? `Running \`${served.command}\` — ${served.url}`
+  toast(served.needs_build
+    ? `Serving ${served.root.split("/").pop()}/ as files. This project builds with `
+      + `\`${served.build_command}\` — run that yourself for the built version.`
     : `Serving ${served.root.split("/").pop()}/ on port ${served.port}.`);
   renderPreviewStatus(served);
 }
@@ -4001,7 +4002,7 @@ function renderPreviewStatus(served) {
   link.href = served.url;
   link.target = "_blank";
   link.rel = "noopener";
-  note.append(el("span", "muted small", served.command || "serving"), link);
+  note.append(el("span", "muted small", "serving"), link);
   const stop = el("button", "small", "stop");
   stop.onclick = async () => {
     await api(`/api/sessions/${state.session.id}/preview`, { method: "DELETE" });

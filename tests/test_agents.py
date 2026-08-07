@@ -5675,10 +5675,10 @@ def test_asking_twice_for_the_same_folder_keeps_the_same_port(tmp_path):
         client.delete(f"/api/sessions/{sid}/preview")
 
 
-def test_a_project_with_a_build_step_is_run_not_served(tmp_path):
-    """A Vite app imports bare module names that only its dev server resolves.
-    Serving the folder statically gives a page that loads and then fails, which
-    looks like the code is broken."""
+def test_a_project_with_a_build_step_is_reported_not_run(tmp_path):
+    """A Vite app imports bare module names that only its dev server resolves,
+    so the static preview will load and then fail. Trance says which command
+    would build it and does not run it — that is the user's to start."""
     from trance import preview
 
     project = tmp_path / "app"
@@ -5704,33 +5704,6 @@ def test_a_plain_folder_is_served_statically(tmp_path):
     (project / "package.json").write_text('{"scripts": {"dev": "node server.js"}}')
     found = preview.dev_command(project, project / "public")
     assert found["needed"] is False
-
-
-def test_the_dev_servers_own_url_is_used(tmp_path):
-    """A Vite that picked 5174 because 5173 was taken still opens correctly."""
-    from trance import preview
-
-    project = tmp_path / "app"
-    project.mkdir()
-    server = preview.start_dev(
-        project,
-        "echo 'Port 3000 is in use, trying another one...'; "
-        "echo '  ➜  Local:   http://localhost:3001/'; sleep 5",
-        wait_s=10)
-    try:
-        assert server.url == "http://localhost:3001/"
-        assert server.running
-    finally:
-        server.stop()
-
-
-def test_a_dev_command_that_dies_is_reported(tmp_path):
-    from trance import preview
-
-    project = tmp_path / "app"
-    project.mkdir()
-    server = preview.start_dev(project, "echo 'command not found'; exit 1", wait_s=5)
-    assert server.url == "" and server.running is False
 
 
 def _tiered_loop():

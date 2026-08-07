@@ -47,8 +47,10 @@ record of what each agent did — and a step that goes wrong can be undone with
 `git revert`, leaving both the work and the undo in history.
 
 **Lets you review the result.** A Files screen with a real editor: read the code,
-click a line to comment on it, and send the review as a step the flow runs. When
-it finishes, "what was fixed" answers from git.
+click a line number to comment on it, and send the review as a step the flow
+runs. When it finishes, "what was fixed" answers from git. A page can be opened
+in a browser from there — trance serves its folder as static files on a local
+port, and never builds or runs anything to do it.
 
 ---
 
