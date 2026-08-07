@@ -3993,8 +3993,46 @@ function renderReviewStatus() {
   box.append(el("b", null, "Review"));
   box.append(el("span", "muted small", pending
     ? `${pending} comment(s) waiting — “Review finished” sends them as a step`
-    : "Click any line to comment on it."));
+    : "Click a line number to comment on it, or say something about the whole thing."));
   $("review-finish").disabled = !pending;
+
+  // The comments themselves, so you can see what you have said and drop any of
+  // it before sending. A general comment has no line to sit against, so without
+  // this it would vanish the moment it was written.
+  const list = $("review-list");
+  if (!list) return;
+  list.innerHTML = "";
+  (state.session?.review || []).forEach((note) => {
+    const row = el("div", "review-note");
+    row.append(el("span", "muted small", note.path
+      ? `${note.path}:${note.line}` : "overall"));
+    row.append(el("span", null, note.note));
+    const drop = el("button", "small", "✕");
+    drop.title = "Remove this comment";
+    drop.onclick = async () => {
+      await api(`/api/sessions/${state.session.id}/review/${note.id}`, { method: "DELETE" });
+      state.session.review = state.session.review.filter((n) => n.id !== note.id);
+      renderReviewStatus();
+      if (fileState.path) renderFileView();
+    };
+    row.append(drop);
+    list.append(row);
+  });
+}
+
+/* Not everything worth saying is about a line. "The controls are unusable on a
+ * phone" is about the result, and making it fit a line number means picking one
+ * arbitrarily — or not writing it down at all. */
+async function addGeneralComment() {
+  const box = $("review-general");
+  const note = box.value.trim();
+  if (!note || !state.session) return;
+  const entry = await api(`/api/sessions/${state.session.id}/review`,
+                          { method: "POST", body: { note } });
+  state.session.review = (state.session.review || []).concat([entry]);
+  box.value = "";
+  renderReviewStatus();
+  toast("Added. It goes out with “Review finished”.");
 }
 
 async function openPreview(path) {
@@ -4111,6 +4149,9 @@ $("file-save").onclick = async () => {
   renderFileView();
   toast("Saved, and committed so it is in the history.");
 };
+
+$("review-general-add").onclick = addGeneralComment;
+$("review-general").onkeydown = (e) => { if (e.key === "Enter") addGeneralComment(); };
 
 $("review-finish").onclick = async () => {
   const result = await api(`/api/sessions/${state.session.id}/review/finish`,

@@ -171,6 +171,15 @@ class Session:
         session.chat = [ChatMessage(**m) for m in data.get("chat", [])]
         session.team = [AgentRole.from_dict(r) for r in data.get("team", [])] or default_team()
         session.flow = Flow.from_dict(data.get("flow", {}))
+
+        # Nothing is executing at load time, so a step saved mid-flight — the
+        # process was killed, restarted, or crashed — is not running whatever
+        # the file says. Left alone it is worse than wrong: it shows as running
+        # forever, next_pending() skips it because it is not pending, and a
+        # second stranded step means the flow appears to be running two at once.
+        for step in session.flow.steps:
+            if step.status in Flow.LOCKED:
+                step.status = "pending"
         return session
 
 

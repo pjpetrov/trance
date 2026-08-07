@@ -785,3 +785,15 @@ input.tiny { width: 68px; }
   border: 1px solid var(--accent, #6ea8fe); border-radius: 999px;
   padding: 1px 9px; font-size: 11px; text-decoration: none;
 }
+
+/* Comments waiting to be sent. A general one has no line to sit against, so
+   this is the only place it appears until the step is created. */
+.review-list { display: flex; flex-direction: column; gap: 3px; margin: 0 12px 8px; }
+.review-list:empty { display: none; }
+.review-note {
+  display: flex; gap: 10px; align-items: baseline; font-size: 12px;
+  border-left: 2px solid var(--accent, #6ea8fe); padding: 2px 8px;
+}
+.review-note > span:first-child { min-width: 130px; }
+.review-note button { margin-left: auto; }
+#review-general { min-width: 240px; }

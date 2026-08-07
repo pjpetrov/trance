@@ -817,16 +817,21 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.post("/api/sessions/{session_id}/review")
     def add_review_note(session_id: str, body: dict):
-        """Leave a comment on one line, to be sent as work later."""
+        """Leave a comment, to be sent as work later.
+
+        A path and line are optional. Plenty of review is about the thing as a
+        whole — "the controls are unusable on a phone" — and making that fit a
+        line number means picking one arbitrarily, or not writing it down.
+        """
         session = _need(store, session_id)
         note = (body.get("note") or "").strip()
         path = (body.get("path") or "").strip()
-        if not note or not path:
-            raise HTTPException(400, "path and note are required")
+        if not note:
+            raise HTTPException(400, "a note is required")
         entry = {
             "id": f"rv_{uuid4().hex[:8]}", "path": path,
-            "line": max(1, int(body.get("line") or 1)),
-            "code": (body.get("code") or "")[:400],
+            "line": max(1, int(body.get("line") or 1)) if path else 0,
+            "code": (body.get("code") or "")[:400] if path else "",
             "note": note,
         }
         session.review.append(entry)
@@ -852,9 +857,16 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(400, "there are no review comments to send")
 
         by_file: dict[str, list[dict]] = {}
+        general: list[dict] = []
         for note in session.review:
-            by_file.setdefault(note["path"], []).append(note)
+            (general if not note.get("path") else
+             by_file.setdefault(note["path"], [])).append(note)
         rendered = []
+        # First, because a comment about the whole thing is usually the point,
+        # and the line-by-line ones are details under it.
+        if general:
+            rendered.append("### About this change overall\n"
+                            + "\n".join(f"- {n['note']}" for n in general))
         for path, notes in by_file.items():
             lines = [f"### {path}"]
             for note in sorted(notes, key=lambda n: n["line"]):
@@ -869,8 +881,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if not loop_name:
             loop_name = next((l.name for l in loops.all()), "")
 
-        task = ("Address this code review. Each comment names a file and a line; make "
-                "the change the comment asks for and nothing else.\n\n"
+        task = ("Address this code review. Comments under a filename name a line; "
+                "make the change each one asks for and nothing else. Comments under "
+                "\"About this change overall\" are about the result rather than any "
+                "one line — find what they refer to before changing anything.\n\n"
                 + "\n\n".join(rendered)
                 + "\n\nWhere a comment is a question rather than an instruction, answer "
                   "it in your report instead of changing code.")

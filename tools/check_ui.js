@@ -729,6 +729,23 @@ try {
   }
   api.commentOn(2, "app.listen(PORT);");
 
+  // A comment about the whole thing has no line to sit against, so the list of
+  // waiting comments is the only place it shows before the step is made.
+  api.state.session.review = [
+    { id: "rv_1", path: "server/app.js", line: 1, note: "read the port from the environment" },
+    { id: "rv_2", path: "", line: 0, note: "the controls are unusable on a phone" },
+  ];
+  api.renderReviewStatus();
+  {
+    const listed = flat(document.getElementById("review-list")).replace(/\s+/g, " ");
+    for (const want of ["server/app.js:1", "overall", "unusable on a phone"]) {
+      if (!listed.includes(want)) {
+        console.log("BROKEN: waiting review comments not shown:", listed.slice(0, 160));
+        process.exit(1);
+      }
+    }
+  }
+
   // Switching to another project must not leave the last one's numbers up:
   // "24 files, 6,426 lines" from the project you just left reads as an answer
   // about the project you are now looking at.

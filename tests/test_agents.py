@@ -6189,3 +6189,68 @@ def test_a_folder_comes_back_on_the_same_port(tmp_path):
             other.stop()
     finally:
         holder.stop()
+
+
+def test_a_step_saved_mid_flight_is_not_running_after_a_restart(tmp_path):
+    """A killed or restarted process leaves whatever was executing marked
+    "running". Nothing is executing at load time, so that status is a lie with
+    two consequences: the step shows as running forever, and next_pending()
+    skips it because it is not pending — so a second stranded step makes the
+    flow look like it is running two at once. Which is exactly what happened."""
+    from trance.session import Session, SessionStore
+
+    store = SessionStore(tmp_path)
+    session = store.create("s", str(tmp_path / "proj"))
+    from trance.flow import Step
+    session.flow.steps = [
+        Step(id="a", role="backend", task="one", status="done"),
+        Step(id="b", role="", loop="review-front-end", task="two", status="running"),
+        Step(id="c", role="", loop="review-front-end", task="three", status="verifying"),
+        Step(id="d", role="backend", task="four", status="failed"),
+    ]
+    session.status = "running"
+    store.save(session)
+
+    again = SessionStore(tmp_path).get(session.id)
+    statuses = {s.id: s.status for s in again.flow.steps}
+    assert statuses == {"a": "done", "b": "pending", "c": "pending", "d": "failed"}
+    assert again.status == "ready"
+    # ...and the flow has work to pick up again, rather than silently stalling.
+    assert again.flow.next_pending().id == "b"
+
+
+def test_a_review_comment_needs_no_file(tmp_path):
+    """"The controls are unusable on a phone" is about the result, not a line.
+    Making it fit a line number means picking one arbitrarily, or not writing
+    it down."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    general = client.post(f"/api/sessions/{sid}/review",
+                          json={"note": "the controls are unusable on a phone"})
+    assert general.status_code == 200
+    assert general.json()["path"] == "" and general.json()["line"] == 0
+
+    client.post(f"/api/sessions/{sid}/review",
+                json={"path": "src/main.js", "line": 12, "note": "rename this"})
+    assert client.post(f"/api/sessions/{sid}/review",
+                       json={"note": "   "}).status_code == 400
+
+    sent = client.post(f"/api/sessions/{sid}/review/finish", json={})
+    assert sent.status_code == 200
+    task = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"][-1]["task"]
+    # The overall comment leads, and is not disguised as a line comment.
+    assert "About this change overall" in task
+    assert "- the controls are unusable on a phone" in task
+    assert task.index("overall") < task.index("src/main.js")
+    assert "line 12" in task
