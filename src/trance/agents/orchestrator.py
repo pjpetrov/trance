@@ -69,7 +69,6 @@ def split_step_tool(roles: list, threshold: int) -> dict:
                                 },
                                 "check": {"type": "string", "enum": verifiers},
                                 "on_fail": {"type": "string", "enum": workers},
-                                "max_loops": {"type": "integer"},
                                 "points": {"type": "integer", "description": POINTS_SCALE,
                                            "enum": list(POINTS)},
                             },
@@ -234,11 +233,6 @@ def propose_flow_tool(roles: list, loop_names: list | None = None) -> dict:
                                     ),
                                     "enum": verifiers,
                                 },
-                                "max_loops": {
-                                    "type": "integer",
-                                    "description": ("How many times this agent may try "
-                                                    "before the run is halted (1-4)."),
-                                },
                                 "points": {
                                     "type": "integer",
                                     "description": POINTS_SCALE,
@@ -292,8 +286,8 @@ def chat(
           "failure there is: an agent reporting SUCCESS for work it did not do. A step "
           "with no check is taken at its word.\n\n"
           "If the check passes, the flow moves on. If the step itself does not succeed, "
-          "the same agent tries again, bounded by max_loops, and exhausting that halts "
-          "the run.\n\n"
+          "the same agent tries again — as many times as that agent is configured for, "
+          "which is not yours to decide — and running out halts the run.\n\n"
           "A step is one agent trying something. When the work needs two agents "
           "handing back and forth — a tester that finds a bug for a developer to fix, "
           "then tests again — set `loop` on the step instead of `role`.\n\n"
@@ -406,10 +400,12 @@ def _normalize(arguments: dict, roles: list) -> dict:
         if fixer and (fixer not in known or fixer == "orchestrator" or not check):
             fixer = None
 
-        loops = raw.get("max_loops") or raw.get("max_attempts")
         steps.append({
             "role": role, "loop": loop, "task": task, "check": check, "on_fail": fixer,
-            "max_loops": max(1, min(4, int(loops) if loops else 2)),
+            # 0 = however many tries that agent gets. How patient to be with an
+            # agent is a property of the agent, set once where it is known, and
+            # a plan that stamps a number on every step quietly overrides it.
+            "max_loops": 0,
             "points": _points(raw.get("points")),
         })
 
@@ -511,7 +507,7 @@ def ensure_final_check(proposal: dict, *, loops=None, roles=None) -> dict:
         "task": ("Verify the whole thing works end to end: run the tests, and if there "
                  "is no test for what was just built, write one. Report exactly what "
                  "you observed."),
-        "check": None, "on_fail": None, "max_loops": 2, "points": 3,
+        "check": None, "on_fail": None, "max_loops": 0, "points": 3,
     }
     if not tail["loop"] and not tail["role"]:
         return proposal            # nothing here can verify; do not invent one

@@ -1024,13 +1024,20 @@ def test_legacy_verify_with_in_a_proposal_becomes_the_check():
     assert out["steps"][0]["check"] == "tester"
 
 
-def test_max_loops_is_clamped():
-    from trance.agents.orchestrator import _normalize
+def test_a_proposed_step_does_not_set_a_try_count():
+    """How patient to be with an agent is a property of the agent, set once
+    where it is known. A plan that stamps a number on every step overrides it
+    everywhere, silently."""
+    from trance.agents.orchestrator import _normalize, propose_flow_tool
 
     out = _normalize({"summary": "s", "team": [], "steps": [
         {"role": "backend", "task": "t", "check": "tester", "max_loops": 99},
     ]}, _roles())
-    assert out["steps"][0]["max_loops"] == 4
+    assert out["steps"][0]["max_loops"] == 0        # 0 = whatever that agent gets
+
+    # And it cannot ask for one: the field is not in the schema.
+    schema = propose_flow_tool(_roles())["function"]["parameters"]
+    assert "max_loops" not in schema["properties"]["steps"]["items"]["properties"]
 
 
 def test_check_and_fixer_are_pulled_onto_the_team():
@@ -5424,3 +5431,23 @@ def test_a_check_that_keeps_failing_still_halts_the_run(tmp_path, monkeypatch):
     halted = next(e for e in engine.bus.history(engine.session.id)
                   if e.type == "run_halted")
     assert halted.payload["lied"] is True           # the honest description of it
+
+
+def test_a_proposed_step_runs_for_as_long_as_its_agent_allows(tmp_path, monkeypatch):
+    """End to end: nothing between the proposal and the engine puts a number
+    on the step, so the agent's own count is what runs."""
+    from trance.flow import Step
+    from trance.agents.orchestrator import _normalize
+
+    proposed = _normalize({"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "task": "build it", "points": 3}]}, list(BUILTIN_ROLES.values()))
+    step = Step.from_dict(proposed["steps"][0])
+    assert step.overrides_tries is False
+
+    engine = _backup_engine(tmp_path, after=2)      # 2 + 2 on the backup
+    used = []
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        used.append(kw["config"].model) or _Turn(None, "x", outcome=("FAILED", "no"))))
+    engine._execute(step)
+
+    assert used == ["small-model", "small-model", "big-model", "big-model"]
