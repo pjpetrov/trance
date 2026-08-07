@@ -54,12 +54,20 @@ class ProviderStore:
         self._lock = threading.Lock()
         self._providers: dict[str, ProviderConfig] = {}
         self._presets: dict[str, ModelPreset] = {}
+        #: Names the user deleted, so nothing recreates them.
+        self._dismissed: set[str] = set()
 
         if self.path.exists():
             self._load()
+            # trance.toml may name models this file has never seen. Adding them
+            # is right; adding one that was deleted here is not.
+            for name, provider in (seed or {}).items():
+                if name not in self._providers and name not in self._dismissed \
+                        and name not in self._presets:
+                    self._providers[name] = provider
         elif seed:
             self._providers = dict(seed)
-            self._save()
+        self._save()
 
     # ---------------------------------------------------------------- io
 
@@ -80,14 +88,23 @@ class ProviderStore:
             except TypeError:
                 continue
             self._presets[preset.name] = preset
+        self._dismissed = {str(n) for n in data.get("dismissed", []) if n}
 
     def _save(self) -> None:
+        # redact=False, or the file gets "***" where the key was and the next
+        # load has no key at all — every save quietly destroyed the credential
+        # it was meant to persist.
         payload = {
             "providers": [p.to_dict(redact=False) for p in self._providers.values()],
-            "presets": [m.to_dict() for m in self._presets.values()],
+            "presets": [m.to_dict(redact=False) for m in self._presets.values()],
+            #: Models the user deleted. Kept so seeding cannot bring back what
+            #: was thrown away — a model derived from a provider, or from
+            #: trance.toml, otherwise reappears on every restart.
+            "dismissed": sorted(self._dismissed),
         }
-        for entry in payload["providers"]:
+        for entry in payload["providers"] + payload["presets"]:
             entry.pop("has_key", None)
+            entry.pop("self_contained", None)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf8")
         tmp.replace(self.path)  # atomic: never leave a half-written registry
@@ -164,8 +181,11 @@ class ProviderStore:
     def delete_preset(self, name: str) -> bool:
         with self._lock:
             removed = self._presets.pop(name, None) is not None
-            if removed:
-                self._save()
+            # Remembered whether or not it was there: deleting something that
+            # seeding would recreate has to stick.
+            self._dismissed.add(name)
+            self._providers.pop(name, None)
+            self._save()
         return removed
 
     def seed_presets_from_providers(self) -> None:
@@ -179,6 +199,8 @@ class ProviderStore:
         """
         changed = False
         for provider in self.all():
+            if provider.name in self._dismissed:
+                continue
             if provider.model and provider.name not in self._presets:
                 self._presets[provider.name] = ModelPreset(
                     name=provider.name, kind=provider.kind, base_url=provider.base_url,

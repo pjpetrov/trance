@@ -796,3 +796,78 @@ def test_the_two_listing_shapes_are_both_understood():
     with patch.object(urllib.request, "urlopen", lambda *a, **k: Fake({"nope": 1})):
         models, note = list_models("openai", "https://x/v1")
         assert models == [] and "do not recognise" in note
+
+
+# ------------------------------- what is saved, and what stays deleted
+
+def test_saving_a_model_does_not_destroy_its_key(tmp_path):
+    """Regression: to_dict redacts for the API, and _save used it — so every
+    save wrote "***" where the key was and the next load had none."""
+    import json
+
+    from trance.providers import ModelPreset, ProviderStore
+
+    path = tmp_path / "p.json"
+    store = ProviderStore(path)
+    store.upsert_preset(ModelPreset(name="claude", kind="anthropic",
+                                    model="claude-opus-5", api_key="sk-REAL"))
+
+    on_disk = json.loads(path.read_text())["presets"][0]
+    assert on_disk["api_key"] == "sk-REAL"
+    assert "has_key" not in on_disk                  # UI-only fields stay out
+    assert ProviderStore(path).preset("claude").api_key == "sk-REAL"
+
+    # And another save, of something else, must not lose it either.
+    store.upsert_preset(ModelPreset(name="local", kind="llamacpp", model="qwen"))
+    assert ProviderStore(path).preset("claude").api_key == "sk-REAL"
+
+
+def test_a_deleted_model_stays_deleted_across_a_restart(tmp_path):
+    """Regression: deleted models came back on restart, recreated by the
+    provider they had been folded from."""
+    from trance.providers import ProviderConfig, ProviderStore
+
+    path = tmp_path / "p.json"
+    seed = {"llama": ProviderConfig(name="llama", kind="llamacpp", model="qwen")}
+
+    store = ProviderStore(path, seed=seed)
+    store.seed_presets_from_providers()
+    assert [m.name for m in store.all_presets()] == ["llama"]
+
+    store.delete_preset("llama")
+
+    # A new process, with trance.toml still naming that provider.
+    reborn = ProviderStore(path, seed=seed)
+    reborn.seed_presets_from_providers()
+    assert [m.name for m in reborn.all_presets()] == []
+
+
+def test_deleting_through_the_api_sticks_too(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    client.put("/api/presets/throwaway", json={"kind": "llamacpp", "model": "qwen"})
+    client.delete("/api/presets/throwaway")
+
+    reborn = app_module.create_app(config, tmp_path / "sessions")
+    names = [m["name"] for m in TestClient(reborn).get("/api/presets").json()["presets"]]
+    assert "throwaway" not in names
+
+
+def test_a_name_deleted_and_then_recreated_is_kept(tmp_path):
+    """Dismissing a name must not make it unusable forever."""
+    from trance.providers import ModelPreset, ProviderStore
+
+    path = tmp_path / "p.json"
+    store = ProviderStore(path)
+    store.upsert_preset(ModelPreset(name="local", kind="llamacpp", model="qwen"))
+    store.delete_preset("local")
+    store.upsert_preset(ModelPreset(name="local", kind="llamacpp", model="qwen-new"))
+
+    assert ProviderStore(path).preset("local").model == "qwen-new"
