@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import paths
 from ..db import GraphDB
 from ..model import Symbol, estimate_tokens
 
@@ -100,6 +101,7 @@ class ContextTools:
     # ---------------------------------------------------------------- tools
 
     def get_definition(self, symbol: str) -> ToolResult:
+        symbol = self._tidy(symbol)
         if (outline := self._file_outline(symbol)) is not None:
             return outline
         matches = self.db.find_symbols(symbol)
@@ -121,6 +123,7 @@ class ContextTools:
         return self._neighbours(symbol, direction="callees")
 
     def search_symbols(self, pattern: str) -> ToolResult:
+        pattern = self._tidy(pattern)
         matches = self.db.find_symbols(pattern)
         if not matches:
             return ToolResult(_no_match(pattern), hit=False, symbols=[])
@@ -132,6 +135,7 @@ class ContextTools:
     # -------------------------------------------------------------- helpers
 
     def _neighbours(self, symbol: str, direction: str) -> ToolResult:
+        symbol = self._tidy(symbol)
         matches = self.db.find_symbols(symbol)
         if not matches:
             return ToolResult(_miss(symbol), hit=False, symbols=[])
@@ -157,6 +161,19 @@ class ContextTools:
             return ToolResult(f"{label} {sym.qualname}: none found.", hit=True, symbols=[])
         return ToolResult(f"{label} {sym.qualname}:\n" + "\n".join(lines), hit=True, symbols=names)
 
+    def _tidy(self, query: str) -> str:
+        """The path part of a query, as the index stores it.
+
+        `/src/./game/scene.js::draw` and `src/game/scene.js::draw` name the same
+        thing to everyone except an exact-match lookup, which is what this is.
+        A bare symbol — `draw`, `Scene.update` — has no path part and is left
+        exactly as it came.
+        """
+        head, sep, tail = (query or "").partition("::")
+        if "/" in head or head.startswith("."):
+            head = paths.relative(self.repo, head) or head
+        return head + sep + tail
+
     def _file_outline(self, query: str) -> ToolResult | None:
         """Asking for a file returns its outline, not one arbitrary symbol in it.
 
@@ -166,7 +183,10 @@ class ContextTools:
         """
         if "::" in query or "/" not in query and "." not in query:
             return None
-        candidates = [p for p in self.db.file_paths() if p == query or p.endswith("/" + query.lstrip("./"))]
+        # A file named by its tail — "game/scene.js" for "src/game/scene.js" —
+        # is how a model refers to a file it has only seen in an import.
+        candidates = [p for p in self.db.file_paths()
+                      if p == query or p.endswith("/" + query)]
         if not candidates:
             return None
         path = candidates[0]

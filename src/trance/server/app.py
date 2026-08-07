@@ -35,7 +35,7 @@ from ..providers import (
     client_for,
 )
 from ..session import ChatMessage, SessionStore
-from .. import preview, vcs
+from .. import paths, preview, vcs
 from ..worker.client import BackendError
 
 STATIC = Path(__file__).parent / "static"
@@ -636,10 +636,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     def _inside(root: Path, relative: str) -> Path | None:
         """Resolve a path and refuse anything that escapes the project."""
-        target = (root / (relative or "")).resolve()
-        if target != root and root not in target.parents:
-            return None
-        return target
+        return paths.inside(root, relative)
 
     @app.get("/api/sessions/{session_id}/files")
     def list_project_files(session_id: str):

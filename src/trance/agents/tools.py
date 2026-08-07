@@ -27,6 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import paths
 from ..model import estimate_tokens
 from .memory import ProjectMemory
 from .roles import AgentRole
@@ -571,10 +572,12 @@ class AgentTools:
     # ------------------------------------------------------------- files
 
     def _resolve(self, path: str) -> Path | None:
-        candidate = (self.project / path).resolve()
-        if candidate == self.project or self.project in candidate.parents:
-            return candidate
-        return None  # escaped the project root
+        """The file a path names, or None if it is not in this project.
+
+        Written how the model wrote it: `/src/app.js`, `src/./app.js` and
+        `src/app.js` are one file, and only the last used to work.
+        """
+        return paths.inside(self.project, path)
 
     def _outline(self, rel: str, text: str) -> ToolOutcome | None:
         """The shape of a big file instead of all of it.
@@ -973,7 +976,8 @@ class AgentTools:
 
     def _tail(self, log_path: str, lines: int = 25) -> str:
         try:
-            text = (self.project / log_path).read_text(encoding="utf8", errors="replace")
+            target = paths.inside(self.project, log_path)
+            text = target.read_text(encoding="utf8", errors="replace") if target else ""
         except OSError:
             return "(no output captured)"
         return "\n".join(text.splitlines()[-lines:]) or "(no output)"

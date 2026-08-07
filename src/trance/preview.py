@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+from . import paths
+
 #: Nothing here should be reachable from a served page.
 HIDDEN = {".git", ".trance", "node_modules", "__pycache__", ".env"}
 
@@ -181,5 +183,7 @@ def web_root_for(project: Path, path: str) -> Path:
     absolute path in the page a 404 — so the directory holding the file is the
     web root, and its siblings and subfolders come with it.
     """
-    target = (Path(project) / path).resolve()
+    target = paths.inside(project, path)
+    if target is None:                       # escapes the project: serve nothing else
+        return Path(project).resolve()
     return target.parent if target.is_file() else target

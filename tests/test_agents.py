@@ -5905,3 +5905,86 @@ def test_a_preview_still_refuses_to_leave_its_folder(tmp_path):
             assert b"private" not in body and b"KEY=abc" not in body
     finally:
         served.stop()
+
+
+def test_a_leading_slash_names_the_same_file(tmp_path):
+    """A model writes `/src/game/scene.js` for the file it read as
+    `src/game/scene.js`, because that is how the HTML it is editing refers to
+    it. Joining an absolute path throws the project root away, so that used to
+    be a 404 on read, "outside the project directory" on write, and no such
+    symbol in the graph — three messages for one harmless habit."""
+    from trance import paths
+
+    root = tmp_path / "metro"
+    (root / "src" / "game").mkdir(parents=True)
+    (root / "src" / "game" / "scene.js").write_text("x")
+
+    same = root / "src" / "game" / "scene.js"
+    for written in ("src/game/scene.js", "/src/game/scene.js", "./src/game/scene.js",
+                    "src/./game/scene.js", "/src/./game/scene.js",
+                    "src//game/scene.js", str(same)):
+        assert paths.inside(root, written) == same, written
+
+
+def test_dot_segments_are_collapsed_but_escapes_are_not(tmp_path):
+    """Normalising is not forgiving: `..` still leaves the project, and is
+    still refused."""
+    from trance import paths
+
+    root = tmp_path / "metro"
+    root.mkdir()
+    (tmp_path / "secret.txt").write_text("private")
+
+    assert paths.relative(root, "src/./game/../game/scene.js") == "src/game/scene.js"
+    assert paths.inside(root, "../secret.txt") is None
+    assert paths.inside(root, "/../secret.txt") is None
+    assert paths.inside(root, "src/../../secret.txt") is None
+    assert paths.inside(root, "") == root
+    # An absolute path that is not in the project is read as project-relative,
+    # since that is what it means coming from a model. It cannot reach the real
+    # /etc/passwd either way — the point is that it stays contained.
+    assert paths.inside(root, "/etc/passwd") == root / "etc" / "passwd"
+
+
+def test_a_rooted_path_reaches_the_graph(tmp_path):
+    """The symbol index matches file paths exactly, so it is the least
+    forgiving surface of the three."""
+    from trance.db import GraphDB
+    from trance.indexer.service import default_db_path, index_repo
+    from trance.worker.tools import ContextTools
+
+    root = tmp_path / "metro"
+    (root / "src" / "game").mkdir(parents=True)
+    (root / "src" / "game" / "scene.js").write_text(
+        "export function buildScene() { return 1; }\n")
+    db = GraphDB(default_db_path(root))
+    index_repo(root, db)
+    tools = ContextTools(db, root)
+
+    for query in ("src/game/scene.js", "/src/game/scene.js", "./src/game/scene.js",
+                  "src/./game/scene.js", "/src/./game/scene.js", "game/scene.js"):
+        assert tools.get_definition(query).hit, query
+    for query in ("src/game/scene.js::buildScene", "/src/game/scene.js::buildScene"):
+        assert tools.get_definition(query).hit, query
+
+    # A bare symbol has no path part and must not be touched.
+    assert tools.get_definition("buildScene").hit
+    assert not tools.get_definition("../../etc/passwd").hit
+
+
+def test_an_agent_can_write_to_a_rooted_path(tmp_path):
+    """Refusing this as "outside the project" told the agent to work around a
+    problem it did not have, and it would try the same path again."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.tools import AgentTools
+
+    root = tmp_path / "metro"
+    (root / "src").mkdir(parents=True)
+    role = AgentRole(name="frontend", title="Frontend", description="d",
+                     system_prompt="p", paths=["src/**"], toolsets=["files"])
+    tools = AgentTools(root, role)
+
+    assert tools.write_file("/src/scene.js", "export const a = 1;\n").ok
+    assert (root / "src" / "scene.js").read_text() == "export const a = 1;\n"
+    # And the remit is judged on the real path, not the one as typed.
+    assert tools.write_file("/server/app.py", "x").ok is False
