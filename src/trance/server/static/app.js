@@ -3307,6 +3307,36 @@ async function renderLoops(select) {
   box.append(loopCard(structuredClone(loop), false));
 }
 
+/* A copy with its own block ids. Reusing the originals would leave the copy's
+ * arrows pointing at blocks in the loop it came from — which reads correctly on
+ * screen and is wrong the moment either is edited. */
+function cloneLoop(loop) {
+  const copy = structuredClone(loop);
+  copy.name = uniqueLoopName(loop.name);
+  const renamed = {};
+  copy.nodes.forEach((node) => {
+    renamed[node.id] = `n_${Math.random().toString(36).slice(2, 8)}`;
+  });
+  copy.nodes.forEach((node) => {
+    node.id = renamed[node.id];
+    Object.values(node.on || {}).forEach((edge) => {
+      if (renamed[edge.target]) edge.target = renamed[edge.target];
+    });
+  });
+  copy.start = renamed[loop.start] || (copy.nodes[0] ? copy.nodes[0].id : "");
+  return copy;
+}
+
+//: "test-and-fix" -> "test-and-fix-2", and past whatever already exists.
+function uniqueLoopName(name) {
+  const taken = new Set(((state.loops && state.loops.loops) || []).map((l) => l.name));
+  const base = name.replace(/-\d+$/, "");
+  for (let n = 2; n < 100; n++) {
+    if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
+  }
+  return `${base}-copy`;
+}
+
 function loopCard(loop, isNew) {
   const card = el("div", "provider-card loop-card");
   const meta = state.loops || { agents: [], verifiers: [], outcomes: [] };
@@ -3385,6 +3415,21 @@ function loopCard(loop, isNew) {
   actions.append(save, result);
 
   if (!isNew) {
+    // Most loops are a variation on one that already works — a different
+    // tester, one more block, a longer leash. Starting from the working one
+    // beats retyping its wiring and getting an arrow wrong.
+    const clone = el("button", null, "Clone");
+    clone.title = "Copy this loop, wiring and all, under a new name";
+    clone.onclick = () => {
+      const copy = cloneLoop(loop);
+      const box = $("loop-list");
+      box.innerHTML = "";
+      $("loop-summary").textContent = "unsaved copy — give it a name and save";
+      box.append(loopCard(copy, true));
+      toast(`Copy of “${loop.name}”. Save it to keep it.`);
+    };
+    actions.append(clone);
+
     const remove = el("button", "danger", "Delete");
     remove.onclick = async () => {
       const ok = await confirmDialog(`Delete the loop “${loop.name}”?`,

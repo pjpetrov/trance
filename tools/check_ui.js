@@ -118,7 +118,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -449,6 +449,37 @@ try {
   api.redrawEditor ? api.redrawEditor() : api.renderFlowEditor();
 
   const withCheck = RESPONSES["/api/loops"].loops.find((l) => l.name === "test-and-fix");
+  // Cloning: a new name, new block ids, and arrows that stay inside the copy.
+  {
+    const original = RESPONSES["/api/loops"].loops.find((l) => l.name === "test-and-fix");
+    const copy = api.cloneLoop(original);
+    if (copy.name === original.name) {
+      console.log("BROKEN: a cloned loop kept the original's name");
+      process.exit(1);
+    }
+    const ids = new Set(copy.nodes.map((n) => n.id));
+    if (copy.nodes.some((n) => original.nodes.some((o) => o.id === n.id))) {
+      console.log("BROKEN: a cloned loop reused the original's block ids");
+      process.exit(1);
+    }
+    for (const node of copy.nodes) {
+      for (const edge of Object.values(node.on || {})) {
+        if (!["exit", "fail"].includes(edge.target) && !ids.has(edge.target)) {
+          console.log("BROKEN: a cloned loop's arrow points outside the copy");
+          process.exit(1);
+        }
+      }
+    }
+    if (!ids.has(copy.start)) {
+      console.log("BROKEN: a cloned loop starts nowhere");
+      process.exit(1);
+    }
+    if (original.nodes[0].id.startsWith("n_") === false) {
+      console.log("BROKEN: the fixture changed shape");
+      process.exit(1);
+    }
+  }
+
   const card = api.loopCard(JSON.parse(JSON.stringify(withCheck)), false);
   const loopText = flat(card).replace(/\s+/g, " ");
   for (const want of ["on SUCCESS", "on FAILED", "on CHECK FAILED", "leave the loop"]) {
