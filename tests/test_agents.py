@@ -6778,3 +6778,32 @@ def test_the_anthropic_client_does_not_pass_a_doubled_version(monkeypatch):
         kind="anthropic", model="claude-sonnet-5", api_key="k",
         base_url="https://gw.internal/anthropic/v1"))
     assert seen["base_url"] == "https://gw.internal/anthropic"
+
+
+def test_the_server_notices_its_own_code_has_changed(tmp_path, monkeypatch):
+    """Every fix is followed by "still broken" until somebody remembers the
+    process predates it. The server can see that for itself."""
+    import os
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    assert client.get("/api/config").json()["stale"] is False
+
+    # Touch a source file, as saving an edit does.
+    source = Path(app_module.__file__).resolve().parent.parent / "flow.py"
+    was = source.stat().st_mtime
+    try:
+        os.utime(source, (time.time() + 5, time.time() + 5))
+        assert client.get("/api/config").json()["stale"] is True
+    finally:
+        os.utime(source, (was, was))
+
+    assert client.get("/api/config").json()["stale"] is False

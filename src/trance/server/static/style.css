@@ -878,3 +878,6 @@ input.tiny { width: 68px; }
   .agent-picker { width: 100%; flex-direction: row; flex-wrap: wrap; }
   .agent-name { width: auto; }
 }
+
+/* The server is running code older than the files on disk. */
+.stale-note { background: var(--warn, #e0af68); color: #14161c; font-weight: 600; }

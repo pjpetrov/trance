@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from uuid import uuid4
 from pathlib import Path
@@ -257,6 +258,28 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         config.providers = {p.name: p for p in providers.all()}
         config.presets = {m.name: m for m in providers.all_presets()}
 
+    #: When this process started. Anything under src/ newer than this is code
+    #: the running server has never executed.
+    STARTED_AT = time.time()
+    SOURCE_ROOT = Path(__file__).resolve().parent.parent
+
+    def _code_changed_since_start() -> bool:
+        """Is the server running code older than what is on disk?
+
+        Every fix in a session like this one is followed by "still broken" until
+        somebody remembers the process is from before it. The server can see
+        that for itself, so it says so rather than letting the UI look wrong.
+        """
+        try:
+            for path in SOURCE_ROOT.rglob("*.py"):
+                if "__pycache__" in path.parts:
+                    continue
+                if path.stat().st_mtime > STARTED_AT:
+                    return True
+        except OSError:
+            pass
+        return False
+
     @app.get("/api/config")
     def get_config():
         orchestrator = config.for_orchestrator()
@@ -274,6 +297,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                              "provider": orchestrator.provider, "model": orchestrator.model,
                              "base_url": orchestrator.base_url,
                              "context_window": orchestrator.context_window},
+            "stale": _code_changed_since_start(),
         }
 
     # ---------------------------------------------------------- providers

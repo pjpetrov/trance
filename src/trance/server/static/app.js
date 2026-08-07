@@ -1767,6 +1767,22 @@ async function refreshConfig() {
   state.presets = info.presets;
   state.orchestrator = info.orchestrator;
   state.kinds = info.kinds;
+  paintStale(info.stale);
+}
+
+/* A server running code older than what is on disk answers with yesterday's
+ * behaviour and no sign of it — every "it is still broken" costs a round trip
+ * to work out. It can see this for itself, so it says so. */
+function paintStale(stale) {
+  const bar = $("session-bar");
+  if (!bar) return;
+  const existing = bar.querySelector(".stale-note");
+  if (existing && existing.remove) existing.remove();
+  if (!stale) return;
+  const note = el("span", "badge stale-note", "restart to load new code");
+  note.title = "trance's source has changed since this server started, so what "
+               + "you are using is the older version. Restart it to pick up the change.";
+  bar.append(note);
 }
 
 $("add-preset").onclick = () => {
