@@ -216,6 +216,7 @@ async function openSession(id) {
   state.events = [];
   consoleStep = null;
   consoleReset();
+  resetFiles();
   connect(id);
   renderSessionBar();
   renderChat();
@@ -3678,10 +3679,29 @@ $("add-loop").onclick = () => {
  * say so on that line. A comment here is not a note to yourself: it becomes a
  * step the flow runs, and git says afterwards what was done about it. */
 
-const fileState = { path: "", content: "", editing: false, files: [] };
+const fileState = { path: "", content: "", editing: false, files: [], totals: [] };
+
+/* Nothing from the previous project belongs on screen. The file tree, the
+ * statistics, the file that was open and the preview all name a directory this
+ * session has never heard of — and a stale "24 files, 6,426 lines" is worse
+ * than an empty panel, because it looks like an answer. */
+function resetFiles() {
+  Object.assign(fileState, { path: "", content: "", editing: false,
+                             files: [], totals: [] });
+  const tree = $("file-tree");
+  if (tree) tree.innerHTML = "";
+  const view = $("file-view");
+  if (view) view.innerHTML = "";
+  renderFileStats();
+  renderPreviewStatus(null);
+}
 
 async function openFiles() {
   show("files");
+  // Cleared before the fetch, not after it: the panel is on screen for the
+  // length of a round trip, and what it shows until then must not be a lie.
+  if (fileState.session !== (state.session || {}).id) resetFiles();
+  fileState.session = (state.session || {}).id;
   await loadFileTree();
   renderReviewStatus();
   api(`/api/sessions/${state.session.id}/preview`)

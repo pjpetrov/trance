@@ -21,9 +21,10 @@ function adopt(parent, children) {
 }
 
 const makeEl = (tag = "div") => {
+  let html = "";
   const el = {
     tagName: tag.toUpperCase(), className: "", style: {}, dataset: {}, children: [],
-    textContent: "", innerHTML: "", value: "", checked: false, disabled: false,
+    textContent: "", value: "", checked: false, disabled: false,
     title: "", placeholder: "", type: "",
     append: (...c) => adopt(el, c), prepend: (...c) => adopt(el, c),
     remove: () => {},
@@ -34,6 +35,13 @@ const makeEl = (tag = "div") => {
     // "is this here?" check pass, which is how a missing .c-head went unseen.
     querySelector: (sel) => el._found[sel] || null,
     querySelectorAll: () => [],
+    get innerHTML() { return html; },
+    // `box.innerHTML = ""` is how every panel here is emptied. A stub that kept
+    // its children answered "is the old project still on screen?" with yes.
+    set innerHTML(value) {
+      html = value;
+      if (!value) { el.children.length = 0; el._found = {}; el.textContent = ""; }
+    },
     // A real set, not a stub: code that branches on contains() (which screen is
     // active, is a modal open) took the same path every time otherwise.
     classList: (() => {
@@ -133,7 +141,7 @@ global.fetch = async (path) => ({
 });
 
 const module_ = { exports: {} };
-new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild};")(module_, module_.exports);
+new Function("module", "exports", src + "\n;module.exports={state,openSession,renderRun,renderFlowView,renderChat,renderFlowEditor,stepCard,consoleAppend,trackActivity,consoleReset,paintPaused,renderSessionBar,trackClock,renderFlowEditor,redrawEditor,openStep,groupStepEvents,agentCard,contextGauge,renderMemory,openMemory,loadMemory,paintMemoryCount,renderStepSize,openSettings,renderPresets,cloneLoop,pointsBadge,applyRefinedFlow,draftFingerprint,loopCard,renderLoops,openFiles,openFile,renderFileTree,renderFileView,commentOn,renderReviewStatus,renderPreviewStatus,warnAboutBuild,resetFiles};")(module_, module_.exports);
 const api = module_.exports;
 
 // Drive the paths a user takes when opening a session.
@@ -714,6 +722,26 @@ try {
     }
   }
   api.commentOn(2, "app.listen(PORT);");
+
+  // Switching to another project must not leave the last one's numbers up:
+  // "24 files, 6,426 lines" from the project you just left reads as an answer
+  // about the project you are now looking at.
+  api.resetFiles();
+  {
+    const stats = flat(document.getElementById("file-stats-body")).replace(/\s+/g, " ");
+    if (/\d/.test(stats)) {
+      console.log("BROKEN: file statistics survived a session change:", stats.slice(0, 120));
+      process.exit(1);
+    }
+    if (flat(document.getElementById("file-tree")).trim()) {
+      console.log("BROKEN: the file tree survived a session change");
+      process.exit(1);
+    }
+    if (flat(document.getElementById("file-view")).trim()) {
+      console.log("BROKEN: the open file survived a session change");
+      process.exit(1);
+    }
+  }
   // With no CodeMirror (this harness, or a browser that failed to load it) the
   // plain numbered view still shows the file and takes comments.
   if (typeof CodeMirror !== "undefined") {
