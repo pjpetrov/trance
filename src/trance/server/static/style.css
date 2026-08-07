@@ -676,6 +676,9 @@ input.tiny { width: 68px; }
 .file-view .CodeMirror-gutters { background: var(--bg); border-right: 1px solid var(--line); }
 .file-view .CodeMirror-linenumber { color: var(--muted); cursor: pointer; }
 .file-view .CodeMirror-linenumber:hover { color: var(--accent); }
+/* Reading is a review, so the whole line is the target and says so. */
+.file-view:not(.editing) .CodeMirror-line { cursor: text; }
+.file-view:not(.editing) .CodeMirror-line:hover { background: rgba(122,162,247,.07); }
 .file-view .CodeMirror-activeline-background { background: rgba(122,162,247,.06); }
 .file-view.editing .CodeMirror { box-shadow: 0 0 0 1px var(--accent) inset; }
 .file-view.editing .CodeMirror-cursor { border-left: 2px solid var(--accent); }

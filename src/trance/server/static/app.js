@@ -3538,7 +3538,8 @@ async function openFile(path) {
   fileState.content = data.content;
   fileState.editing = false;
   $("file-name").textContent = path;
-  $("file-meta").textContent = `${data.lines} lines · ${Math.ceil(data.bytes / 1024)}k`;
+  $("file-meta").textContent = `${data.lines} lines · ${Math.ceil(data.bytes / 1024)}k`
+    + " · click a line to comment on it";
   renderFileTree();
   renderFileView();
 }
@@ -3567,7 +3568,7 @@ function fileEditing(on) {
   $("file-save").hidden = !on;
   $("file-cancel").hidden = !on;
   if (editor) {
-    editor.setOption("readOnly", on ? false : "nocursor");
+    editor.setOption("readOnly", !on);
     $("file-view").classList.toggle("editing", on);
     if (on) editor.focus();
   }
@@ -3593,7 +3594,7 @@ function renderFileView() {
     theme: "material-darker",
     lineNumbers: true,
     lineWrapping: false,
-    readOnly: "nocursor",
+    readOnly: true,
     styleActiveLine: true,
     matchBrackets: true,
     gutters: ["CodeMirror-linenumbers", "review-gutter"],
@@ -3601,6 +3602,17 @@ function renderFileView() {
   editor.on("gutterClick", (cm, line) => {
     if (fileState.editing) return;
     commentOn(line + 1, cm.getLine(line) || "");
+  });
+  // The gutter alone was too small a target: clicking the line you are reading
+  // is the gesture people actually make. While reading, the click has nothing
+  // else to do — the editor has no cursor — so it opens the comment box.
+  editor.getWrapperElement().addEventListener("click", (e) => {
+    if (fileState.editing) return;
+    if (e.target.closest && e.target.closest(".code-note, .code-compose")) return;
+    if (editor.getSelection()) return;          // they were selecting, not clicking
+    const pos = editor.coordsChar({ left: e.clientX, top: e.clientY }, "window");
+    if (!pos) return;
+    commentOn(pos.line + 1, editor.getLine(pos.line) || "");
   });
   fileEditing(false);
   paintReviewMarks();
@@ -3642,6 +3654,7 @@ function renderPlainFileView() {
     const n = i + 1;
     const row = el("div", "code-line");
     row.append(el("span", "code-n", String(n)), el("code", "code-text", text || " "));
+    row.title = "Click to comment on this line";
     row.onclick = () => commentOn(n, text);
     box.append(row);
     notes.filter((note) => note.line === n).forEach((note) => {
