@@ -9,10 +9,14 @@ because a real page asks for `/js/app.js` and `/style.css` from the root. Servin
 it at `/preview/<session>/…` would 404 every one of those, and the page would
 look broken for reasons that have nothing to do with the code.
 
+It listens on every interface, so the page opens on your phone or on the laptop
+you are actually sitting at, not only on the machine running trance. That is the
+common case for a preview — a UI is worth looking at on a real screen. There is
+no authentication on it, so it belongs on a network you trust, like the rest of
+trance.
+
 Deliberately narrow:
 
-* Bound to 127.0.0.1. This exists to open a page on the machine you are sitting
-  at, not to publish anything.
 * Rooted at one directory, with every request resolved and refused if it escapes.
 * Static files only — no CGI, no directory upload, no execution.
 * Nothing is ever started on your behalf. A project with a build step is
@@ -23,6 +27,7 @@ Deliberately narrow:
 from __future__ import annotations
 
 import http.server
+import socket
 import threading
 from dataclasses import dataclass
 from functools import partial
@@ -69,10 +74,21 @@ class Preview:
 
     @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/"
+        """The address to hand someone on another machine, when there is one."""
+        return f"http://{lan_address()}:{self.port}/"
+
+    def at(self, host: str) -> str:
+        """This preview as seen from `host` — whichever name got you to trance.
+
+        Someone browsing trance at 192.168.1.5 cannot use a 127.0.0.1 link, and
+        someone on the machine itself does not want the LAN address. The host
+        the browser already used is right in both cases.
+        """
+        return f"http://{host or lan_address()}:{self.port}/"
 
     def to_dict(self) -> dict:
-        return {"root": self.root, "port": self.port, "url": self.url}
+        return {"root": self.root, "port": self.port, "url": self.url,
+                "local": f"http://localhost:{self.port}/"}
 
     def stop(self) -> None:
         try:
@@ -82,11 +98,29 @@ class Preview:
             pass
 
 
-def serve(directory: Path) -> Preview:
-    """Start a static server for `directory` on a free local port."""
+def lan_address() -> str:
+    """This machine's address on the network it can actually reach.
+
+    Asked of the routing table rather than of DNS: `gethostname()` resolves to
+    127.0.1.1 on a lot of Linux boxes, which is exactly the answer that does not
+    work from another device. No packets are sent — a UDP connect only picks a
+    route.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))            # TEST-NET-1, deliberately unroutable
+        return probe.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"                         # no network; local still works
+    finally:
+        probe.close()
+
+
+def serve(directory: Path, host: str = "0.0.0.0") -> Preview:   # noqa: S104
+    """Start a static server for `directory` on a free port, on every interface."""
     root = Path(directory).resolve()
     handler = partial(_Handler, directory=str(root))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = http.server.ThreadingHTTPServer((host, 0), handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True,
                               name=f"preview-{root.name}")

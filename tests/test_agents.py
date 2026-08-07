@@ -5615,9 +5615,12 @@ def test_a_page_is_served_from_its_own_folder(tmp_path):
     try:
         assert served["root"].endswith("server/public")
         assert served["open"].endswith("/index.html")
-        page = urllib.request.urlopen(served["open"], timeout=5).read().decode()
+        # `open` is built from the Host the browser used, which under the test
+        # client is the unresolvable "testserver"; `local` is the same server.
+        page = urllib.request.urlopen(served["local"] + "index.html",
+                                      timeout=5).read().decode()
         assert "/js/app.js" in page
-        js = urllib.request.urlopen(served["url"] + "js/app.js", timeout=5).read()
+        js = urllib.request.urlopen(served["local"] + "js/app.js", timeout=5).read()
         assert b"console.log(1)" in js               # the absolute path resolves
     finally:
         client.delete(f"/api/sessions/{sid}/preview")
@@ -5638,7 +5641,7 @@ def test_the_preview_cannot_reach_outside_what_it_serves(tmp_path):
     try:
         for escape in ("../secret.txt", "..%2Fsecret.txt", "../../etc/passwd"):
             try:
-                body = urllib.request.urlopen(served["url"] + escape, timeout=5).read()
+                body = urllib.request.urlopen(served["local"] + escape, timeout=5).read()
             except urllib.error.HTTPError:
                 continue                              # refused, which is the point
             assert b"not for the web" not in body
@@ -5655,11 +5658,11 @@ def test_a_preview_does_not_outlive_its_session(tmp_path):
     (project / "index.html").write_text("<html></html>")
     served = client.post(f"/api/sessions/{sid}/preview",
                          json={"path": "index.html"}).json()
-    assert urllib.request.urlopen(served["open"], timeout=5).status == 200
+    assert urllib.request.urlopen(served["local"] + "index.html", timeout=5).status == 200
 
     client.delete(f"/api/sessions/{sid}")
     with pytest.raises((urllib.error.URLError, OSError)):
-        urllib.request.urlopen(served["open"], timeout=3)
+        urllib.request.urlopen(served["local"] + "index.html", timeout=3)
 
 
 def test_asking_twice_for_the_same_folder_keeps_the_same_port(tmp_path):
@@ -5837,3 +5840,68 @@ def test_a_routes_backup_applies_to_that_block_only(tmp_path, monkeypatch):
     assert seen == [("tester", "small-model"),      # first pass, ordinary
                     ("backend", "big-model"),       # the route asked for the backup
                     ("tester", "small-model")]      # and it stopped there
+
+
+def test_a_preview_is_reachable_from_the_network(tmp_path):
+    """A preview you cannot open on your phone is half a preview: a UI is worth
+    looking at on a real screen, and trance may not be running on it."""
+    import socket
+    import urllib.request
+
+    from trance import preview
+
+    folder = tmp_path / "site"
+    folder.mkdir()
+    (folder / "index.html").write_text("<h1>hi</h1>")
+    served = preview.serve(folder)
+    try:
+        # Bound to every interface, not just the loopback.
+        assert served.server.server_address[0] == "0.0.0.0"
+        address = preview.lan_address()
+        assert urllib.request.urlopen(
+            f"http://{address}:{served.port}/index.html").read() == b"<h1>hi</h1>"
+        # And still on the loopback, for whoever is sitting at the machine.
+        assert urllib.request.urlopen(
+            f"http://127.0.0.1:{served.port}/index.html").status == 200
+        assert socket.inet_aton(address)          # a real address, not a name
+    finally:
+        served.stop()
+
+
+def test_the_preview_link_uses_the_host_the_browser_came_from(tmp_path):
+    """Someone browsing trance at 192.168.1.5 cannot use a 127.0.0.1 link."""
+    from trance import preview
+
+    folder = tmp_path / "site"
+    folder.mkdir()
+    served = preview.serve(folder)
+    try:
+        assert served.at("192.168.1.5") == f"http://192.168.1.5:{served.port}/"
+        assert served.at("localhost") == f"http://localhost:{served.port}/"
+        assert served.at("") == served.url        # no Host to go on: the LAN address
+    finally:
+        served.stop()
+
+
+def test_a_preview_still_refuses_to_leave_its_folder(tmp_path):
+    """Now that it is on the network, containment is the whole security story."""
+    import urllib.error
+    import urllib.request
+
+    from trance import preview
+
+    (tmp_path / "secret.txt").write_text("private")
+    folder = tmp_path / "site"
+    folder.mkdir()
+    (folder / "index.html").write_text("<h1>hi</h1>")
+    (folder / ".env").write_text("KEY=abc")
+    served = preview.serve(folder)
+    try:
+        for path in ("/../secret.txt", "/%2e%2e/secret.txt", "/.env"):
+            try:
+                body = urllib.request.urlopen(served.at("127.0.0.1")[:-1] + path).read()
+            except urllib.error.HTTPError:
+                continue                          # refused outright is fine too
+            assert b"private" not in body and b"KEY=abc" not in body
+    finally:
+        served.stop()

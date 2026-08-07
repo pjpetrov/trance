@@ -49,8 +49,9 @@ record of what each agent did — and a step that goes wrong can be undone with
 **Lets you review the result.** A Files screen with a real editor: read the code,
 click a line number to comment on it, and send the review as a step the flow
 runs. When it finishes, "what was fixed" answers from git. A page can be opened
-in a browser from there — trance serves its folder as static files on a local
-port, and never builds or runs anything to do it.
+in a browser from there — trance serves its folder as static files, on your
+network as well as locally so you can look at it on a phone, and never builds or
+runs anything to do it.
 
 ---
 
@@ -205,6 +206,7 @@ otherwise add an API key in ⚙ Models.
 ```bash
 trance serve -w ~/projects          # where new projects are created
 trance serve --host 0.0.0.0         # network-visible; read the warning it prints
+                                    # (file previews are network-visible either way)
 trance serve --runs-dir ~/.trance   # where sessions and settings live
 ```
 

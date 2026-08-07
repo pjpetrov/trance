@@ -3987,7 +3987,7 @@ async function openPreview(path) {
   toast(served.needs_build
     ? `Serving ${served.root.split("/").pop()}/ as files. This project builds with `
       + `\`${served.build_command}\` — run that yourself for the built version.`
-    : `Serving ${served.root.split("/").pop()}/ on port ${served.port}.`);
+    : `Serving ${served.root.split("/").pop()}/ — on this network at ${served.url}`);
   renderPreviewStatus(served);
 }
 
@@ -3999,9 +3999,12 @@ function renderPreviewStatus(served) {
 
   const note = el("span", "preview-note");
   const link = el("a", null, served.url.replace(/^https?:\/\//, ""));
+  // The network address, deliberately: the loopback one is already open in the
+  // tab this came from, and this is the one worth typing into a phone.
   link.href = served.url;
   link.target = "_blank";
   link.rel = "noopener";
+  link.title = "This preview, as reachable from any device on your network";
   note.append(el("span", "muted small", "serving"), link);
   const stop = el("button", "small", "stop");
   stop.onclick = async () => {

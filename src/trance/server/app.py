@@ -9,7 +9,7 @@ import threading
 from uuid import uuid4
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -743,7 +743,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     app.state.previews = previews
 
     @app.post("/api/sessions/{session_id}/preview")
-    def start_preview(session_id: str, body: dict | None = None):
+    def start_preview(request: Request, session_id: str, body: dict | None = None):
         """Serve the folder a page lives in, and hand back its URL."""
         session = _need(store, session_id)
         root = _project_of(session)
@@ -763,18 +763,23 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             served = preview.serve(web_root)
             previews[session_id] = served
 
+        # Opened at the host this browser already used to reach trance, so a
+        # phone on the same network gets a link that works from where it is.
+        here = served.at(request.url.hostname) + page
+
         # A Vite or webpack app imports bare module names that a static server
         # cannot resolve, so the page will load and then fail. Say so — but
         # starting its dev server is the user's call, not trance's.
         dev = preview.dev_command(root, web_root)
         needs_build = bool(dev and dev["needed"])
         bus.emit("preview", session_id, agent="you", payload={
-            "url": served.url + page, "root": served.root, "port": served.port,
-            "message": (f"Serving {Path(served.root).name}/ at {served.url}"
+            "url": here, "root": served.root, "port": served.port,
+            "message": (f"Serving {Path(served.root).name}/ at {here} "
+                        f"(on the network at {served.url})"
                         + (f" — this project builds with `{dev['command']}`, which "
                            f"a static server does not do." if needs_build else "")),
         })
-        return {**served.to_dict(), "open": served.url + page,
+        return {**served.to_dict(), "open": here, "network": served.url + page,
                 "needs_build": needs_build,
                 "build_command": dev["command"] if needs_build else ""}
 
