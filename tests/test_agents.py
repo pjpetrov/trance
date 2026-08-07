@@ -4650,3 +4650,47 @@ def test_with_nothing_running_a_hint_waits_for_the_next_step(tmp_path):
     assert body["delivering"] is False
     assert session.flow.steps[0].steering == ["mind the port"]
     assert session.flow.steps[1].steering == []
+
+
+def test_a_reconnect_ends_on_the_current_state_not_the_history(tmp_path):
+    """Regression: a refreshed page showed finished steps as pending. The
+    socket replayed every past event after the snapshot, and an old
+    flow_updated carries the flow as it was when it fired."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "backend", "task": "one"}, {"role": "frontend", "task": "two"}]})
+
+    # The flow_updated from that PUT is now in history, with both steps pending.
+    session = app.state.store.get(sid)
+    session.flow.steps[0].status = "done"
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        frames = []
+        for _ in range(12):
+            frame = json.loads(ws.receive_text())
+            frames.append(frame)
+            if frame.get("type") == "snapshot" and frames.index(frame) > 0:
+                break
+
+    replayed = [f for f in frames if f.get("replay")]
+    assert replayed, "history was not replayed"
+    assert all(f.get("replay") for f in frames if f.get("type") == "flow_updated")
+
+    # The last word belongs to the snapshot, and it is current.
+    last_snapshot = [f for f in frames if f.get("type") == "snapshot"][-1]
+    assert frames.index(last_snapshot) > frames.index(replayed[0])
+    assert [s["status"] for s in last_snapshot["payload"]["flow"]["steps"]] \
+        == ["done", "pending"]

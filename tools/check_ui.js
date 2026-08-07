@@ -277,6 +277,18 @@ try {
   }
   api.renderStepSize();
   // The loops editor: an existing loop, and an empty one being created.
+  // A replayed event must not touch the flow the snapshot just established.
+  api.state.session.flow = { steps: [{ id: "keep", role: "backend", task: "t",
+                                       status: "done", check: null, on_fail: null,
+                                       max_loops: 2, attempts: [] }] };
+  api.applyRefinedFlow({ flow: { steps: [{ id: "stale", role: "backend", task: "old",
+                                           status: "pending", check: null, on_fail: null,
+                                           max_loops: 2, attempts: [] }] } });
+  if (api.state.session.flow.steps[0].id !== "stale") {
+    console.log("BROKEN: a live flow_updated was ignored");
+    process.exit(1);
+  }
+
   api.state.loops = RESPONSES["/api/loops"];
   // The modal shows exactly one loop, chosen by name.
   await api.renderLoops("test-and-fix");

@@ -936,6 +936,15 @@ function connect(sessionId) {
       renderSessionBar();
       return;
     }
+    // Replayed history rebuilds the console and nothing else. It describes a
+    // moment that has passed, so anything it says about the current flow, the
+    // running agent or a pending question is already out of date.
+    state.events.push(event);
+    if (event.replay) {
+      consoleAppend(event);
+      return;
+    }
+
     if (event.type === "approval_requested") setActivity(
       event.payload.agent, "waiting for you to allow or refuse an action");
     if (event.type === "splitting_steps") {
@@ -945,7 +954,6 @@ function connect(sessionId) {
     if (event.type === "flow_updated" && event.payload.flow) {
       applyRefinedFlow(event.payload);
     }
-    state.events.push(event);
     trackActivity(event);
     consoleAppend(event);
   };

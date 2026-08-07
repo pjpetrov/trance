@@ -1093,9 +1093,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         session = store.get(session_id)
         try:
             if session:
-                await ws.send_text(json.dumps({"type": "snapshot", "payload": session.to_dict()}))
+                # History first, then the snapshot. These events are replayed to
+                # rebuild the console, and some of them carry state — an old
+                # flow_updated holds the flow as it was when it fired. Sending
+                # the snapshot first let that stale copy win, which is how a
+                # refreshed page showed finished steps as pending.
                 for event in bus.history(session_id):
-                    await ws.send_text(json.dumps(event.to_dict()))
+                    await ws.send_text(json.dumps({**event.to_dict(), "replay": True}))
+                await ws.send_text(json.dumps({"type": "snapshot",
+                                               "payload": session.to_dict()}))
             while True:
                 event = await queue.get()
                 if event.session_id != session_id:
