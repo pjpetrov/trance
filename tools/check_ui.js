@@ -1141,6 +1141,33 @@ try {
       process.exit(1);
     }
   }
+  // A delegated step is one long call with nothing coming back until it ends.
+  // If neither the console nor the header says so, a step that is working looks
+  // like one that has hung on whatever was said last.
+  {
+    api.consoleReset();
+    api.trackActivity({ type: "index", agent: "orchestrator", payload: {} });
+    api.trackActivity({ type: "delegated", agent: "tester",
+                        payload: { model: "claude-code",
+                                   message: "tester is running this step inside "
+                                            + "Claude Code — one call, its own tools." } });
+    const header = flat(document.getElementById("now-working")).replace(/\s+/g, " ");
+    if (header.includes("indexing") || !header.includes("inside Claude Code")) {
+      console.log("BROKEN: the header still says what it was doing before:",
+                  header.slice(0, 120));
+      process.exit(1);
+    }
+    api.consoleAppend({ type: "delegated", agent: "tester", step_id: "st1",
+                        ts: "2026-08-07T21:48:08+00:00",
+                        payload: { model: "claude-code", message: "one call" } });
+    const shown = flat(document.getElementById("console")).replace(/\s+/g, " ");
+    if (!shown.includes("handed to Claude Code")) {
+      console.log("BROKEN: a delegated step leaves no trace in the console:",
+                  shown.slice(0, 140));
+      process.exit(1);
+    }
+  }
+
   // A reply cut at the output limit is the most expensive quiet failure there
   // is: minutes of generation, nothing written. It has to look like a failure.
   {

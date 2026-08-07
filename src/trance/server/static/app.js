@@ -1309,6 +1309,7 @@ function headline(event) {
     case "chat": return clip(p.content, 100);
     case "steering": return `“${clip(p.note, 80)}”`;
     case "index": return p.error ? `index error: ${p.error}` : `${p.parsed} parsed · ${p.symbols ?? 0} symbols`;
+    case "delegated": return p.message || "running inside Claude Code";
     case "error": return p.message;
     default: return clip(JSON.stringify(p), 100);
   }
@@ -3002,6 +3003,13 @@ function trackActivity(event) {
       setActivity(event.agent, "fixing what the last pass reported"); break;
     case "index":
       setActivity("orchestrator", "indexing the project"); break;
+    // A delegated step is one long call with nothing coming back until it ends.
+    // Without this the header kept whatever it last knew — usually "indexing" —
+    // so a step that was working looked like one that had hung.
+    case "delegated":
+      activity.context = null;
+      setActivity(event.agent, "running the whole step inside Claude Code",
+                  p.model); break;
     case "step_finished": case "step_failed": case "run_finished":
     case "run_stopped": case "paused": case "error":
       clearActivity(); break;
@@ -3557,6 +3565,14 @@ function consoleAppend(event) {
       consolePush(consoleEntry({
         kind: "cmd", icon: "⏹", time, tag: "system", failed: true,
         label: p.message || "stopped — the model call in flight was broken off",
+      }));
+      return;
+
+    case "delegated":
+      consolePush(consoleEntry({
+        kind: "step", icon: "⇥", time, tag: event.agent,
+        label: `handed to Claude Code — one call, its own tools (${p.model || "default"})`,
+        body: () => el("pre", null, p.message || ""),
       }));
       return;
 

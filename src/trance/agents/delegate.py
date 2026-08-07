@@ -29,13 +29,15 @@ prompt, judged by the same OUTCOME line and the same checks.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
 from .. import vcs
-from ..providers.base import BackendError
+from ..providers.base import BackendError, Cancelled, clear_inflight, register_inflight
 from ..providers.claudecode_client import DEFAULT_TIMEOUT_S, _is_abort, _why
 
 #: What it may use. Enough to read, edit and run the project's own checks;
@@ -82,6 +84,31 @@ def delegated(kind: str) -> bool:
     return kind == "claudecode"
 
 
+class _Killable:
+    """A running `claude -p`, in the shape the stop button already knows.
+
+    Stop aborts every model call a session has open by shutting its socket. A
+    delegated step is not a socket, it is a process — and one that runs for
+    minutes — so it registers here and Stop kills the process group. Without it
+    Stop said "stopping after the current agent turn" and then waited for a turn
+    nothing could interrupt.
+    """
+
+    def __init__(self, proc):
+        self.proc = proc
+        self.aborted = False
+
+    def abort(self) -> None:
+        self.aborted = True
+        try:
+            os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
 def run_delegated(*, role, task: str, project: Path, config, bus, session_id: str,
                   step_id: str, memory=None, goal: str = "", placement: str = "",
                   steering: list[str] | None = None) -> dict:
@@ -114,16 +141,31 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
                     f"afterwards."),
     })
 
+    # Its own process group, so Stop can take the whole tree down: the CLI
+    # spawns children, and killing only the parent leaves them running.
     try:
-        done = subprocess.run(command, cwd=str(project), capture_output=True, text=True,
-                              stdin=subprocess.DEVNULL,
-                              timeout=config.timeout_s or DEFAULT_TIMEOUT_S)
+        proc = subprocess.Popen(command, cwd=str(project), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+    except OSError as exc:
+        raise BackendError(f"could not run the claude CLI: {exc}") from exc
+
+    handle = _Killable(proc)
+    register_inflight(session_id, handle)
+    try:
+        out, err = proc.communicate(timeout=config.timeout_s or DEFAULT_TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
+        handle.abort()
         raise BackendError(
             f"Claude Code did not finish the step within "
             f"{config.timeout_s or DEFAULT_TIMEOUT_S:.0f}s") from exc
-    except OSError as exc:
-        raise BackendError(f"could not run the claude CLI: {exc}") from exc
+    finally:
+        clear_inflight(session_id, handle)
+
+    if handle.aborted:
+        raise Cancelled("the delegated step was stopped")
+
+    done = subprocess.CompletedProcess(command, proc.returncode, out or "", err or "")
 
     if _is_abort(done.stdout) or done.returncode != 0:
         raise BackendError(_why(done.stderr or done.stdout, done.returncode))

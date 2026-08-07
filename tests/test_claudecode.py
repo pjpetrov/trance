@@ -287,29 +287,41 @@ def fake_delegate(monkeypatch, result: str, *, num_turns: int = 3,
 
     monkeypatch.setattr("trance.providers.claudecode_client.shutil.which",
                         lambda _: "/usr/bin/claude")
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
+    body = json.dumps({"is_error": False, "result": result,
+                       "num_turns": num_turns, "duration_api_ms": 900,
+                       "total_cost_usd": 0.02,
+                       "usage": {"input_tokens": 6,
+                                 "cache_read_input_tokens": 40000,
+                                 "output_tokens": 465}})
 
-    class Done:
+    class FakeProc:
+        """Enough of Popen for the delegate: it runs it, waits, and can kill it."""
+
+        pid = 4242
         returncode = 0
-        stdout = json.dumps({"is_error": False, "result": result,
-                             "num_turns": num_turns, "duration_api_ms": 900,
-                             "total_cost_usd": 0.02,
-                             "usage": {"input_tokens": 6,
-                                       "cache_read_input_tokens": 40000,
-                                       "output_tokens": 465}})
-        stderr = ""
 
-    def run(command, **kwargs):
+        def communicate(self, timeout=None):
+            if side_effect is not None:
+                side_effect()
+            return body, ""
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    def popen(command, **kwargs):
         if not (command and str(command[0]).endswith("claude")):
-            return real_run(command, **kwargs)
+            return real_popen(command, **kwargs)
         if capture is not None:
             capture["command"] = command
             capture["cwd"] = kwargs.get("cwd")
-        if side_effect is not None:
-            side_effect()
-        return Done()
+            capture["new_session"] = kwargs.get("start_new_session")
+        return FakeProc()
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", popen)
     return delegate
 
 
@@ -490,3 +502,73 @@ def test_an_unindexed_project_is_not_offered_a_graph(tmp_path, monkeypatch):
     assert "--mcp-config" not in command
     assert not any(part.startswith("mcp__trance__") for part in command)
     assert "call graph" not in command[command.index("-p") + 1]
+
+
+def test_stop_kills_a_delegated_step(tmp_path, monkeypatch):
+    """Stop aborts every model call a session has open by shutting its socket.
+    A delegated step is not a socket, it is a process that runs for minutes —
+    so Stop said "stopping after the current agent turn" and then waited for a
+    turn nothing could interrupt."""
+    import subprocess
+    import threading
+
+    from trance.agents import delegate
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import Cancelled, abort_inflight
+
+    monkeypatch.setattr("trance.providers.claudecode_client.shutil.which",
+                        lambda _: "/usr/bin/claude")
+    killed = threading.Event()
+    started = threading.Event()
+
+    class SlowProc:
+        pid = 4242
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            started.set()
+            killed.wait(5)                     # as if the CLI were thinking
+            return "", ""
+
+        def kill(self):
+            killed.set()
+
+    # Only the CLI. subprocess.run() uses Popen as a context manager, so a
+    # blanket patch breaks every git call this makes before it gets going.
+    real_popen = subprocess.Popen
+
+    def popen(command, **kwargs):
+        if command and str(command[0]).endswith("claude"):
+            return SlowProc()
+        return real_popen(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(delegate.os, "killpg",
+                        lambda *a: (_ for _ in ()).throw(ProcessLookupError()))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    outcome = {}
+
+    def run():
+        try:
+            delegate.run_delegated(
+                role=BUILTIN_ROLES["frontend"], task="t", project=project,
+                config=ModelConfig(kind="claudecode"), bus=EventBus(),
+                session_id="s1", step_id="st")
+        except Cancelled as stopped:
+            outcome["stopped"] = str(stopped)
+        except Exception as exc:               # noqa: BLE001 — reported below
+            outcome["other"] = f"{type(exc).__name__}: {exc}"
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert started.wait(5), "the delegated call never started"
+
+    assert abort_inflight("s1") == 1           # the stop button's own path
+    worker.join(timeout=5)
+
+    assert killed.is_set(), "stopping did not kill the process"
+    assert "stopped" in outcome, outcome
