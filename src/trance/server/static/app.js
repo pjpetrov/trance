@@ -2574,7 +2574,22 @@ function blockSection(block, openByDefault) {
   if (a && a.context && a.context.window) summary.append(contextGauge(a.context));
   wrap.append(summary);
 
+  // Built when the section is opened, not before. One block of a long step is
+  // hundreds of events; building every block of every attempt up front is how
+  // opening a step stopped the tab rather than filling it.
   const inner = el("div", "step-block-body");
+  wrap.append(inner);
+  let built = false;
+  const build = () => {
+    if (built) return;
+    built = true;
+    fill(inner);
+  };
+  wrap.addEventListener("toggle", () => { if (wrap.open) build(); });
+  if (wrap.open) build();
+  return wrap;
+
+  function fill(inner) {
   if (a && a.outcome_reason) {
     inner.append(rowWithCopy("why the step failed", a.outcome_reason));
     inner.append(el("pre", "code", a.outcome_reason));
@@ -2612,7 +2627,7 @@ function blockSection(block, openByDefault) {
       + "trace on disk, so its history existed only in the page that was open at "
       + "the time."));
   }
-  wrap.append(inner);
+  }
   return wrap;
 }
 

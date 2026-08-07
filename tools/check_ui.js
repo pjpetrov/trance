@@ -1273,6 +1273,9 @@ try {
     api.openStep(far, 0);
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
+    // Blocks are folded and build their contents when opened, so open one.
+    const sections = document.getElementById("step-body").querySelectorAll(".step-block");
+    sections.forEach((section) => { section.open = true; section.fire("toggle", {}); });
     const shown = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
     if (!shown.includes("read_file")) {
       console.log("BROKEN: a step's history was not fetched when missing:",
@@ -1297,6 +1300,8 @@ try {
     api.openStep(step7, 0);
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
+    document.getElementById("step-body").querySelectorAll(".step-block")
+      .forEach((section) => { section.open = true; section.fire("toggle", {}); });
     const after = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
     if (!after.includes("keep.js")) {
       console.log("BROKEN: an empty answer wiped history that was already shown:",
@@ -1318,7 +1323,7 @@ try {
   // sessions that predate the on-disk trace are affected.
   {
     const bare = api.blockSection({ kind: "attempt", label: "1. backend",
-                                    outcome: "SUCCESS", events: [] }, false);
+                                    outcome: "SUCCESS", events: [] }, true);
     const text = flat(bare).replace(/\s+/g, " ");
     if (!text.includes("ran before this session kept a trace")) {
       console.log("BROKEN: an attempt with no trace does not say why:",
@@ -1351,6 +1356,8 @@ try {
     api.openStep(mk("stA", "backend"), 0);       // not awaited: still in flight
     api.openStep(mk("stB", "frontend"), 1);
     for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+    document.getElementById("step-body").querySelectorAll(".step-block")
+      .forEach((section) => { section.open = true; section.fire("toggle", {}); });
     const panel = flat(document.getElementById("step-body")).replace(/\s+/g, " ");
     if (!panel.includes("SECOND.js") || panel.includes("FIRST.js")) {
       console.log("BROKEN: a slow answer landed in another step's panel:",

@@ -7255,3 +7255,51 @@ def test_the_socket_carries_what_happens_next_not_what_already_did(tmp_path):
     assert body["total"] == app_module.CONSOLE_TAIL + 51
     # The tail is the *recent* end: what you were just looking at.
     assert body["events"][-1]["payload"]["name"] == f"call_{app_module.CONSOLE_TAIL + 49}"
+
+
+def test_a_history_panel_is_not_sent_the_prompts(tmp_path):
+    """One step of a long run is 13MB of JSON and three quarters of it is the
+    prompts — which a panel listing what happened never shows. Shipping them is
+    the difference between a step opening and a tab that stops responding."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    big = "x" * 50_000
+    app.state.bus.emit("model_call", sid, agent="backend", step_id="st1", payload={
+        "round": 1, "model": "m", "messages": [{"role": "user", "content": big}],
+        "reasoning": big, "response_text": "short", "usage": {"prompt_tokens": 10},
+        "tool_calls": [{"name": "read_file"}],
+    })
+
+    slim = client.get(f"/api/sessions/{sid}/events", params={"step": "st1"}).json()
+    assert len(slim) == 1
+    payload = slim[0]["payload"]
+    assert "messages" not in payload and "reasoning" not in payload
+    # What the panel shows is all still there.
+    assert payload["response_text"] == "short"
+    assert payload["tool_calls"] == [{"name": "read_file"}]
+    assert payload["usage"] == {"prompt_tokens": 10}
+    # ...and it says what was left out, rather than pretending there was nothing.
+    assert payload["_omitted"]["messages"] > 50_000
+    assert len(client.get(f"/api/sessions/{sid}/events",
+                          params={"step": "st1"}).content) < 5_000
+
+    # The whole thing is still one request away, for whoever opens it.
+    full = client.get(f"/api/sessions/{sid}/events",
+                      params={"step": "st1", "full": True}).json()
+    assert full[0]["payload"]["messages"][0]["content"] == big
+
+    one = client.get(f"/api/sessions/{sid}/events/{slim[0]['id']}").json()
+    assert one["payload"]["reasoning"] == big
+    assert client.get(f"/api/sessions/{sid}/events/ev_nope").status_code == 404

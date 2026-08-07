@@ -1228,9 +1228,30 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(404, "no such session")
         return {"deleted": session_id, "project_dir": session.project_dir}
 
+    #: Fields worth megabytes that a history panel never shows: the prompt that
+    #: went out, the reasoning behind it, the whole file that came back. One
+    #: step of a long run is 13MB and three quarters of it is `messages`.
+    HEAVY = ("messages", "reasoning", "rendered", "raw")
+
+    def _slim(event: dict) -> dict:
+        """One event, minus what only the inspector opens."""
+        payload = dict(event.get("payload") or {})
+        dropped = {}
+        for key in HEAVY:
+            value = payload.get(key)
+            if value in (None, "", [], {}):
+                continue
+            dropped[key] = len(json.dumps(value, default=str))
+            payload.pop(key)
+        if payload.get("result") and len(str(payload["result"])) > 4000:
+            payload["result"] = str(payload["result"])[:4000] + "…"
+        if dropped:
+            payload["_omitted"] = dropped
+        return {**event, "payload": payload}
+
     @app.get("/api/sessions/{session_id}/events")
     def get_events(session_id: str, step: str = "", limit: int = 0,
-                   tail: bool = False):
+                   tail: bool = False, full: bool = False):
         """This session's events, optionally only one step's.
 
         A finished run is thousands of events and tens of megabytes, nearly all
@@ -1247,8 +1268,23 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         total = len(events)
         if limit > 0:
             events = events[-limit:]
-        return {"events": [e.to_dict() for e in events], "total": total,
-                "shown": len(events)} if tail else [e.to_dict() for e in events]
+        rows = [e.to_dict() for e in events]
+        # Slim unless asked otherwise. A panel that lists what happened does not
+        # need the prompts, and shipping them is the difference between a step
+        # opening at once and a tab that stops responding.
+        if not full:
+            rows = [_slim(r) for r in rows]
+        return ({"events": rows, "total": total, "shown": len(rows)} if tail
+                else rows)
+
+    @app.get("/api/sessions/{session_id}/events/{event_id}")
+    def get_one_event(session_id: str, event_id: str):
+        """One event in full, for when the inspector actually opens it."""
+        _need(store, session_id)
+        found = next((e for e in history_for(session_id) if e.id == event_id), None)
+        if found is None:
+            raise HTTPException(404, "no such event")
+        return found.to_dict()
 
     @app.get("/api/sessions/{session_id}/memory")
     def get_memory(session_id: str):
