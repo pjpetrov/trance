@@ -1992,6 +1992,25 @@ function agentCard(agent, isNew) {
               rowField("Backup model", backup, backupWrap),
               total);
 
+  // How many tool rounds one attempt gets. It used to be twelve for everyone,
+  // set in code — and an agent that runs out mid-file reports what it meant to
+  // do rather than what it did.
+  const rounds = el("input", "compact tiny");
+  rounds.type = "number";
+  rounds.min = "0";
+  rounds.value = agent.tool_rounds || "";
+  rounds.placeholder = "12";
+  const roundsNote = el("span", "muted small");
+  const sayRounds = () => {
+    const n = Number(rounds.value) || 0;
+    roundsNote.textContent = n
+      ? `${n} reads, writes or commands per attempt, then it must report.`
+      : "12 by default — raise it for an agent that builds a feature file by file.";
+  };
+  rounds.addEventListener("input", sayRounds);
+  sayRounds();
+  grid.append(rowField("Tool rounds", rounds, roundsNote));
+
   const description = el("input", "compact");
   description.value = agent.description || "";
   description.placeholder = "what this agent is for — the orchestrator reads this";
@@ -2156,6 +2175,7 @@ function agentCard(agent, isNew) {
       command_list: listSel.value,
       backup_preset: backup.value || null,
       tries: Math.max(1, Number(tries.value) || 2),
+      tool_rounds: Math.max(0, Number(rounds.value) || 0),
       backup_tries: Math.max(0, Number(backupTries.value) || 0),
       verifier: verifierBox.checked,
       commands: commands.value.split(/[\s,]+/).filter(Boolean),

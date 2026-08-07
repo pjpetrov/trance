@@ -6895,3 +6895,120 @@ def test_every_model_call_is_counted_whoever_made_it(tmp_path):
     body = client.get(f"/api/sessions/{sid}/usage").json()
     assert body["calls"] == 3 and body["total"] == 1105
     assert [m["model"] for m in body["models"]] == ["Sonnet", "local"]
+
+
+def test_an_agent_can_be_given_more_tool_rounds(tmp_path, monkeypatch):
+    """It was twelve for everyone, set in code and reported as "your tool
+    budget" with no way to find out what that was. A tester that runs one
+    command needs three; an agent building a feature file by file needs more,
+    and running out mid-way is how a step ends half-written."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import DEFAULT_TOOL_ROUNDS, run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    rounds_seen = {"n": 0}
+
+    class Endless:
+        """Always asks for another tool, so the budget is what stops it."""
+
+        def complete(self, messages, tools=None, **kwargs):
+            if tools is None:                      # the forced wrap-up
+                return ChatResponse(text="OUTCOME: FAILED — out of rounds",
+                                    finish_reason="stop")
+            rounds_seen["n"] += 1
+            return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                ToolCall(id=f"c{rounds_seen['n']}", name="list_files", arguments={})])
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Endless())
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    role = AgentRole(name="builder", title="Builder", description="d",
+                     system_prompt="p", paths=["**"], toolsets=["files"],
+                     tool_rounds=3)
+    run_agent(role=role, task="t", project=project, config=ModelConfig(),
+              bus=EventBus(), session_id="s", step_id="st")
+    assert rounds_seen["n"] == 3
+
+    rounds_seen["n"] = 0
+    role.tool_rounds = 0                            # back to the default
+    run_agent(role=role, task="t", project=project, config=ModelConfig(),
+              bus=EventBus(), session_id="s", step_id="st")
+    assert rounds_seen["n"] == DEFAULT_TOOL_ROUNDS
+
+
+def test_running_out_of_rounds_says_how_many_there_were(tmp_path, monkeypatch):
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    asked = {}
+
+    class Endless:
+        def complete(self, messages, tools=None, **kwargs):
+            if tools is None:
+                asked["final"] = messages[-1]["content"]
+                return ChatResponse(text="OUTCOME: FAILED — ran out",
+                                    finish_reason="stop")
+            return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                ToolCall(id="c", name="list_files", arguments={})])
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Endless())
+    project = tmp_path / "proj"
+    project.mkdir()
+    run_agent(role=AgentRole(name="b", title="B", description="d", system_prompt="p",
+                             paths=["**"], toolsets=["files"], tool_rounds=4),
+              task="t", project=project, config=ModelConfig(), bus=EventBus(),
+              session_id="s", step_id="st")
+
+    assert "all 4 of your tool rounds" in asked["final"]
+    assert "half-written" in asked["final"]         # and what to do about it
+
+
+def test_a_reply_cut_at_the_output_limit_is_explained(tmp_path, monkeypatch):
+    """It was only ever explained when the cut landed inside a tool call's
+    arguments. A reply cut anywhere is one the model thinks it finished, and it
+    will write the same oversized thing again next round."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import Event, EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    said = []
+
+    class Cut:
+        def __init__(self):
+            self.round = 0
+
+        def complete(self, messages, tools=None, **kwargs):
+            said.append([m["content"] for m in messages if m["role"] == "user"])
+            self.round += 1
+            if self.round == 1:
+                # A valid call, but the reply ran past the limit afterwards.
+                return ChatResponse(text="writing the whole file now",
+                                    finish_reason="length", tool_calls=[
+                                        ToolCall(id="c1", name="list_files",
+                                                 arguments={})])
+            return ChatResponse(text="OUTCOME: SUCCESS", finish_reason="stop")
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Cut())
+    project = tmp_path / "proj"
+    project.mkdir()
+    seen: list[Event] = []
+    bus = EventBus()
+    bus.subscribe_sync(seen.append)
+
+    run_agent(role=AgentRole(name="b", title="B", description="d", system_prompt="p",
+                             paths=["**"], toolsets=["files"]),
+              task="t", project=project, config=ModelConfig(max_tokens=8000),
+              bus=bus, session_id="s", step_id="st")
+
+    told = "\n".join(said[-1])
+    assert "cut off at the 8000-token output limit" in told
+    assert "edit_file" in told and "append_file" in told and "replace_symbol" in told
+    assert any(e.type == "truncated" for e in seen)

@@ -129,7 +129,8 @@ it out. **Test** sends a one-token probe and reports the URL it actually called.
 ### Agents
 
 An agent is a name, a prompt, a **remit** (path globs it may write), a
-**toolset**, a **command list**, a model, and optionally a **backup model**:
+**toolset**, a **command list**, a **tool-round budget**, a model, and
+optionally a **backup model**:
 
 ```
 Model          Qwen3.6-llama.cpp — unsloth/Qwen3.6-27B-GGUF:IQ4_XS   tries [2]
@@ -141,6 +142,12 @@ The retry loop varies the prompt and the feedback; it never varies the model, so
 an agent that fails the same way twice fails the same way a third time. The
 backup is the switch for that, and an endpoint that returns 503 goes to it
 immediately — a model that is down does not recover from being asked again.
+
+**Tool rounds** is how many reads, writes or commands one attempt gets before
+the agent is made to stop and report — twelve unless the agent says otherwise. A
+tester that runs one command needs three; an agent building a feature file by
+file needs more, and running out mid-way is how a step ends half-written with a
+summary of what it meant to do.
 
 Toolsets: `files` (read/write within the remit), `graph` (symbol lookups),
 `commands` (allowlisted programs), `inspect` (file existence and size only — for

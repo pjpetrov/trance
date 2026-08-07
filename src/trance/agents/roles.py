@@ -72,6 +72,11 @@ class AgentRole:
     model: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    #: How many tool rounds this agent gets in one attempt. 0 = the default.
+    #: A tester that runs one command needs three; an agent building a feature
+    #: file by file needs twenty, and hitting the wall mid-way is how a step
+    #: ends with half the work done and a summary of what it meant to do.
+    tool_rounds: int = 0
     color: str = "#7aa2f7"
 
     def may_write(self, rel_path: str) -> bool:

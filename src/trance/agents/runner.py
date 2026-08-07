@@ -25,6 +25,10 @@ from .tools import AgentTools, permissions_brief
 VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
 
+#: Tool rounds an agent gets in one attempt, when neither it nor its model says
+#: otherwise. Enough to read a few things and write a file in pieces.
+DEFAULT_TOOL_ROUNDS = 12
+
 #: A working agent ends its reply with this so the step has an outcome of its
 #: own. A tester that writes a good test and finds a real bug did its job
 #: perfectly and the *step* still failed — those are different things.
@@ -324,7 +328,7 @@ def run_agent(
     steering: list[str] | None = None,
     history: list[dict] | None = None,
     graph_tools=None,
-    max_rounds: int = 12,
+    max_rounds: int = 0,
     should_stop=None,
     memory=None,
     project_map: str = "",
@@ -335,6 +339,11 @@ def run_agent(
     steering_inbox=None,
 ) -> AgentTurn:
     model_config = config
+    # The agent's own budget, or the default. Deliberately not ModelConfig's
+    # max_tool_rounds: that belongs to the older worker path and defaults to 8,
+    # so reading it here would quietly cut every agent from twelve rounds to
+    # eight while looking like a tidy-up.
+    max_rounds = max_rounds or getattr(role, "tool_rounds", 0) or DEFAULT_TOOL_ROUNDS
 
     # A backend that will not answer round by round runs the step itself. One
     # call instead of a dozen, judged the same way — see agents/delegate.py for
@@ -563,6 +572,32 @@ def run_agent(
         # empty dict in the conversation — a message with no role, which some
         # endpoints reject and none can read.
         messages.append(response.replay(calls=calls))
+
+        # Cut at the output limit. This was only ever explained when the cut
+        # landed inside a tool call's arguments — but a reply cut anywhere is a
+        # reply the model believes it finished, and it will write the same
+        # oversized thing again next round unless told.
+        if response.finish_reason == "length" and not any(c.malformed for c in calls):
+            turn.truncated_calls += 1
+            told = (
+                f"Your reply was cut off at the {model_config.max_tokens}-token output "
+                f"limit — everything after that point was lost, including anything you "
+                f"were part-way through writing.\n\n"
+                f"Write in pieces from here on:\n"
+                f"- `edit_file` to change part of a file — it costs the size of the "
+                f"change, not the size of the file\n"
+                f"- `replace_symbol` to swap one function whole\n"
+                f"- `write_file` for the first section only, then `append_file` for each "
+                f"one after it\n\n"
+                f"Do not send the same large call again; it will be cut in the same "
+                f"place.")
+            bus.emit("truncated", session_id, agent=role.name, step_id=step_id, payload={
+                "limit": model_config.max_tokens, "attempt": turn.truncated_calls,
+                "message": (f"The reply hit the {model_config.max_tokens}-token output "
+                            f"limit and was cut. Told to write incrementally."),
+            })
+            messages.append({"role": "user", "content": told})
+
         for call in calls:
             if call.malformed:
                 # Almost always the model ran out of output tokens partway
@@ -630,7 +665,11 @@ def run_agent(
         # Out of rounds: force a final answer with tools withheld.
         messages.append({
             "role": "user",
-            "content": "You have used your tool budget. Summarize what you did and what remains, now.",
+            "content": (
+                f"You have used all {max_rounds} of your tool rounds for this attempt. "
+                f"No more tools will run. Summarise what you did and what remains, now. "
+                f"If the work is unfinished, say so — a step reported as done and left "
+                f"half-written costs the next agent more than an honest failure."),
         })
         messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
         try:
