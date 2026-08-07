@@ -478,6 +478,23 @@ try {
     }
   }
 
+  // The activity line names the step from the flow, so it cannot contradict
+  // the marker on the card — three steps running the same loop look alike.
+  {
+    api.state.session.flow = { steps: [
+      { id: "a", role: "backend", task: "one", status: "done", attempts: [] },
+      { id: "b", role: "", loop: "review", task: "two", status: "running", attempts: [] },
+      { id: "c", role: "", loop: "review", task: "three", status: "pending", attempts: [] },
+    ] };
+    api.trackActivity({ type: "model_call", agent: "reviewer",
+                        payload: { model: "m", tool_calls: [] } });
+    const line = flat(document.getElementById("now-working")).replace(/\s+/g, " ");
+    if (!line.includes("step 2/3")) {
+      console.log("BROKEN: the activity line does not say which step:", line.slice(0, 120));
+      process.exit(1);
+    }
+  }
+
   api.state.loops = RESPONSES["/api/loops"];
   // The modal shows exactly one loop, chosen by name.
   await api.renderLoops("test-and-fix");

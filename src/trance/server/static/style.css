@@ -799,3 +799,10 @@ input.tiny { width: 68px; }
 }
 .review-note > span:first-child { min-width: 130px; }
 .review-note button { margin-left: auto; }
+
+/* Which step is live. Several steps can run the same loop, so the agent's name
+   alone does not say which one you are watching. */
+.activity-step {
+  font-variant-numeric: tabular-nums; font-size: 11px;
+  border: 1px solid var(--line, #2a2f3a); border-radius: 999px; padding: 1px 8px;
+}

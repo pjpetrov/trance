@@ -2571,6 +2571,19 @@ function paintActivity() {
   header.className = "now-working active";
   header.innerHTML = "";
   header.append(el("span", "dot"));
+
+  // Which step, taken from the flow rather than from the events, so this and
+  // the marker on the card cannot disagree. Three steps running the same loop
+  // look identical otherwise, and "the reviewer is working" says nothing about
+  // which of them it is working on.
+  const steps = state.session?.flow?.steps || [];
+  const at = steps.findIndex((s) => s.status === "running");
+  if (at >= 0) {
+    const where = el("span", "activity-step", `step ${at + 1}/${steps.length}`);
+    where.title = steps[at].task || "";
+    header.append(where);
+  }
+
   const badge = el("span", "badge role", activity.agent);
   if (role) badge.style.background = role.color;
   header.append(badge,
