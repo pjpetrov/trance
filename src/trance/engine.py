@@ -189,6 +189,8 @@ class FlowEngine:
 
         node = loop.entry
         visits: dict[tuple[str, str], int] = {}
+        #: How many times each agent has run in this block, for its backup.
+        runs: dict[str, int] = {}
         carry: Handoff | None = None
         walked = 0
 
@@ -223,12 +225,14 @@ class FlowEngine:
             if carry and carry.body:
                 steering.append(f"What the previous block did:\n{carry.body}")
 
+            runs[role.name] = runs.get(role.name, 0) + 1
+            model_config, on_backup = self._model_for(role, step, runs[role.name])
             turn = run_agent(
                 role=role,
                 # Three prompts, narrowing: what the project is, what this step
                 # asks for, and what this agent's part in the loop is.
                 task=f"{step.task}\n\n## Your part in this block\n{node.focus or role.description}",
-                project=self.project, config=self.config.for_role(role), bus=self.bus,
+                project=self.project, config=model_config, bus=self.bus,
                 session_id=self.session.id, step_id=step.id,
                 steering=steering, history=self.session.history,
                 graph_tools=self._graph_tools(role),
@@ -241,6 +245,7 @@ class FlowEngine:
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
             attempt.context = turn.context
+            attempt.on_backup = on_backup
             attempt.refused_paths = list(dict.fromkeys(turn.remit_violations))
             step.summary = _summarize(turn.text)
             self._record_history(role.name, step, turn)
@@ -358,9 +363,10 @@ class FlowEngine:
                     f"reported:\n{feedback}{replay}"
                 )
 
+            model_config, on_backup = self._model_for(role, step, loop)
             turn = run_agent(
                 role=role, task=step.task, project=self.project,
-                config=self.config.for_role(role), bus=self.bus,
+                config=model_config, bus=self.bus,
                 session_id=session.id, step_id=step.id, context_bundle=bundle_text,
                 steering=steering, history=session.history,
                 graph_tools=self._graph_tools(role),
@@ -373,6 +379,7 @@ class FlowEngine:
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
             attempt.context = turn.context
+            attempt.on_backup = on_backup
             step.summary = _summarize(turn.text)
 
             attempt.refused_paths = list(dict.fromkeys(turn.remit_violations))
@@ -862,6 +869,33 @@ class FlowEngine:
 
         result = self.memory.compact(rewrite)
         self._emit("memory_compacted", agent="orchestrator", payload=result)
+
+    def _model_for(self, role, step: Step, attempt: int):
+        """This agent's model, or its backup once it has failed enough times.
+
+        The retry loop changes the prompt and the feedback; the model is the one
+        thing it never changes, so an agent that fails the same way twice fails
+        the same way a third time. This is the per-agent version of that switch,
+        decided by the agent rather than globally.
+        """
+        after = int(getattr(role, "backup_after", 0) or 0)
+        backup = getattr(role, "backup_preset", "") or ""
+        if not backup or not after or attempt <= after:
+            return self.config.for_role(role), False
+        if backup not in self.config.presets:
+            self._emit("warning", agent=role.name, step_id=step.id, payload={
+                "message": (f"{role.name}'s backup model {backup!r} is not defined — "
+                            f"staying on its usual one.")})
+            return self.config.for_role(role), False
+
+        resolved = self.config.resolve(self.config.worker, preset=backup)
+        self._emit("model_switched", agent=role.name, step_id=step.id, payload={
+            "from": self.config.for_role(role).model, "to": resolved.model,
+            "preset": backup, "after": after, "attempt": attempt,
+            "message": (f"{role.name} has failed {after} time(s) — switching to its "
+                        f"backup model {resolved.model} for this try."),
+        })
+        return resolved, True
 
     def _placement(self, step: Step) -> str:
         """Where this step sits, and — deliberately — what comes after it.

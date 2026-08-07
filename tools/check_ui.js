@@ -141,6 +141,22 @@ try {
       console.log("BROKEN: the agent model picker does not list the defined models");
       process.exit(1);
     }
+    if (!text.includes("Backup model") || !text.includes("keep trying the same model")) {
+      console.log("BROKEN: the agent card has no backup model picker");
+      process.exit(1);
+    }
+  }
+  {
+    // An agent with a backup says so on its header, folded or not.
+    const card = api.agentCard({ name: "backend", title: "Backend", description: "d",
+                                 system_prompt: "p", paths: [], toolsets: ["files"],
+                                 preset: "Qwen3.6-llama.cpp", backup_preset: "claude",
+                                 backup_after: 2, color: "#7aa2f7", commands: [],
+                                 command_list: "", verifier: false }, false);
+    if (!flat(card).includes("backup: claude after 2")) {
+      console.log("BROKEN: an agent's backup is not shown on its card");
+      process.exit(1);
+    }
   }
   api.state.planning = { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] };
   // One step mid-split: the marker belongs on that card, not above the plan.

@@ -907,3 +907,22 @@ def test_with_no_models_at_all_the_old_default_still_applies(tmp_path):
 
     resolved = Config().resolve(Config().worker)
     assert resolved.base_url.startswith("http://localhost")
+
+
+def test_an_agents_backup_model_is_saved(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    client.put("/api/presets/clever", json={"kind": "anthropic", "model": "claude-opus-5"})
+
+    client.put("/api/agents/backend", json={"backup_preset": "clever", "backup_after": 2})
+    saved = next(a for a in client.get("/api/agents").json()["agents"]
+                 if a["name"] == "backend")
+
+    assert saved["backup_preset"] == "clever" and saved["backup_after"] == 2
+    assert saved["system_prompt"]                      # the partial update kept the rest

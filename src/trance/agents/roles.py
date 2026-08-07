@@ -49,6 +49,13 @@ class AgentRole:
     #: Named model preset (provider + model in one). The normal way to assign
     #: a model to an agent; provider/model below stay for older configs.
     preset: str | None = None
+    #: A stronger model for this agent to fall back to when it keeps failing.
+    #: The loop varies the prompt and what it was told; this varies the one
+    #: thing a retry otherwise never changes.
+    backup_preset: str | None = None
+    #: Tries on the usual model before the backup takes over. 0 = never.
+    #: Only useful below the step's loop limit — above it, nothing reaches it.
+    backup_after: int = 0
     #: Named provider. None = the configured worker default.
     provider: str | None = None
     #: Per-role model overrides; None means "use the provider's default".

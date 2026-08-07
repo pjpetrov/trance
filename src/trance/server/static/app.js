@@ -1009,6 +1009,7 @@ function headline(event) {
              (p.handoff_chars ? ` · handed ${p.handoff_chars} chars of context` : "");
     case "fixed": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
     case "git": return `${p.message || p.action}${p.sha ? ` (${p.sha.slice(0, 8)})` : ""}`;
+    case "model_switched": return p.message || "";
     case "steering_delivered": return `hint delivered: “${clip(p.note, 70)}”`;
     case "loop_node": return p.message || "";
     case "loop_exhausted": return p.message || "";
@@ -1575,6 +1576,10 @@ function agentCard(agent, isNew) {
 
   head.append(name, title, color);
   if (agent.protected) head.append(el("span", "badge", "built-in"));
+  if (agent.backup_preset) {
+    head.append(el("span", "badge",
+                   `backup: ${agent.backup_preset} after ${agent.backup_after}`));
+  }
   if (agent.verifier) head.append(el("span", "badge", "verifier"));
   if (agent.resolved) {
     head.append(el("span", "muted small",
@@ -1613,6 +1618,36 @@ function agentCard(agent, isNew) {
     preset.value = models[0].name;
   }
   grid.append(wrap("Model", preset));
+
+  // The backup: what this agent moves to when the same model keeps failing.
+  const backup = el("select", "compact");
+  const noBackup = el("option", null, "none — keep trying the same model");
+  noBackup.value = "";
+  backup.append(noBackup);
+  models.forEach((m) => {
+    const opt = el("option", null, `${m.name} — ${m.model}`);
+    opt.value = m.name;
+    if (m.name === agent.backup_preset) opt.selected = true;
+    backup.append(opt);
+  });
+
+  const backupAfter = el("input", "compact tiny");
+  backupAfter.type = "number";
+  backupAfter.min = "1";
+  backupAfter.value = agent.backup_after || "";
+  backupAfter.placeholder = "2";
+  backupAfter.title = "Tries on the usual model before the backup takes over. Keep it "
+                      + "below a step's loop limit, or nothing ever reaches it.";
+
+  const backupField = wrap("Backup model", backup);
+  const afterField = wrap("after N tries", backupAfter);
+  const syncBackup = () => {
+    afterField.hidden = !backup.value;
+    if (backup.value && !backupAfter.value) backupAfter.value = "2";
+  };
+  backup.onchange = syncBackup;
+  syncBackup();
+  grid.append(backupField, afterField);
 
   const description = el("input", "compact");
   description.value = agent.description || "";
@@ -1731,6 +1766,8 @@ function agentCard(agent, isNew) {
       paths: paths.value.split("\n").map((p) => p.trim()).filter(Boolean),
       toolsets: Object.keys(boxes).filter((t) => boxes[t].checked),
       command_list: listSel.value,
+      backup_preset: backup.value || null,
+      backup_after: backup.value ? Math.max(1, Number(backupAfter.value) || 2) : 0,
       verifier: verifierBox.checked,
       commands: commands.value.split(/[\s,]+/).filter(Boolean),
       shell: shellSel.value === "" ? null : shellSel.value === "yes",
@@ -2891,6 +2928,15 @@ function consoleAppend(event) {
           [event.type === "steering_delivered" ? "hint delivered — " : "hint queued — ", ""],
           [clip(p.note, 90), ""],
         ]),
+        open: true,
+      }));
+      return;
+
+    case "model_switched":
+      consolePush(consoleEntry({
+        kind: "step", icon: "⇧", time, tag: event.agent,
+        label: labelWith([[p.message || "switching model", ""],
+                          [`  ${shortModel(p.from)} → ${shortModel(p.to)}`, "c-path"]]),
         open: true,
       }));
       return;

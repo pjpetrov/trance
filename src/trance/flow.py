@@ -52,6 +52,8 @@ class Attempt:
     #: How full the window was on this attempt's last call — the same numbers
     #: the live gauge shows, kept so a finished step can still show them.
     context: dict = field(default_factory=dict)
+    #: Whether this attempt ran on the agent's backup model.
+    on_backup: bool = False
     #: The commit taken before this attempt, and the one taken after it.
     checkpoint: str = ""
     commit: str = ""

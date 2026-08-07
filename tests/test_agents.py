@@ -5039,3 +5039,128 @@ def test_changes_are_empty_while_the_review_step_is_still_running(tmp_path, monk
 
     body = client.get(f"/api/sessions/{sid}/review/changes").json()
     assert body["status"] == "pending" and body["diff"] == ""
+
+
+# ================== an agent's own backup model, once it keeps failing
+
+def _backup_engine(tmp_path, team=("backend", "tester"), after=1):
+    import copy
+
+    from trance.providers.base import ModelPreset
+
+    engine = _engine(tmp_path, list(team))
+    engine.config.presets["everyday"] = ModelPreset(name="everyday", kind="llamacpp",
+                                                    model="small-model")
+    engine.config.presets["clever"] = ModelPreset(name="clever", kind="anthropic",
+                                                  model="big-model", api_key="sk-x")
+    engine.session.team = [copy.deepcopy(r) for r in engine.session.team]
+    for role in engine.session.team:
+        role.preset = "everyday"
+        role.backup_preset = "clever"
+        role.backup_after = after
+    return engine
+
+
+def test_an_agent_switches_to_its_backup_after_enough_tries(tmp_path, monkeypatch):
+    """The loop varies the prompt and the feedback; the model is the one thing
+    it never varies, so a third failure looks like the first."""
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=1)
+    step = Step(role="backend", task="fix the socket handling", max_loops=3)
+    used = []
+
+    def fake(**kw):
+        used.append(kw["config"].model)
+        succeeded = kw["config"].model == "big-model"
+        return _Turn(None, "x", outcome=("SUCCESS", "") if succeeded
+                     else ("FAILED", "still broken"))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert used == ["small-model", "big-model"]      # one try, then the backup
+    assert step.status == "done"
+    assert step.attempts[1].on_backup is True and step.attempts[0].on_backup is False
+    switched = [e for e in engine.bus.history(engine.session.id)
+                if e.type == "model_switched"]
+    assert switched and "backup model big-model" in switched[0].payload["message"]
+
+
+def test_the_threshold_is_what_decides(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=2)
+    step = Step(role="backend", task="t", max_loops=4)
+    used = []
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        used.append(kw["config"].model)
+        or _Turn(None, "x", outcome=("FAILED", "no"))))
+    engine._execute(step)
+
+    assert used == ["small-model", "small-model", "big-model", "big-model"]
+
+
+def test_no_backup_configured_changes_nothing(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=0)       # 0 = never
+    step = Step(role="backend", task="t", max_loops=3)
+    used = []
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        used.append(kw["config"].model) or _Turn(None, "x", outcome=("FAILED", "no"))))
+    engine._execute(step)
+    assert used == ["small-model"] * 3
+
+
+def test_a_backup_that_does_not_exist_says_so_and_carries_on(tmp_path, monkeypatch):
+    """A stale name must not strand an agent that was working."""
+    from trance.flow import Step
+
+    engine = _backup_engine(tmp_path, after=1)
+    for role in engine.session.team:
+        role.backup_preset = "deleted-last-week"
+    step = Step(role="backend", task="t", max_loops=2)
+    used = []
+
+    monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
+        used.append(kw["config"].model) or _Turn(None, "x", outcome=("FAILED", "no"))))
+    engine._execute(step)
+
+    assert used == ["small-model", "small-model"]
+    warned = [e for e in engine.bus.history(engine.session.id) if e.type == "warning"]
+    assert any("not defined" in e.payload["message"] for e in warned)
+
+
+def test_in_a_loop_the_count_is_per_agent(tmp_path, monkeypatch):
+    """A tester that has run three times and a fixer that has run twice are not
+    in the same position."""
+    from trance.agents.store import LoopStore
+    from trance.flow import Step
+    from trance.loops import EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS, Edge, Loop, LoopNode
+
+    engine = _backup_engine(tmp_path, after=2)
+    loop = Loop(name="tf", start="n1", nodes=[
+        LoopNode(id="n1", role="tester", on={SUCCESS: Edge(EXIT_LOOP),
+                                             FAILED: Edge("n2", max_visits=5)}),
+        LoopNode(id="n2", role="backend", on={SUCCESS: Edge("n1", max_visits=5),
+                                              FAILED: Edge(FAIL_LOOP)})])
+    store = LoopStore(tmp_path / "l.json", seed=False)
+    store.upsert(loop)
+    engine.loops = store
+
+    seen = []
+
+    def fake(**kw):
+        seen.append((kw["role"].name, kw["config"].model))
+        return _Turn(None, "x", outcome=("FAILED", "nope") if kw["role"].name == "tester"
+                     else ("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(Step(role="", loop="tf", task="t"))
+
+    testers = [model for name, model in seen if name == "tester"]
+    assert testers[:2] == ["small-model", "small-model"]
+    assert testers[2] == "big-model"          # its third run, its own count
