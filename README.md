@@ -172,7 +172,7 @@ that produced them, folded, one section per attempt.
 Requires Python 3.11+ and git. [uv](https://docs.astral.sh/uv/) recommended.
 
 ```bash
-git clone https://github.com/<you>/trance
+git clone https://github.com/pjpetrov/trance
 cd trance
 uv sync --all-extras
 uv pip install -e .
