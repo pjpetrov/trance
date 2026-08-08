@@ -1702,8 +1702,10 @@ function presetCard(preset, isNew) {
     urlField.hidden = runsLocally;
     keyField.hidden = runsLocally;
     modelNote.textContent = runsLocally
-      ? "Leave the model id empty for whatever `claude` is set to, or name one: "
-        + "opus, sonnet, haiku."
+      ? "Empty means whatever the CLI is signed in to — usually opus, the most "
+        + "expensive. Type sonnet or haiku to spend less on ordinary steps; a "
+        + "delegated step is one long call, so the model's rate applies to all "
+        + "of it."
       : modelNote.textContent;
   };
 

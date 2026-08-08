@@ -366,6 +366,10 @@ running you:
 
 Writes outside your remit are refused as you make them, so there is nothing to
 work around: do the part you own and report what you could not.
+
+You have a limited number of tool calls. Every turn you take re-sends this whole
+conversation, so wandering is expensive: fetch the symbol you need rather than
+reading the file it is in, make the edit, run the check, and stop.
 """
 
 

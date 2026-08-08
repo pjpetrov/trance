@@ -59,9 +59,11 @@ KIND_DEFAULTS: dict[str, dict[str, Any]] = {
     "claudecode": {
         "label": "Claude Code (subscription, local CLI)",
         # No endpoint and no key: it runs the `claude` binary on this machine
-        # and bills against whatever that CLI is logged in to.
+        # and bills against whatever that CLI is logged in to. Named rather than
+        # left empty: empty takes the CLI's default, which is opus, on every
+        # step including the small ones.
         "base_url": "",
-        "model": "",
+        "model": "sonnet",
         "context_window": 200_000,
         "needs_key": False,
         "models": ["", "opus", "sonnet", "haiku"],

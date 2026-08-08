@@ -106,6 +106,13 @@ internal turns for a small edit, in the single call the throttle allows. trance
 still decides which step runs, in what order, with what prompt, and judges the
 result by the same `OUTCOME:` line and the same checks.
 
+**It costs what a whole step costs.** Measured on four real steps: 12–23 internal
+turns each, 340k–740k input tokens, because every turn re-sends the whole
+conversation. So the agent's **tool-round budget** is enforced on the tools it is
+given — the only lever there is, since the CLI has no turn limit — and the model
+id is worth setting: empty means the CLI's default, which is opus, on every step
+including the small ones.
+
 A delegated step gets an hour, not the ten minutes a model call gets: it is a
 whole step, with its own loop of reads, edits and test runs inside it. If it
 does run out, the message says how many tool calls it made and which files it

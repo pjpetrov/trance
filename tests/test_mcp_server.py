@@ -222,3 +222,41 @@ def test_a_role_file_without_lists_still_works(tmp_path):
         sys.stdin, sys.stdout = stdin, stdout
     names = [t["name"] for t in _json.loads(out.getvalue())["result"]["tools"]]
     assert "write_file" in names
+
+
+def test_a_delegated_step_gets_the_agents_tool_budget(tmp_path):
+    """The CLI has no turn limit of its own and each of its turns re-sends the
+    whole conversation — 21 turns came to 740,000 tokens for one step. The tools
+    are the only lever trance has, so that is where "enough" is said."""
+    from trance.agents.roles import AgentRole
+    from trance.mcp_server import GraphServer
+
+    project = tmp_path / "app"
+    project.mkdir()
+    role = AgentRole(name="t", title="T", description="d", system_prompt="p",
+                     paths=["**"], toolsets=["files"], tool_rounds=2)
+    server = GraphServer(project, role=role)
+
+    assert server.call("list_files", {})["isError"] is False
+    assert server.call("list_files", {})["isError"] is False
+
+    over = server.call("list_files", {})
+    assert over["isError"] is True
+    said = over["content"][0]["text"]
+    assert "all 2 of your tool calls" in said
+    assert "OUTCOME" in said and "honest unfinished" in said
+
+
+def test_an_agent_with_no_budget_is_not_capped(tmp_path):
+    """tool_rounds of 0 means "the default" for trance's own loop; for a
+    delegated step there is nothing to default to, so it is not a cap."""
+    from trance.agents.roles import AgentRole
+    from trance.mcp_server import GraphServer
+
+    project = tmp_path / "app"
+    project.mkdir()
+    server = GraphServer(project, role=AgentRole(
+        name="t", title="T", description="d", system_prompt="p",
+        paths=["**"], toolsets=["files"], tool_rounds=0))
+    for _ in range(30):
+        assert server.call("list_files", {})["isError"] is False

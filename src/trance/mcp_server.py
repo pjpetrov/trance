@@ -111,6 +111,11 @@ class GraphServer:
         # list — the same objects trance's own loop drives.
         self.agent = None
         self.role = role
+        # The same budget every other agent gets, enforced where it can be: the
+        # CLI has no turn limit of its own, and each of its turns re-sends the
+        # whole conversation — 21 turns came to 740,000 tokens for one step.
+        self.budget = int(getattr(role, "tool_rounds", 0) or 0) if role else 0
+        self.used = 0
         if role is not None:
             from .agents.tools import AgentTools
 
@@ -183,6 +188,19 @@ class GraphServer:
         # remit, allowlist, dedupe — because that is the entire point of routing
         # it here rather than letting Claude Code do it.
         if self.agent is not None and name not in {t["name"] for t in TOOLS}:
+            self.used += 1
+            if self.budget and self.used > self.budget:
+                # Refused rather than run: the only lever on a delegated step's
+                # length is the tools, so this is where "enough" is said.
+                spent = self.used - 1
+                self._record(name, arguments, False, 0,
+                             f"budget spent after {spent} calls")
+                return _content(
+                    f"You have used all {self.budget} of your tool calls for this "
+                    f"step. No more will run. Stop now, say what you did and what "
+                    f"remains, and end with your OUTCOME line — an honest unfinished "
+                    f"is worth more than another attempt nobody can see.",
+                    is_error=True)
             outcome = self.agent.call(name, arguments)
             # detail carries the diff of a write, a command's exit code and
             # output, the shape of a read. Dropping it left the console showing
