@@ -1350,6 +1350,41 @@ try {
     }
   }
 
+  // Every block says how it ended, from its own event — a loop makes more
+  // blocks than the step has attempts, so most of them had no attempt to take
+  // an outcome from and showed none.
+  {
+    const block = {
+      kind: "attempt", n: 3, agent: "tester", label: "3. tester", attempt: null,
+      events: [
+        { id: "o1", type: "step_outcome", agent: "tester", step_id: "st1",
+          ts: "2026-08-08T01:00:00+00:00",
+          payload: { outcome: "FAILED", exit: "FAILED",
+                     reason: "2 tests still failing in game-e2e" } },
+        { id: "v1", type: "verdict", agent: "factchecker", step_id: "st1",
+          ts: "2026-08-08T01:00:01+00:00",
+          payload: { verdict: "PASS", verifier: "factchecker" } },
+      ],
+    };
+    const summary = flat(api.blockSection(block, false).children[0])
+      .replace(/\s+/g, " ");
+    for (const want of ["FAILED", "factchecker: PASS", "2 tests still failing"]) {
+      if (!summary.includes(want)) {
+        console.log("BROKEN: a block does not say how it ended:", summary.slice(0, 160));
+        process.exit(1);
+      }
+    }
+    // ...and it is the block's own outcome, not a contradicting attempt.
+    const conflicted = api.blockSection(
+      { ...block, attempt: { outcome: "SUCCESS", n: 1 } }, false);
+    const text = flat(conflicted.children[0]).replace(/\s+/g, " ");
+    if (text.includes("SUCCESS")) {
+      console.log("BROKEN: a block shows an outcome that is not its own:",
+                  text.slice(0, 140));
+      process.exit(1);
+    }
+  }
+
   // An attempt with no trace says why. "No calls recorded" reads as a broken
   // panel; the truth is that the events were never written, and only the
   // sessions that predate the on-disk trace are affected.

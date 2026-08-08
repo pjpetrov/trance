@@ -2575,17 +2575,35 @@ function blockSection(block, openByDefault) {
   if (block.kind === "fix") summary.append(el("span", "badge", "fixing"));
   if (block.kind === "escalation") summary.append(el("span", "badge", "escalated"));
 
-  // Folded, this line is the whole point: what came of this block.
-  if (a && a.outcome) {
-    const out = el("span", `badge outcome-${a.outcome === "SUCCESS" ? "ok" : "bad"}`,
-                   a.outcome);
-    summary.append(out);
+  // Folded, this line is the whole point: what came of this block. Its own
+  // step_outcome wins over the step's attempt list: a loop makes more blocks
+  // than attempts, so the two line up only by luck, and when they disagree the
+  // event was emitted by this block and the attempt belongs to another.
+  const said = (block.events || []).find((e) => e.type === "step_outcome");
+  const outcome = said ? (said.payload.outcome || said.payload.exit) : (a && a.outcome);
+  if (outcome) {
+    summary.append(el("span",
+      `badge outcome-${outcome === "SUCCESS" ? "ok" : "bad"}`, outcome));
   }
   (a ? a.gate_results || [] : []).forEach((g) => {
     summary.append(el("span", `badge outcome-${g.verdict === "PASS" ? "ok" : "bad"}`,
                       `${g.gate}: ${g.verdict}`));
   });
-  const reason = a && (a.outcome_reason || a.feedback);
+
+  // A loop makes more blocks than the step has attempts, so most of them had no
+  // attempt to take an outcome from and showed none — the one thing you open a
+  // block to find out. Each block's own outcome and verdict are in its events.
+  const checked = (block.events || []).find((e) => e.type === "verdict");
+  if (checked) {
+    const verdict = checked.payload.verdict || checked.payload.result || "?";
+    const badge = el("span", `badge outcome-${verdict === "PASS" ? "ok" : "bad"}`,
+                     `${checked.payload.verifier || checked.agent || "check"}: ${verdict}`);
+    badge.title = checked.payload.reason || checked.payload.detail || "";
+    summary.append(badge);
+  }
+
+  const reason = (said && (said.payload.reason || said.payload.message))
+                 || (a && (a.outcome_reason || a.feedback));
   if (reason) summary.append(el("span", "muted small block-why", clip(reason, 80)));
   else if (a && (a.files_written || []).length) {
     summary.append(el("span", "muted small", a.files_written.join(", ")));

@@ -268,10 +268,38 @@ class AgentTurn:
 
     @property
     def verdict(self) -> str | None:
+        """PASS or FAIL, read from the word after the marker — not from the line.
+
+        "PASS anywhere in the line" turned
+
+            VERDICT: FAIL — the suite ran: 57 pass, 2 fail
+
+        into a pass, because the count of passing tests is in the reason. A
+        tester's whole job is that sentence, and it was being read backwards.
+        """
+        found = self._verdict_line()
+        if found is None:
+            return None
+        body = found[len("VERDICT:"):].strip()
+        first = re.split(r"[^A-Za-z]+", body.upper(), maxsplit=1)[0] if body else ""
+        if first == VERDICT_PASS:
+            return VERDICT_PASS
+        return VERDICT_FAIL          # FAIL, INCOMPLETE, or anything that is not a pass
+
+    @property
+    def verdict_reason(self) -> str:
+        """Whatever the verdict line said after the word."""
+        found = self._verdict_line()
+        if not found:
+            return ""
+        body = found[len("VERDICT:"):].strip()
+        return re.sub(r"^[A-Za-z]+\W*", "", body).strip()
+
+    def _verdict_line(self) -> str | None:
         for line in reversed(self.text.splitlines()):
-            stripped = line.strip().upper()
-            if stripped.startswith("VERDICT:"):
-                return VERDICT_PASS if VERDICT_PASS in stripped else VERDICT_FAIL
+            stripped = line.strip().lstrip("*# ").strip()
+            if stripped.upper().startswith("VERDICT:"):
+                return stripped
         return None
 
     @property
@@ -282,7 +310,14 @@ class AgentTurn:
         described a real defect and then stopped mid-thought was being marked
         done purely because nothing said otherwise, which is the worst way to
         be wrong here.
+
+        A failing VERDICT beats a claimed SUCCESS. A tester ends with both — the
+        verdict on the code, and the outcome of its own turn — and it reads its
+        own turn as a success because it did test the thing. But a block whose
+        tester says FAIL is not finished, and treating it as one leaves the loop
+        on a green light with red tests.
         """
+        verdict = self.verdict
         for line in reversed(self.text.splitlines()):
             stripped = line.strip()
             if not stripped.upper().startswith(OUTCOME_MARKER):
@@ -293,6 +328,11 @@ class AgentTurn:
 
             first = re.split(r"[^A-Za-z]+", body.upper(), maxsplit=1)[0]
             if first in _SUCCESS_WORDS:
+                if verdict == VERDICT_FAIL:
+                    return "FAILED", (
+                        "the agent reported SUCCESS for its own turn but its VERDICT "
+                        "was FAIL — the work it checked is not right yet: "
+                        + (self.verdict_reason or "no reason given"))
                 return OUTCOME_SUCCESS, ""
             if first in _FAILURE_WORDS:
                 return "FAILED", body or "no reason given"
@@ -301,6 +341,14 @@ class AgentTurn:
             # itself as the reason, which is how a step that went fine burned
             # its loop limit.
             return "UNCLEAR", body
+        # A verdict is an outcome for an agent that was asked for one: a tester
+        # that says PASS did its job and the block is done; FAIL is a block that
+        # is not. Asking again for the same thing in other words wastes a round
+        # and, often enough, gets nothing.
+        if verdict == VERDICT_PASS:
+            return OUTCOME_SUCCESS, ""
+        if verdict == VERDICT_FAIL:
+            return "FAILED", self.verdict_reason or "the verdict was FAIL"
         return "UNSTATED", ("the agent finished without stating an outcome, so there is "
                             "nothing to say the work succeeded")
 

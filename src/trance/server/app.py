@@ -984,7 +984,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if loop_name and loops.get(loop_name) is None:
             raise HTTPException(400, f"unknown loop {loop_name!r}")
         if not loop_name:
-            loop_name = next((l.name for l in loops.all()), "")
+            loop_name = _loop_for_review(session)
 
         task = ("Address this code review. Comments under a filename name a line; "
                 "make the change each one asks for and nothing else. Comments under "
@@ -1081,6 +1081,33 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"models": rows,
                 "total": sum(r["total"] for r in rows),
                 "calls": sum(r["calls"] for r in rows)}
+
+    def _loop_for_review(session) -> str:
+        """Which loop should answer a review.
+
+        It used to be whichever loop sorted first, which is how a review ended
+        up in a review loop: a reviewer reviewing the answer to a review, with
+        nothing run and nothing proved.
+
+        A review asks for changes, and what shows a change landed is running the
+        project's tests. So: a loop that contains an agent which can both verify
+        and run commands — a tester, whatever it is called. Preferring one the
+        flow already uses keeps a frontend review with the frontend's own loop
+        rather than a general one.
+        """
+        can_test = {r.name for r in roles.all()
+                    if r.verifier and "commands" in (r.toolsets or [])}
+        testing = [loop for loop in loops.all()
+                   if can_test & set(loop.roles())]
+        if not testing:
+            return next((loop.name for loop in loops.all()), "")
+
+        in_use = [s.loop for s in session.flow.steps if s.loop]
+        for name in reversed(in_use):            # the most recent one first
+            for loop in testing:
+                if loop.name == name:
+                    return loop.name
+        return testing[0].name
 
     @app.get("/api/sessions/{session_id}/reviews")
     def review_history(session_id: str):

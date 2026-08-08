@@ -7303,3 +7303,142 @@ def test_a_history_panel_is_not_sent_the_prompts(tmp_path):
     one = client.get(f"/api/sessions/{sid}/events/{slim[0]['id']}").json()
     assert one["payload"]["reasoning"] == big
     assert client.get(f"/api/sessions/{sid}/events/ev_nope").status_code == 404
+
+
+def test_a_review_goes_to_a_loop_that_can_run_the_tests(tmp_path, monkeypatch):
+    """It used to be whichever loop sorted first — which put a review into a
+    review loop: a reviewer reviewing the answer to a review, nothing run and
+    nothing proved. A review asks for changes; what shows a change landed is a
+    test run."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.loops import EXIT_LOOP, FAIL_LOOP, Edge, FAILED, Loop, LoopNode, SUCCESS
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    def loop(name, first, second):
+        return Loop(name=name, nodes=[
+            LoopNode(id="a", role=first, on={SUCCESS: Edge(EXIT_LOOP),
+                                             FAILED: Edge("b", max_visits=2)}),
+            LoopNode(id="b", role=second, on={SUCCESS: Edge("a", max_visits=2),
+                                              FAILED: Edge(FAIL_LOOP)})])
+
+    store = app.state.loops if hasattr(app.state, "loops") else None
+    from trance.agents.store import LoopStore
+
+    loops = store or LoopStore(tmp_path / "runs" / "loops.json", seed=False)
+    for existing in list(loops.all()):
+        loops.delete(existing.name)
+    loops.upsert(loop("review-front-end", "reviewer", "frontend"))   # sorts first
+    loops.upsert(loop("test-and-fix-frontend", "tester", "frontend"))
+    loops.upsert(loop("test-and-fix", "tester", "backend"))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.post(f"/api/sessions/{sid}/review",
+                json={"path": "a.js", "line": 1, "note": "rename this"})
+    client.post(f"/api/sessions/{sid}/review/finish", json={})
+
+    step = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"][-1]
+    assert step["loop"].startswith("test-and-fix"), step["loop"]
+
+
+def test_a_review_prefers_the_loop_the_flow_already_uses(tmp_path):
+    """A frontend review belongs with the frontend's own loop, not a general
+    one that happens to sort earlier."""
+    from fastapi.testclient import TestClient
+
+    from trance.agents.store import LoopStore
+    from trance.config import Config
+    from trance.loops import EXIT_LOOP, FAIL_LOOP, Edge, FAILED, Loop, LoopNode, SUCCESS
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    # The loops the app will read: it builds its store from runs_dir, so this
+    # has to be written before the app is created.
+    loops = LoopStore(tmp_path / "runs" / "loops.json")
+    for existing in list(loops.all()):
+        loops.delete(existing.name)
+    for name, builder in (("test-and-fix", "backend"), ("test-and-fix-frontend", "frontend")):
+        loops.upsert(Loop(name=name, nodes=[
+            LoopNode(id="a", role="tester", on={SUCCESS: Edge(EXIT_LOOP),
+                                                FAILED: Edge("b", max_visits=2)}),
+            LoopNode(id="b", role=builder, on={SUCCESS: Edge("a", max_visits=2),
+                                               FAILED: Edge(FAIL_LOOP)})]))
+
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "", "loop": "test-and-fix-frontend", "task": "earlier work",
+         "status": "done"}]})
+
+    client.post(f"/api/sessions/{sid}/review", json={"note": "the buttons are tiny"})
+    client.post(f"/api/sessions/{sid}/review/finish", json={})
+
+    step = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"][-1]
+    assert step["loop"] == "test-and-fix-frontend"
+
+
+def test_a_failing_verdict_is_read_from_the_word_not_the_line():
+    """A tester's whole job is that sentence, and it was being read backwards:
+
+        VERDICT: FAIL — the suite ran: 57 pass, 2 fail
+
+    "PASS anywhere in the line" made that a pass, because the count of passing
+    tests is in the reason."""
+    from trance.agents.runner import AgentTurn
+
+    assert AgentTurn(text="VERDICT: FAIL — the suite ran: 57 pass, 2 fail").verdict == "FAIL"
+    assert AgentTurn(text="VERDICT: PASS — 12 passing, nothing failed").verdict == "PASS"
+    # Markdown around it, which models add unprompted.
+    assert AgentTurn(text="**VERDICT: FAIL** — broken").verdict == "FAIL"
+    assert AgentTurn(text="### VERDICT: PASS").verdict == "PASS"
+    # Anything that is not a pass is not a pass.
+    assert AgentTurn(text="**VERDICT: INCOMPLETE** — not verified").verdict == "FAIL"
+    assert AgentTurn(text="no verdict here").verdict is None
+
+    turn = AgentTurn(text="VERDICT: FAIL — 2 tests still failing in game-e2e")
+    assert turn.verdict_reason == "2 tests still failing in game-e2e"
+
+
+def test_a_failing_verdict_beats_a_claimed_success():
+    """A tester ends with both lines: the verdict on the code, and how its own
+    turn went. It reads its own turn as a success because it did test the
+    thing — but a block whose tester says FAIL is not finished, and taking that
+    as success leaves the loop on a green light with red tests."""
+    from trance.agents.runner import AgentTurn
+
+    conflicted = AgentTurn(text="VERDICT: FAIL — 57 pass, 2 fail\n\nOUTCOME: SUCCESS")
+    outcome, reason = conflicted.outcome
+    assert outcome == "FAILED"
+    assert "VERDICT was FAIL" in reason and "57 pass, 2 fail" in reason
+
+    agreed = AgentTurn(text="VERDICT: PASS\n\nOUTCOME: SUCCESS")
+    assert agreed.outcome[0] == "SUCCESS"
+
+
+def test_a_verdict_alone_is_an_outcome():
+    """Asking a tester that already said PASS to say SUCCESS as well wastes a
+    round, and often enough gets nothing."""
+    from trance.agents.runner import AgentTurn
+
+    assert AgentTurn(text="ran the suite\n\nVERDICT: PASS").outcome[0] == "SUCCESS"
+
+    outcome, reason = AgentTurn(text="VERDICT: FAIL — two tests are red").outcome
+    assert outcome == "FAILED" and reason == "two tests are red"
+
+    # No verdict and no outcome is still not a success.
+    assert AgentTurn(text="I had a look around.").outcome[0] == "UNSTATED"
