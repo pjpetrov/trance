@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 
 from .db import GraphDB
-from .indexer.service import default_db_path
+from .indexer.service import default_db_path, index_repo
 from .worker.tools import ContextTools
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -95,6 +95,9 @@ TOOLS = [
 #: tool calls happen inside Claude Code's process and trance sees none of them.
 CALL_LOG = "mcp-calls.jsonl"
 
+#: Tools after which the index no longer describes the project.
+WRITING_TOOLS = {"write_file", "edit_file", "append_file", "replace_symbol"}
+
 
 class GraphServer:
     """The graph lookups, plus an agent's own tools when a role is given."""
@@ -116,6 +119,8 @@ class GraphServer:
         # whole conversation — 21 turns came to 740,000 tokens for one step.
         self.budget = int(getattr(role, "tool_rounds", 0) or 0) if role else 0
         self.used = 0
+        #: Something has been written since the index was built.
+        self.stale = False
         if role is not None:
             from .agents.tools import AgentTools
 
@@ -125,6 +130,28 @@ class GraphServer:
     def _notify(self, kind: str, payload: dict) -> None:
         """Tool-layer events, written where the run can pick them up."""
         self._append({"event": kind, "payload": payload})
+
+    def _rebuild(self) -> bool:
+        """Re-index, so a lookup can find what this step just wrote.
+
+        A delegated step is a whole step long: it writes a module and then asks
+        the graph about it, and the graph was built before the step began. In
+        trance's own loop a miss after a write triggers exactly this; here there
+        was nothing to trigger.
+        """
+        if not self.stale:
+            return False
+        self.stale = False
+        try:
+            db_path = default_db_path(self.project)
+            db = GraphDB(db_path)
+            index_repo(self.project, db)
+            self.tools = ContextTools(db, self.project)
+            if self.agent is not None:
+                self.agent.graph = self.tools
+        except Exception:                       # a bad parse is not a reason to die
+            return False
+        return True
 
     def agent_tools(self) -> list[dict]:
         """This role's tools, in MCP's shape rather than OpenAI's."""
@@ -202,6 +229,11 @@ class GraphServer:
                     f"is worth more than another attempt nobody can see.",
                     is_error=True)
             outcome = self.agent.call(name, arguments)
+            # The graph was built before this step started, and a step that
+            # writes a module then asks about it deserves an answer. Marked
+            # here rather than from a notification: writes do not send one.
+            if outcome.ok and (outcome.files_written or name in WRITING_TOOLS):
+                self.stale = True
             # detail carries the diff of a write, a command's exit code and
             # output, the shape of a read. Dropping it left the console showing
             # that a file had been edited without showing the edit.
@@ -230,8 +262,31 @@ class GraphServer:
             self._record(name, arguments, False, 0)
             return _content(f"the lookup failed: {type(exc).__name__}: {exc}",
                             is_error=True)
-        self._record(name, arguments, found.hit, len(found.text or ""))
+        # A miss right after a write is usually a question about the write: the
+        # graph was built before this step began, and a delegated step is a
+        # whole step long. trance's own loop re-indexes on exactly this; here
+        # there was nothing to trigger it.
+        if not found.hit and self._rebuild():
+            found = self._lookup(name, arguments) or found
+        self._record(name, arguments, found.hit, len(found.text or ""), found.text or "")
         return _content(found.text, is_error=not found.hit)
+
+    def _lookup(self, name: str, arguments: dict):
+        """One graph call against the current index, or None if it is not one."""
+        if self.tools is None:
+            return None
+        try:
+            if name == "get_definition":
+                return self.tools.get_definition(str(arguments.get("symbol") or ""))
+            if name == "search_symbols":
+                return self.tools.search_symbols(str(arguments.get("pattern") or ""))
+            if name == "get_callers":
+                return self.tools.get_callers(str(arguments.get("symbol") or ""))
+            if name == "get_callees":
+                return self.tools.get_callees(str(arguments.get("symbol") or ""))
+        except Exception:                       # noqa: BLE001 — the caller reports
+            return None
+        return None
 
 
 def _ok(request_id, result: dict) -> dict:

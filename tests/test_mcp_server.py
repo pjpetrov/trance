@@ -260,3 +260,63 @@ def test_an_agent_with_no_budget_is_not_capped(tmp_path):
         paths=["**"], toolsets=["files"], tool_rounds=0))
     for _ in range(30):
         assert server.call("list_files", {})["isError"] is False
+
+
+def test_the_graph_catches_up_with_what_the_step_just_wrote(tmp_path):
+    """A delegated step is a whole step long: it writes a module and then asks
+    the graph about it, and the graph was built before the step began. trance's
+    own loop re-indexes on exactly this miss; here there was nothing to trigger
+    it, so an agent was told its own new function did not exist."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.db import GraphDB
+    from trance.indexer.service import default_db_path, index_repo
+    from trance.mcp_server import GraphServer
+
+    project = tmp_path / "app"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "old.js").write_text("export function existing(){ return 1; }\n")
+    index_repo(project, GraphDB(default_db_path(project)))
+
+    server = GraphServer(project, role=BUILTIN_ROLES["frontend"])
+    assert server.call("get_definition", {"symbol": "existing"})["isError"] is False
+
+    wrote = server.call("write_file", {
+        "path": "src/new.js",
+        "content": "export function freshlyWritten(){ return 42; }\n"})
+    assert wrote["isError"] is False
+
+    found = server.call("get_definition", {"symbol": "freshlyWritten"})
+    assert found["isError"] is False
+    assert "return 42" in found["content"][0]["text"]
+
+    # A symbol that never existed still misses: the retry is not papering over
+    # every miss, only the one a write explains.
+    assert server.call("get_definition", {"symbol": "neverExisted"})["isError"] is True
+
+
+def test_the_index_is_rebuilt_once_per_write_not_per_miss(tmp_path, monkeypatch):
+    """Re-indexing is not free — a miss after a miss should not pay for it
+    twice."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.db import GraphDB
+    from trance.indexer.service import default_db_path, index_repo
+    from trance.mcp_server import GraphServer
+
+    project = tmp_path / "app"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "old.js").write_text("export function existing(){ return 1; }\n")
+    index_repo(project, GraphDB(default_db_path(project)))
+
+    server = GraphServer(project, role=BUILTIN_ROLES["frontend"])
+    server.call("write_file", {"path": "src/a.js", "content": "export const a = 1;\n"})
+
+    builds = []
+    import trance.mcp_server as mod
+
+    real = mod.index_repo
+    monkeypatch.setattr(mod, "index_repo",
+                        lambda *a, **k: builds.append(1) or real(*a, **k))
+
+    server.call("get_definition", {"symbol": "nope"})
+    server.call("get_definition", {"symbol": "still-nope"})
+    assert len(builds) == 1
