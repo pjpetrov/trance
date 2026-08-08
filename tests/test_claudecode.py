@@ -626,3 +626,46 @@ def test_a_delegated_steps_graph_lookups_are_reported(tmp_path, monkeypatch):
     assert graph_calls[0].payload["name"] == "get_callers"
     assert graph_calls[0].payload["arguments"] == {"symbol": "total"}
     assert graph_calls[0].payload["ok"] is True
+
+
+def test_a_delegated_edit_carries_its_diff(tmp_path, monkeypatch):
+    """The console showed that a file had been edited without showing the edit:
+    the tool outcome's detail — the diff, a command's exit code and output —
+    was being dropped on the way out of the tool server."""
+    import io
+    import json as _json
+
+    from trance.agents.delegate import _lookups_logged, _report_calls
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.events import Event, EventBus
+    from trance.mcp_server import serve
+
+    project = tmp_path / "app"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "a.js").write_text("const PORT = 3000;\nstart();\n")
+
+    serve(project, role=BUILTIN_ROLES["frontend"], stdout=io.StringIO(),
+          stdin=io.StringIO(_json.dumps({
+              "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "edit_file", "arguments": {
+                  "path": "src/a.js", "find": "const PORT = 3000;",
+                  "replace": "const PORT = process.env.PORT || 3000;"}}})))
+
+    rows = _lookups_logged(project)
+    assert rows and rows[-1]["detail"]["diff"].startswith("--- a/src/a.js")
+
+    seen: list[Event] = []
+    bus = EventBus()
+    bus.subscribe_sync(seen.append)
+    _report_calls(rows, bus, "s", "st", "frontend")
+
+    call = next(e for e in seen if e.type == "tool_call")
+    detail = call.payload["detail"]
+    assert detail["kind"] == "write"                  # not flattened to "delegated"
+    assert detail["via"] == "mcp"
+    assert "+const PORT = process.env.PORT" in detail["diff"]
+    assert detail["added"] == 1 and detail["removed"] == 1
+
+    # ...and the file it wrote is announced, as any other agent's would be.
+    wrote = [e for e in seen if e.type == "file_written"]
+    assert [e.payload["path"] for e in wrote] == ["src/a.js"]

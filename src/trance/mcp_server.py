@@ -134,9 +134,11 @@ class GraphServer:
         return out
 
     def _record(self, name: str, arguments: dict, hit: bool, chars: int,
-                result: str = "") -> None:
+                result: str = "", detail: dict | None = None,
+                files: list | None = None) -> None:
         self._append({"name": name, "arguments": arguments, "hit": hit,
-                      "chars": chars, "result": result[:400]})
+                      "chars": chars, "result": result[:2000],
+                      "detail": detail or {}, "files": files or []})
 
     def _append(self, row: dict) -> None:
         """One line per call. Never fatal: a call that answered and then failed
@@ -182,8 +184,12 @@ class GraphServer:
         # it here rather than letting Claude Code do it.
         if self.agent is not None and name not in {t["name"] for t in TOOLS}:
             outcome = self.agent.call(name, arguments)
+            # detail carries the diff of a write, a command's exit code and
+            # output, the shape of a read. Dropping it left the console showing
+            # that a file had been edited without showing the edit.
             self._record(name, arguments, outcome.ok, len(outcome.text or ""),
-                         outcome.text or "")
+                         outcome.text or "", detail=outcome.detail,
+                         files=list(outcome.files_written or []))
             return _content(outcome.text, is_error=not outcome.ok)
 
         if self.tools is None:

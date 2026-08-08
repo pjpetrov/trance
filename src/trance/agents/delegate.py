@@ -262,12 +262,20 @@ def _report_calls(rows: list[dict], bus, session_id: str, step_id: str,
             bus.emit(row["event"], session_id, agent=agent, step_id=step_id,
                      payload=row.get("payload") or {})
             continue
+        # detail as the tool produced it — the diff, the exit code, the output —
+        # so a delegated call renders exactly like one from trance's own loop.
+        detail = dict(row.get("detail") or {})
+        detail.setdefault("kind", "delegated")
+        detail["via"] = "mcp"
         bus.emit("tool_call", session_id, agent=agent, step_id=step_id, payload={
             "name": row.get("name") or "tool", "arguments": row.get("arguments") or {},
             "ok": bool(row.get("hit")), "result_tokens": (row.get("chars") or 0) // 4,
             "result": row.get("result") or ("answered" if row.get("hit") else "no match"),
-            "detail": {"kind": "delegated", "via": "mcp"},
+            "detail": detail,
         })
+        for path in row.get("files") or []:
+            bus.emit("file_written", session_id, agent=agent, step_id=step_id,
+                     payload={"path": path, "delegated": True})
 
 
 def _lookups_logged(project: Path) -> list[dict]:
