@@ -156,3 +156,69 @@ def test_a_log_that_cannot_be_written_is_not_fatal(tmp_path, monkeypatch):
 
     result = server.call("get_definition", {"symbol": "total"})
     assert result["isError"] is False and "reduce" in result["content"][0]["text"]
+
+
+def test_the_allowlist_you_edited_is_the_one_it_obeys(tmp_path):
+    """The tool server runs in its own process, so an allowlist it is not
+    handed is one it falls back to guessing — and trance's built-in defaults are
+    not what the person editing the list in the UI meant."""
+    import io
+    import json as _json
+    import sys
+
+    from trance.agents.roles import AgentRole
+    from trance.mcp_server import main
+
+    project = tmp_path / "app"
+    (project / ".trance").mkdir(parents=True)
+    role = AgentRole(name="tester", title="T", description="d", system_prompt="p",
+                     paths=["tests/**"], toolsets=["files", "commands"],
+                     command_list="tight")
+    (project / ".trance" / "mcp-role.json").write_text(_json.dumps({
+        "role": role.to_dict(),
+        "commands": {"tight": {"allowed": ["echo"], "shell": False}},
+    }))
+
+    asked = [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "run_command", "arguments": {"command": c}}}
+             for c in ("echo hello", "pytest -q")]
+    stdin, stdout = sys.stdin, sys.stdout
+    sys.stdin = io.StringIO("\n".join(_json.dumps(r) for r in asked))
+    sys.stdout = out = io.StringIO()
+    try:
+        main([str(project), str(project / ".trance" / "mcp-role.json")])
+    finally:
+        sys.stdin, sys.stdout = stdin, stdout
+
+    allowed, refused = [_json.loads(l)["result"] for l in out.getvalue().splitlines()]
+    assert allowed["isError"] is False and "hello" in allowed["content"][0]["text"]
+    assert refused["isError"] is True
+    assert "not in this agent's allowlist" in refused["content"][0]["text"]
+
+
+def test_a_role_file_without_lists_still_works(tmp_path):
+    """Older files, and anyone calling the server by hand."""
+    import json as _json
+
+    from trance.agents.roles import AgentRole
+    from trance.mcp_server import main
+
+    project = tmp_path / "app"
+    (project / ".trance").mkdir(parents=True)
+    bare = project / ".trance" / "role.json"
+    bare.write_text(_json.dumps(AgentRole(name="x", title="X", description="d",
+                                          system_prompt="p", paths=["**"],
+                                          toolsets=["files"]).to_dict()))
+    import io
+    import sys
+
+    stdin, stdout = sys.stdin, sys.stdout
+    sys.stdin = io.StringIO(_json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+    sys.stdout = out = io.StringIO()
+    try:
+        assert main([str(project), str(bare)]) == 0
+    finally:
+        sys.stdin, sys.stdout = stdin, stdout
+    names = [t["name"] for t in _json.loads(out.getvalue())["result"]["tools"]]
+    assert "write_file" in names

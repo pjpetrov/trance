@@ -310,12 +310,21 @@ def _mcp_config(project: Path, role_file: Path) -> dict:
 def _write_role(project: Path, role) -> Path:
     """The agent's definition, where the tool server can read it.
 
-    Its remit travels with it: the server enforces the same globs trance's own
-    loop would, rather than trusting a prompt to be obeyed.
+    Its remit travels with it, and so does the command list it is pointed at:
+    the server runs in its own process, so anything it is not told falls back to
+    trance's built-in defaults — which is not what the person editing the
+    allowlist in the UI meant.
     """
+    from .tools import command_lists
+
+    lists = command_lists()
+    payload = {
+        "role": role.to_dict(),
+        "commands": {name: policy.to_dict() for name, policy in lists.items()},
+    }
     path = Path(project) / ".trance" / "mcp-role.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(role.to_dict()), encoding="utf8")
+    path.write_text(json.dumps(payload), encoding="utf8")
     return path
 
 

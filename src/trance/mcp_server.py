@@ -256,12 +256,28 @@ def main(argv: list[str] | None = None) -> int:
         # list. Without one it is the graph alone, which is all a non-delegated
         # Claude Code session should get.
         from .agents.roles import AgentRole
+        from .agents.tools import CommandPolicy, set_command_lists
 
         try:
-            role = AgentRole.from_dict(json.loads(Path(args[1]).read_text(encoding="utf8")))
-        except (OSError, ValueError, TypeError) as exc:
+            saved = json.loads(Path(args[1]).read_text(encoding="utf8"))
+        except (OSError, ValueError) as exc:
             print(f"could not read the role: {exc}", file=sys.stderr)
             return 2
+
+        # Two shapes: the role alone, or the role plus the command lists it may
+        # be pointed at. This process has no store, so an allowlist it is not
+        # handed is one it falls back to guessing.
+        raw_role = saved.get("role", saved) if isinstance(saved, dict) else {}
+        try:
+            role = AgentRole.from_dict(raw_role)
+        except (ValueError, TypeError) as exc:
+            print(f"could not read the role: {exc}", file=sys.stderr)
+            return 2
+        lists = saved.get("commands") if isinstance(saved, dict) else None
+        if lists:
+            set_command_lists({name: CommandPolicy(allowed=list(p.get("allowed") or []),
+                                                   shell=bool(p.get("shell")))
+                               for name, p in lists.items()})
     serve(Path(args[0]), role=role)
     return 0
 

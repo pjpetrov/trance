@@ -125,6 +125,8 @@ _POLICY = CommandPolicy()
 #: rather than reaching for the store: it is the enforcement point and must work
 #: in the CLI and the tests, where no store exists.
 _LISTS: dict[str, CommandPolicy] = {}
+#: What the default list is called when it travels with the others.
+DEFAULT_LIST_NAME = "default"
 
 @dataclass
 class RunningCommand:
@@ -219,6 +221,15 @@ def set_command_lists(lists: dict) -> None:
     """Install the named allowlists (the server does this at startup)."""
     global _LISTS
     _LISTS = dict(lists or {})
+
+
+def command_lists() -> dict:
+    """Every named list, plus the default under its own name.
+
+    Read by anything that has to carry the policy somewhere else — a delegated
+    step's tool server runs in its own process and cannot reach this one.
+    """
+    return {**_LISTS, DEFAULT_LIST_NAME: _POLICY}
 
 
 def command_list(name: str | None) -> CommandPolicy:
