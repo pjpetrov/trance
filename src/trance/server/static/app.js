@@ -3632,7 +3632,8 @@ function consoleAppend(event) {
     case "delegated":
       consolePush(consoleEntry({
         kind: "step", icon: "⇥", time, tag: event.agent,
-        label: `handed to Claude Code — one call, its own tools (${p.model || "default"})`,
+        label: `handed to Claude Code — one call, trance's tools over MCP `
+               + `(${p.model || "default"})`,
         body: () => el("pre", null, p.message || ""),
       }));
       return;

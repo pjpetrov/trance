@@ -1221,9 +1221,11 @@ try {
                         ts: "2026-08-07T21:48:08+00:00",
                         payload: { model: "claude-code", message: "one call" } });
     const shown = flat(document.getElementById("console")).replace(/\s+/g, " ");
-    if (!shown.includes("handed to Claude Code")) {
-      console.log("BROKEN: a delegated step leaves no trace in the console:",
-                  shown.slice(0, 140));
+    // It says whose tools are in play, because that is the whole difference
+    // between this mode being a trance step and being a Claude Code session.
+    if (!shown.includes("handed to Claude Code") || !shown.includes("over MCP")) {
+      console.log("BROKEN: the console does not say whose tools a delegated step uses:",
+                  shown.slice(0, 160));
       process.exit(1);
     }
   }

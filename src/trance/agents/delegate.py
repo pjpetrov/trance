@@ -9,18 +9,17 @@ So for that backend the step is delegated: one call, Claude Code's own loop, its
 own tools, its own context management. Measured at three internal turns for a
 one-line edit, in a single call the throttle allows.
 
-What that costs, stated rather than hidden:
+It is still a trance step. Claude Code's own file tools are switched off and
+trance's are handed to it over MCP, with this agent's real definition behind
+them — so a write outside the remit is refused as it is made, commands answer to
+the allowlist, reads are deduplicated, and every call reaches the console while
+the step runs. The git check at the end stays as a backstop, in case anything
+reaches the disk another way.
 
-* **The remit is checked afterwards, not enforced during.** Claude Code writes
-  files directly. So the step runs between two git checkpoints, and what it
-  touched is read back from git — anything outside the remit fails the step and
-  is named. The work is still on disk and still revertible; it is caught, not
-  prevented.
-* **Context is theirs.** trance's curated bundle goes in as the prompt, but
-  Claude Code reads what it likes after that, and carries ~40,000 tokens of its
-  own preamble and tools. The whole thesis of this project does not apply to
-  this backend. It is here because a subscription is cheaper than an API bill,
-  which is a different kind of saving.
+What it still costs: **context is largely theirs.** trance's prompt goes in, but
+Claude Code reads what it likes after that and carries tens of thousands of
+tokens of its own preamble. The graph is the exception — it is one of the tools
+handed over, so the agent can ask for a symbol instead of grepping for it.
 
 Everything else stays trance's: which step runs, in what order, with which
 prompt, judged by the same OUTCOME line and the same checks.
@@ -49,11 +48,6 @@ from ..providers.claudecode_client import _is_abort, _why
 #: tester running a suite ended with "did not finish within 600s" and nothing to
 #: show for it.
 DELEGATED_TIMEOUT_S = 3600.0
-
-#: Claude Code's own tools, used only when trance cannot serve its own — an
-#: unindexed project has no MCP server to offer. They edit files directly, so
-#: the remit is checked from the diff afterwards rather than enforced.
-FALLBACK_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "TodoWrite"]
 
 #: trance's tools, over MCP. With these the delegated step is a trance step:
 #: a write outside the remit is refused as it happens, reads are deduplicated,
@@ -161,9 +155,9 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
 
     bus.emit("delegated", session_id, agent=role.name, step_id=step_id, payload={
         "model": config.model or "claude code default",
-        "message": (f"{role.name} is running this step inside Claude Code — one call, "
-                    f"its own tools. What it changes is checked against the remit "
-                    f"afterwards."),
+        "message": (f"{role.name} is running this step inside Claude Code: one call, "
+                    f"with trance's tools over MCP — its own are switched off, so "
+                    f"the remit and the command list still apply."),
     })
 
     # Its own process group, so Stop can take the whole tree down: the CLI
