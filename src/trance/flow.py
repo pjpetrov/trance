@@ -208,6 +208,28 @@ class Flow:
     def next_pending(self) -> Step | None:
         return next((s for s in self.steps if s.status == "pending"), None)
 
+    def keep_finished(self, proposed: list["Step"]) -> dict:
+        """Take a fresh proposal without throwing away what already ran.
+
+        The orchestrator answers "I found bugs" with a whole new plan, and
+        replacing the flow with it deleted every finished step — the record of
+        what was built, with its attempts, its commits and its trace. Work that
+        happened is not a draft.
+
+        So anything already done, failed, blocked or in flight stays where it
+        is, and the proposal contributes what is genuinely new. A proposed step
+        matching one that already ran is dropped: that is the orchestrator
+        describing the past, not asking for it again.
+        """
+        kept = [s for s in self.steps
+                if s.status in self.TERMINAL or s.status in self.LOCKED]
+        seen = {(s.role, s.loop, s.task.strip()) for s in kept}
+        fresh = [s for s in proposed
+                 if (s.role, s.loop, s.task.strip()) not in seen]
+        self.steps = kept + fresh
+        return {"kept": len(kept), "added": len(fresh),
+                "dropped": len(proposed) - len(fresh)}
+
     def insert_next(self, step: "Step") -> int:
         """Put a step at the front of the queue, after whatever is running.
 

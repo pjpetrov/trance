@@ -343,7 +343,22 @@ function renderFlowEditor() {
     box.append(el("p", "muted small",
       "No steps yet — describe the project to the orchestrator, or add one manually."));
   }
-  state.draftSteps.forEach((step, index) => box.append(stepCard(step, index)));
+  // Finished steps are kept now rather than replaced by a new plan, so the list
+  // grows. Hiding them is a view, not an edit: they stay in the flow, in git and
+  // in the count below.
+  const hide = $("hide-finished") && $("hide-finished").checked;
+  let hidden = 0;
+  state.draftSteps.forEach((step, index) => {
+    if (hide && TERMINAL.has(step.status)) { hidden += 1; return; }
+    box.append(stepCard(step, index));
+  });
+  if (hidden) {
+    const note = el("p", "muted small");
+    const show = el("button", "small ghost", `show ${hidden} finished step(s)`);
+    show.onclick = () => { $("hide-finished").checked = false; redrawEditor(); };
+    note.append(show);
+    box.prepend(note);
+  }
 }
 
 //: Only the parts a user edits — status and attempts change under them.
@@ -716,8 +731,25 @@ function clearDropMarks() {
 function redrawEditor() {
   const box = $("flow-editor");
   box.innerHTML = "";
-  state.draftSteps.forEach((step, index) => box.append(stepCard(step, index)));
+  // Finished steps are kept now rather than replaced by a new plan, so the list
+  // grows. Hiding them is a view, not an edit: they stay in the flow, in git and
+  // in the count below.
+  const hide = $("hide-finished") && $("hide-finished").checked;
+  let hidden = 0;
+  state.draftSteps.forEach((step, index) => {
+    if (hide && TERMINAL.has(step.status)) { hidden += 1; return; }
+    box.append(stepCard(step, index));
+  });
+  if (hidden) {
+    const note = el("p", "muted small");
+    const show = el("button", "small ghost", `show ${hidden} finished step(s)`);
+    show.onclick = () => { $("hide-finished").checked = false; redrawEditor(); };
+    note.append(show);
+    box.prepend(note);
+  }
 }
+
+$("hide-finished").onchange = () => redrawEditor();
 
 $("collapse-editor").onchange = () => {
   state.openSteps.clear();      // the toggle is the master switch

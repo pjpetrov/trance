@@ -844,6 +844,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "needs_build": needs_build, "blocked_by": blockers,
                 "build_command": (dev or {}).get("command", "")}
 
+    #: Sessions whose orchestrator is mid-answer. One at a time per session:
+    #: two proposals racing to replace the same flow is how one of them
+    #: silently loses.
+    thinking: set[str] = set()
+
     #: Tunnels trance started, so it can stop them again. One per session: a
     #: second public URL for the same folder is only confusing.
     tunnels: dict[str, object] = {}
@@ -1357,6 +1362,17 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if not text:
             raise HTTPException(400, "message is required")
 
+        # One at a time. Two questions in flight mean two proposals racing to
+        # replace the same flow, and the loser's work is silently gone — the
+        # second answer is written against a conversation the first has already
+        # changed.
+        if session_id in thinking:
+            raise HTTPException(409, (
+                "The orchestrator is still answering your last message. "
+                "Wait for it — asking again now would give you two plans "
+                "written against different conversations."))
+        thinking.add(session_id)
+
         session.chat.append(ChatMessage(role="user", content=text))
         bus.emit("chat", session_id, agent="user", payload={"content": text})
 
@@ -1378,6 +1394,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         except BackendError as exc:
             bus.emit("error", session_id, payload={"message": str(exc)})
             raise HTTPException(502, str(exc))
+        finally:
+            # However it ended. A lock that outlives a failure locks the
+            # orchestrator out of the session for good.
+            thinking.discard(session_id)
 
         session.chat.append(ChatMessage(role="orchestrator", content=result["text"]))
         bus.emit("chat", session_id, agent="orchestrator",
@@ -1392,8 +1412,21 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             proposal = result["proposal"]
             session.goal = proposal.get("summary") or session.goal
             session.team = roles.resolve_team(proposal["team"])
-            session.flow = Flow(steps=[Step.from_dict(s) for s in proposal["steps"]])
+            # Added to, not replaced. A new plan proposed halfway through used
+            # to delete every finished step and its history with it — the
+            # orchestrator is proposing what to do next, not editing what
+            # already happened.
+            change = session.flow.keep_finished(
+                [Step.from_dict(s) for s in proposal["steps"]])
             session.status = "ready"
+            if change["kept"]:
+                bus.emit("flow_extended", session_id, agent="orchestrator", payload={
+                    **change,
+                    "message": (f"Added {change['added']} step(s); kept the "
+                                f"{change['kept']} that already ran"
+                                + (f", and skipped {change['dropped']} that matched "
+                                   f"work already done." if change["dropped"] else ".")),
+                })
             bus.emit("flow_proposed", session_id, payload={
                 "summary": proposal["summary"], "flow": session.flow.to_dict(),
                 "team": [r.to_dict() for r in session.team],
@@ -1735,8 +1768,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 if event.session_id != session_id:
                     continue
                 await ws.send_text(json.dumps(event.to_dict()))
-                if event.type in ("step_finished", "step_failed", "run_finished", "flow_updated",
-                                  "step_started", "verdict", "run_stopped"):
+                # Anything that changes the flow is followed by the flow. A
+                # review adds a step and said only "review_sent", so the plan
+                # screen never heard that it had a new step in it.
+                if event.type in ("step_finished", "step_failed", "run_finished",
+                                  "flow_updated", "flow_proposed", "flow_extended",
+                                  "review_sent", "step_started", "verdict",
+                                  "run_stopped", "step_split"):
                     current = store.get(session_id)
                     if current:
                         await ws.send_text(json.dumps({"type": "snapshot",

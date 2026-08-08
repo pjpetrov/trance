@@ -693,6 +693,42 @@ try {
     api.state.session.chat = [{ role: "user", content: "build me a game" }];
   }
 
+  // Finished steps are kept when a new plan arrives, so the list grows —
+  // hiding them is a view, not an edit.
+  {
+    api.state.session.status = "planning";
+    api.state.session.flow = { steps: [
+      { id: "d1", role: "backend", task: "already built", status: "done",
+        check: null, on_fail: null, max_loops: 2, attempts: [] },
+      { id: "p1", role: "backend", task: "still to do", status: "pending",
+        check: null, on_fail: null, max_loops: 2, attempts: [] },
+    ] };
+    api.renderFlowEditor();
+    document.getElementById("hide-finished").checked = true;
+    api.redrawEditor();
+    const hidden = flat(document.getElementById("flow-editor")).replace(/\s+/g, " ");
+    if (hidden.includes("already built")) {
+      console.log("BROKEN: a finished step was not hidden");
+      process.exit(1);
+    }
+    if (!hidden.includes("show 1 finished step(s)") || !hidden.includes("still to do")) {
+      console.log("BROKEN: hiding lost the way back, or hid too much:",
+                  hidden.slice(0, 140));
+      process.exit(1);
+    }
+    // It is a view: the flow still has both, so nothing was deleted.
+    if (api.state.draftSteps.length !== 2) {
+      console.log("BROKEN: hiding a step removed it from the plan");
+      process.exit(1);
+    }
+    document.getElementById("hide-finished").checked = false;
+    api.redrawEditor();
+    if (!flat(document.getElementById("flow-editor")).includes("already built")) {
+      console.log("BROKEN: unhiding did not bring it back");
+      process.exit(1);
+    }
+  }
+
   // Clear plan: confirmed, then emptied and saved — and whatever the server
   // kept (a running step) is what ends up on screen.
   {

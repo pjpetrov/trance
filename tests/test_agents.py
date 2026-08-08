@@ -7442,3 +7442,143 @@ def test_a_verdict_alone_is_an_outcome():
 
     # No verdict and no outcome is still not a success.
     assert AgentTurn(text="I had a look around.").outcome[0] == "UNSTATED"
+
+
+def test_a_new_proposal_adds_to_the_plan_instead_of_replacing_it():
+    """"I found bugs" was answered with a whole new plan, and applying it
+    deleted every finished step — the record of what was built, with its
+    attempts, its commits and its trace. Work that happened is not a draft."""
+    from trance.flow import Flow, Step
+
+    flow = Flow(steps=[
+        Step(id="1", role="backend", task="build the api", status="done"),
+        Step(id="2", role="frontend", task="build the ui", status="failed"),
+        Step(id="3", role="tester", task="test it", status="pending"),
+    ])
+    change = flow.keep_finished([
+        Step(role="backend", task="build the api"),      # already done
+        Step(role="backend", task="fix the null bug"),   # new
+        Step(role="tester", task="test the fix"),        # new
+    ])
+
+    assert change == {"kept": 2, "added": 2, "dropped": 1}
+    assert [(s.status, s.task) for s in flow.steps] == [
+        ("done", "build the api"),
+        ("failed", "build the ui"),
+        ("pending", "fix the null bug"),
+        ("pending", "test the fix"),
+    ]
+    # The pending step that was not re-proposed is gone: that one *is* a draft.
+    assert all(s.task != "test it" for s in flow.steps)
+
+
+def test_a_step_in_flight_survives_a_new_proposal():
+    """No edit may take work out from under an agent, and a proposal is an
+    edit."""
+    from trance.flow import Flow, Step
+
+    flow = Flow(steps=[Step(id="1", role="backend", task="mid-flight",
+                            status="running")])
+    change = flow.keep_finished([Step(role="frontend", task="something else")])
+    assert change["kept"] == 1
+    assert [s.task for s in flow.steps] == ["mid-flight", "something else"]
+
+
+def test_the_orchestrator_answers_one_question_at_a_time(tmp_path, monkeypatch):
+    """Two questions in flight are two proposals racing to replace the same
+    flow, and the loser's work goes silently."""
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from trance.agents import orchestrator as orch
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    slow = threading.Event()
+    monkeypatch.setattr(orch, "chat", lambda **kw: (
+        slow.wait(5), {"text": "thinking", "proposal": None, "truncated": False})[1])
+
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    first = {}
+    worker = threading.Thread(target=lambda: first.update(
+        code=client.post(f"/api/sessions/{sid}/chat",
+                         json={"message": "build it"}).status_code))
+    worker.start()
+    time.sleep(0.3)
+
+    busy = client.post(f"/api/sessions/{sid}/chat", json={"message": "again"})
+    assert busy.status_code == 409
+    assert "still answering" in busy.json()["detail"]
+
+    slow.set()
+    worker.join(timeout=10)
+    assert first["code"] == 200
+    # ...and the lock is released, however it ended.
+    assert client.post(f"/api/sessions/{sid}/chat",
+                       json={"message": "now"}).status_code == 200
+
+
+def test_the_lock_is_released_when_the_orchestrator_fails(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trance.agents import orchestrator as orch
+    from trance.config import Config
+    from trance.providers.base import BackendError
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    monkeypatch.setattr(orch, "chat", lambda **kw: (_ for _ in ()).throw(
+        BackendError("the endpoint is down")))
+
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    assert client.post(f"/api/sessions/{sid}/chat", json={"message": "x"}).status_code == 502
+    # A lock that outlives a failure locks the orchestrator out for good.
+    assert client.post(f"/api/sessions/{sid}/chat",
+                       json={"message": "y"}).status_code == 502
+
+
+def test_the_plan_hears_about_a_review_step(tmp_path):
+    """A review adds a step and said only "review_sent", so the plan screen
+    never heard that it had a new step in it."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.post(f"/api/sessions/{sid}/review", json={"note": "the buttons are tiny"})
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.receive_json()                                  # the opening snapshot
+        client.post(f"/api/sessions/{sid}/review/finish", json={})
+        seen = []
+        for _ in range(6):
+            seen.append(ws.receive_json())
+            if seen[-1].get("type") == "snapshot":
+                break
+
+    assert "review_sent" in [e.get("type") for e in seen]
+    snapshot = seen[-1]
+    assert snapshot["type"] == "snapshot"
+    assert len(snapshot["payload"]["flow"]["steps"]) == 1
