@@ -106,6 +106,11 @@ internal turns for a small edit, in the single call the throttle allows. trance
 still decides which step runs, in what order, with what prompt, and judges the
 result by the same `OUTCOME:` line and the same checks.
 
+A delegated step gets an hour, not the ten minutes a model call gets: it is a
+whole step, with its own loop of reads, edits and test runs inside it. If it
+does run out, the message says how many tool calls it made and which files it
+changed — the work is on disk behind the step's checkpoint.
+
 **It is still a trance step.** Claude Code's own file tools are switched off
 (`--tools ""`) and trance's are handed to it over MCP — `read_file`,
 `edit_file`, `write_file`, `run_command`, the graph lookups. So a write outside

@@ -40,7 +40,15 @@ from pathlib import Path
 
 from .. import vcs
 from ..providers.base import BackendError, Cancelled, clear_inflight, register_inflight
-from ..providers.claudecode_client import DEFAULT_TIMEOUT_S, _is_abort, _why
+from ..providers.claudecode_client import _is_abort, _why
+
+#: How long a delegated step may take. Not the model's timeout: that one bounds
+#: a single call — a question and an answer — while this bounds an entire step,
+#: with its own loop of reads, edits and test runs inside it. Ten minutes is
+#: generous for the first and routinely short for the second, which is how a
+#: tester running a suite ended with "did not finish within 600s" and nothing to
+#: show for it.
+DELEGATED_TIMEOUT_S = 3600.0
 
 #: Claude Code's own tools, used only when trance cannot serve its own — an
 #: unindexed project has no MCP server to offer. They edit files directly, so
@@ -177,13 +185,24 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
         args=(project, seen_before, bus, session_id, step_id, role.name, handle),
         daemon=True, name=f"delegate-{step_id}")
     watcher.start()
+    # An explicitly longer model timeout is respected; a shorter one is not
+    # applied to something it was never measuring.
+    limit = max(float(config.timeout_s or 0), DELEGATED_TIMEOUT_S)
     try:
-        out, err = proc.communicate(timeout=config.timeout_s or DEFAULT_TIMEOUT_S)
+        out, err = proc.communicate(timeout=limit)
     except subprocess.TimeoutExpired as exc:
         handle.abort()
+        # It ran for an hour: say what it managed, rather than only that it
+        # stopped. The files are on disk and the calls are in the log.
+        did = _lookups_logged(project)[seen_before:]
+        touched = _touched(project, before)
         raise BackendError(
-            f"Claude Code did not finish the step within "
-            f"{config.timeout_s or DEFAULT_TIMEOUT_S:.0f}s") from exc
+            f"Claude Code did not finish this step within {limit / 60:.0f} minutes. "
+            f"It made {len(did)} tool call(s) and changed "
+            f"{len(touched) or 'no'} file(s)"
+            + (f" ({', '.join(touched[:4])})" if touched else "")
+            + ". The work is on disk behind this step's checkpoint; re-run the step "
+            + "to carry on, or split it into smaller ones.") from exc
     finally:
         clear_inflight(session_id, handle)
 

@@ -1173,6 +1173,34 @@ try {
     }
   }
 
+  // A delegated call renders like any other: a write shows its diff, a command
+  // shows its exit code and output. The only difference should be who ran it.
+  {
+    api.consoleReset();
+    api.consoleAppend({ type: "tool_call", agent: "frontend", step_id: "st1",
+      ts: "2026-08-08T01:00:00+00:00",
+      payload: { name: "edit_file", ok: true, arguments: { path: "src/a.js" },
+                 result: "Edited src/a.js",
+                 detail: { kind: "write", via: "mcp", path: "src/a.js",
+                           added: 1, removed: 1, created: false,
+                           diff: "--- a/src/a.js\n+++ b/src/a.js\n-const PORT = 3000;\n"
+                                 + "+const PORT = process.env.PORT || 3000;" } } });
+    api.consoleAppend({ type: "tool_call", agent: "tester", step_id: "st1",
+      ts: "2026-08-08T01:00:01+00:00",
+      payload: { name: "run_command", ok: false, arguments: { command: "npm test" },
+                 result: "2 failing", detail: { kind: "command", via: "mcp",
+                          command: "npm test", exit_code: 1,
+                          output: "FAIL tests/game.test.ts\n2 failing" } } });
+    const shown = flat(document.getElementById("console")).replace(/\s+/g, " ");
+    for (const want of ["src/a.js", "process.env.PORT", "npm test", "2 failing"]) {
+      if (!shown.includes(want)) {
+        console.log("BROKEN: a delegated call does not render like a normal one:",
+                    want, "|", shown.slice(0, 200));
+        process.exit(1);
+      }
+    }
+  }
+
   // A delegated step is one long call with nothing coming back until it ends.
   // If neither the console nor the header says so, a step that is working looks
   // like one that has hung on whatever was said last.

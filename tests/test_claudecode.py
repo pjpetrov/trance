@@ -669,3 +669,89 @@ def test_a_delegated_edit_carries_its_diff(tmp_path, monkeypatch):
     # ...and the file it wrote is announced, as any other agent's would be.
     wrote = [e for e in seen if e.type == "file_written"]
     assert [e.payload["path"] for e in wrote] == ["src/a.js"]
+
+
+def test_a_delegated_command_carries_its_output(tmp_path):
+    """It should read like any other command in the console: what was run, what
+    it exited with, and what it printed."""
+    import io
+    import json as _json
+
+    from trance.agents.delegate import _lookups_logged, _report_calls
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.events import Event, EventBus
+    from trance.mcp_server import serve
+
+    project = tmp_path / "app"
+    project.mkdir()
+    (project / "only.txt").write_text("here\n")
+
+    serve(project, role=BUILTIN_ROLES["tester"], stdout=io.StringIO(),
+          stdin=io.StringIO(_json.dumps({
+              "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "run_command", "arguments": {"command": "ls -1"}}})))
+
+    seen: list[Event] = []
+    bus = EventBus()
+    bus.subscribe_sync(seen.append)
+    _report_calls(_lookups_logged(project), bus, "s", "st", "tester")
+
+    call = next(e for e in seen if e.type == "tool_call")
+    detail = call.payload["detail"]
+    assert detail["kind"] == "command"          # the console's command renderer
+    assert detail["command"] == "ls -1"
+    assert detail["exit_code"] == 0
+    assert "only.txt" in detail["output"]
+
+    # The live pair, so a long command shows as running rather than as nothing.
+    kinds = [e.type for e in seen]
+    assert "command_started" in kinds and "command_finished" in kinds
+
+
+def test_a_delegated_step_gets_a_whole_steps_worth_of_time(tmp_path, monkeypatch):
+    """600s bounds a model call — a question and an answer. A delegated step is
+    the whole step, with its own loop of reads, edits and test runs inside it,
+    which is how a tester running a suite ended with "did not finish within
+    600s" and nothing to show for it."""
+    import subprocess
+
+    from trance.agents import delegate
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import BackendError
+
+    monkeypatch.setattr("trance.providers.claudecode_client.shutil.which",
+                        lambda _: "/usr/bin/claude")
+    asked = {}
+
+    class Slow:
+        pid = 1
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            asked["timeout"] = timeout
+            raise subprocess.TimeoutExpired("claude", timeout)
+
+        def kill(self):
+            pass
+
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **k: (
+        Slow() if str(command[0]).endswith("claude") else real_popen(command, **k)))
+    monkeypatch.setattr(delegate.os, "killpg",
+                        lambda *a: (_ for _ in ()).throw(ProcessLookupError()))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    with pytest.raises(BackendError) as raised:
+        delegate.run_delegated(role=BUILTIN_ROLES["frontend"], task="t", project=project,
+                               config=ModelConfig(kind="claudecode", timeout_s=600),
+                               bus=EventBus(), session_id="s", step_id="st")
+
+    assert asked["timeout"] == delegate.DELEGATED_TIMEOUT_S == 3600
+    said = str(raised.value)
+    assert "60 minutes" in said
+    # It says what it managed, not only that it stopped.
+    assert "tool call(s)" in said and "checkpoint" in said
+    assert "re-run the step" in said
