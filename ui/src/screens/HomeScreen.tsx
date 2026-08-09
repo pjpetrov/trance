@@ -21,7 +21,7 @@ export function HomeScreen() {
   const [draft, setDraft] = useState("");
 
   return (
-    <div className="grid h-full min-w-0 grid-cols-[19rem_minmax(0,1fr)] gap-3 p-3">
+    <div className="grid h-full min-w-0 grid-cols-[16rem_minmax(0,1fr)] gap-3 p-3">
       <Panel className="flex min-h-0 min-w-0 flex-col">
         <PanelHeader title="Sessions" subtitle={`${sessions.data?.length ?? 0} in this workspace`} />
         <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -62,12 +62,21 @@ export function HomeScreen() {
       <Panel className="flex min-h-0 min-w-0 flex-col">
         <PanelHeader
           title={session.data?.name ?? "No session"}
-          subtitle={session.data?.project_dir}
+          subtitle={session.data
+            ? `${session.data.project_dir} — describe a project, a feature or a bug here; `
+              + "the orchestrator turns it into steps"
+            : undefined}
           actions={session.data && (
             <>
               <Badge tone={statusTone(session.data.status)}>{session.data.status}</Badge>
               {session.data.run_seconds > 0 && (
                 <Badge>{duration(session.data.run_seconds)}</Badge>
+              )}
+              {session.data.chat.length > 0 && (
+                <Button size="sm" onClick={() => go("plan")}>
+                  Plan{session.data.flow.steps.length
+                    ? ` (${session.data.flow.steps.length})` : ""}
+                </Button>
               )}
             </>
           )}
@@ -101,8 +110,10 @@ export function HomeScreen() {
           {!session.data && <Empty title="Pick a session, or make one." />}
           {session.data && !session.data.chat.length && (
             <Empty
-              title="Tell the orchestrator what you want built."
-              hint="It asks a question or two, then proposes a plan. It writes no code itself."
+              title="Tell the orchestrator what you want."
+              hint={"A new project, a feature to add, or a bug to fix — describe it and it "
+                + "asks what it needs to know before proposing the work. It writes no code "
+                + "itself. The more it asks, the better the plan, so let it."}
             />
           )}
         </div>
@@ -122,9 +133,10 @@ export function HomeScreen() {
             }}
           >
             <Textarea
-              rows={2}
+              rows={4}
+              className="text-[13px]"
               value={draft}
-              placeholder="Describe what you want built…"
+              placeholder="A new project, a feature, or a bug — ⌘/Ctrl+Enter to send"
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {

@@ -153,14 +153,30 @@ describe("the files screen", () => {
     expect(useUi.getState().openStep).toBe("st_new");
   });
 
-  it("cannot share when nothing is being served", async () => {
+  it("offers nothing to share or stop when nothing is being served", async () => {
     fakeServer(routes());
     renderWithQuery(<FilesScreen />);
+    await screen.findByText("index.html");
     // An idle preview reports port 0 rather than answering null; treating that
-    // as "serving" offers a share button that can only fail.
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "share" })).toBeDisabled());
-    expect(screen.queryByText(/preview :/)).not.toBeInTheDocument();
+    // as "serving" would offer buttons that can only fail.
+    expect(screen.queryByRole("button", { name: "share" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "stop serving" })).not.toBeInTheDocument();
+  });
+
+  it("can stop serving once something is being served", async () => {
+    const user = userEvent.setup();
+    const server = fakeServer(routes({
+      "/api/sessions/s1/preview": {
+        root: "/w", port: 36001, url: "http://x:36001/", public: "",
+      },
+    }));
+
+    renderWithQuery(<FilesScreen />);
+    await user.click(await screen.findByRole("button", { name: "stop serving" }));
+    await waitFor(() => {
+      const stopped = server.calls.find((call) => call.method === "DELETE");
+      expect(stopped?.url).toContain("/preview");
+    });
   });
 
   it("links to the preview and the public URL once one is running", async () => {
@@ -171,7 +187,7 @@ describe("the files screen", () => {
       },
     }));
     renderWithQuery(<FilesScreen />);
-    expect(await screen.findByText(":36001")).toBeInTheDocument();
+    expect(await screen.findByText("serving :36001")).toBeInTheDocument();
     expect(screen.getByText("public link").closest("a"))
       .toHaveAttribute("href", "https://abc.ngrok.app");
   });

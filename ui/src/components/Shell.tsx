@@ -22,7 +22,7 @@ import { Modals } from "@/modals/Modals";
 import type { SessionStatus } from "@/api/types";
 
 const SCREENS: { id: Screen; label: string }[] = [
-  { id: "home", label: "Brief" },
+  { id: "home", label: "Chat" },
   { id: "plan", label: "Plan" },
   { id: "run", label: "Run" },
   { id: "files", label: "Files" },
@@ -150,8 +150,6 @@ function TopBar({ socket }: { socket: SocketState }) {
         <Button variant="ghost" size="sm" onClick={() => openModal("loops")}>Loops</Button>
         <Button variant="ghost" size="sm" onClick={() => openModal("models")}>Models</Button>
         <Button variant="ghost" size="sm" onClick={() => openModal("commands")}>$_</Button>
-        <Button variant="ghost" size="sm" onClick={() => openModal("memory")}
-                disabled={!sessionId}>Memory</Button>
         <Button variant="ghost" size="sm" onClick={() => openModal("settings")}>Settings</Button>
       </div>
     </header>

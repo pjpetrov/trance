@@ -272,5 +272,8 @@ export function usePreviewMutations(sessionId: string) {
       mutationFn: (stop?: boolean) => api.share(sessionId, { stop }),
       onSuccess: settle,
     }),
+    // Stopping takes the tunnel with it: a public link to a server that is gone
+    // is a link that answers 502.
+    stop: useMutation({ mutationFn: () => api.stopPreview(sessionId), onSuccess: settle }),
   };
 }

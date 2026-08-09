@@ -203,6 +203,8 @@ export const api = {
     request<Preview & { dev?: unknown; bare?: unknown[] }>(
       `/api/sessions/${id(sid)}/preview`, { method: "POST", body }),
   preview: (sid: string) => request<Preview>(`/api/sessions/${id(sid)}/preview`),
+  stopPreview: (sid: string) =>
+    request<{ stopped: boolean }>(`/api/sessions/${id(sid)}/preview`, { method: "DELETE" }),
   share: (sid: string, body: { stop?: boolean }) =>
     request<{ url?: string; stopped?: boolean }>(`/api/sessions/${id(sid)}/share`,
       { method: "POST", body }),

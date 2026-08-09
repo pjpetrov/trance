@@ -60,7 +60,7 @@ export function FilesScreen() {
   const listing = useFiles(sessionId);
   const session = useSession(sessionId);
   const preview = usePreview(sessionId);
-  const { start, share } = usePreviewMutations(sessionId ?? "");
+  const { start, share, stop } = usePreviewMutations(sessionId ?? "");
   const review = useReviewMutations(sessionId ?? "");
 
   const [general, setGeneral] = useState<string | null>(null);
@@ -91,31 +91,6 @@ export function FilesScreen() {
           subtitle={listing.isLoading
             ? "reading…"
             : `${totals.files} files · ${totals.lines.toLocaleString()} lines`}
-          actions={
-            <>
-              {serving && (
-                <a href={`http://localhost:${preview.data!.port}/`}
-                   target="_blank" rel="noreferrer">
-                  <Badge tone="accent">:{preview.data!.port}</Badge>
-                </a>
-              )}
-              {preview.data?.public && (
-                <a href={preview.data.public} target="_blank" rel="noreferrer">
-                  <Badge tone="ok">public link</Badge>
-                </a>
-              )}
-              <Button
-                size="sm" busy={share.isPending} disabled={!serving}
-                title={serving ? "Share the running preview" : "Serve a page first"}
-                onClick={() => share.mutateAsync(undefined)
-                  .then((result) => result.url
-                    ? navigator.clipboard.writeText(result.url).then(
-                        () => toast.ok(`Share link copied: ${result.url}`))
-                    : toast.info("Sharing stopped."))
-                  .catch((error) => toast.err(String(error)))}
-              >share</Button>
-            </>
-          }
         />
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
           {tree.children.length
@@ -145,6 +120,38 @@ export function FilesScreen() {
             : "pick a file, or leave a comment about the project as a whole"}
           actions={
             <>
+              {serving && (
+                <a href={`http://localhost:${preview.data!.port}/`}
+                   target="_blank" rel="noreferrer">
+                  <Badge tone="accent">serving :{preview.data!.port}</Badge>
+                </a>
+              )}
+              {preview.data?.public && (
+                <a href={preview.data.public} target="_blank" rel="noreferrer">
+                  <Badge tone="ok">public link</Badge>
+                </a>
+              )}
+              {serving && (
+                <>
+                  <Button
+                    size="sm" busy={share.isPending}
+                    title="Make the preview reachable from outside this machine"
+                    onClick={() => share.mutateAsync(undefined)
+                      .then((result) => result.url
+                        ? navigator.clipboard.writeText(result.url).then(
+                            () => toast.ok(`Share link copied: ${result.url}`))
+                        : toast.info("Sharing stopped."))
+                      .catch((error) => toast.err(String(error)))}
+                  >share</Button>
+                  <Button
+                    size="sm" variant="danger" busy={stop.isPending}
+                    title="Stop serving these files"
+                    onClick={() => stop.mutateAsync()
+                      .then(() => toast.ok("Stopped serving."))
+                      .catch((error) => toast.err(String(error)))}
+                  >stop serving</Button>
+                </>
+              )}
               <Button
                 size="sm" variant={general === null ? "default" : "primary"}
                 onClick={() => setGeneral(general === null ? "" : null)}
@@ -316,15 +323,17 @@ function Branch(
       onClick={() => onOpen(node.path)}
     >
       <span className="min-w-0 flex-1 truncate">{node.name}</span>
-      <span className="shrink-0 text-[10px] text-muted opacity-0 group-hover:opacity-100">
-        {node.file.lines}L
+      <span className="shrink-0 tabular-nums text-[10px] text-muted">
+        {node.file.lines}
       </span>
       {servable && (
         <button
           title="Serve this page"
-          className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+          className="grid size-6 shrink-0 place-items-center rounded-[--radius-sm]
+                     text-sm leading-none text-muted transition-colors
+                     hover:bg-accent-soft hover:text-accent"
           onClick={(event) => { event.stopPropagation(); onPreview(node.path); }}
-        >▷</button>
+        >▶</button>
       )}
     </div>
   );

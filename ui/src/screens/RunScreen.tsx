@@ -63,6 +63,7 @@ export function RunScreen() {
  *  they applied to. */
 function RunControls() {
   const sessionId = useUi((state) => state.sessionId);
+  const openModal = useUi((state) => state.openModal);
   const session = useSession(sessionId);
   const start = useStartRun(sessionId ?? "");
   const { pause, resume, stop } = useRunControl(sessionId ?? "");
@@ -96,6 +97,12 @@ function RunControls() {
         {running ? (paused ? "paused" : "running") : "not running"}
         {" · "}{live.progress.done}/{live.progress.total} steps done
       </span>
+      <div className="flex-1" />
+      {/* What the agents are reading right now, so it belongs with the run
+          rather than in a toolbar next to Settings. */}
+      <Button size="sm" variant="ghost" onClick={() => openModal("memory")}>
+        Project memory
+      </Button>
     </>
   );
 }
