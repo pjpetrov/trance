@@ -83,7 +83,7 @@ describe("the files screen", () => {
     expect(screen.getByText("js")).toBeInTheDocument();
   });
 
-  it("opens a file and shows it with line numbers", async () => {
+  it("opens a file and offers commenting on a line", async () => {
     const user = userEvent.setup();
     fakeServer(routes({
       "/api/sessions/s1/file": { path: "index.html", content: "<html>\n</html>",
@@ -92,7 +92,9 @@ describe("the files screen", () => {
 
     renderWithQuery(<FilesScreen />);
     await user.click(await screen.findByText("index.html"));
-    expect(await screen.findByText("22 lines · 670 bytes")).toBeInTheDocument();
+    // The subtitle also says how to comment, so match on the counts alone.
+    expect(await screen.findByText(/22 lines · 670 bytes/)).toBeInTheDocument();
+    expect(screen.getByText(/click a line number to comment/)).toBeInTheDocument();
   });
 
   it("cannot share when nothing is being served", async () => {

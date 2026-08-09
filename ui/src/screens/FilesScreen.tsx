@@ -11,7 +11,9 @@ import { useFile, useFiles, usePreview, useSession } from "@/api/queries";
 import { usePreviewMutations, useReviewMutations } from "@/api/mutations";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
-import { Badge, Button, Empty, Panel, PanelHeader, Textarea } from "@/components/ui/primitives";
+import { Badge, Button, Empty, Input, Panel, PanelHeader, Textarea }
+  from "@/components/ui/primitives";
+import { CodeView } from "@/components/CodeView";
 import { toast } from "@/components/Toaster";
 import type { ProjectFile, TreeNode } from "@/api/types";
 
@@ -104,7 +106,11 @@ export function FilesScreen() {
       </Panel>
 
       <div className="grid min-h-0 min-w-0 grid-rows-[1fr_auto] gap-3">
-        <FileView sessionId={sessionId} path={filePath} />
+        <FileView
+          sessionId={sessionId} path={filePath}
+          comments={session.data?.review ?? []}
+          onComment={(line, text) => review.add.mutateAsync({ path: filePath!, line, note: text })}
+        />
 
         <Panel className="min-w-0">
           <PanelHeader
@@ -244,8 +250,22 @@ function Branch(
   );
 }
 
-function FileView({ sessionId, path }: { sessionId: string; path: string | null }) {
+function FileView(
+  { sessionId, path, comments, onComment }:
+  {
+    sessionId: string; path: string | null;
+    comments: { path?: string; line?: number | null; note: string }[];
+    onComment: (line: number, note: string) => Promise<unknown>;
+  },
+) {
   const file = useFile(sessionId, path);
+  const [pending, setPending] = useState<number | null>(null);
+  const [note, setNote] = useState("");
+
+  const onThisFile = comments.filter((comment) => comment.path === path);
+  const lines = onThisFile
+    .map((comment) => comment.line)
+    .filter((line): line is number => typeof line === "number");
 
   return (
     <Panel className="flex min-h-0 min-w-0 flex-col">
@@ -253,27 +273,52 @@ function FileView({ sessionId, path }: { sessionId: string; path: string | null 
         title={path ?? "No file open"}
         subtitle={file.data
           ? `${file.data.lines} lines · ${file.data.bytes.toLocaleString()} bytes`
+            + " · click a line number to comment on it"
           : undefined}
+        actions={onThisFile.length > 0 && (
+          <Badge tone="warn">{onThisFile.length} comment(s)</Badge>
+        )}
       />
-      <div className="min-h-0 flex-1 overflow-auto">
+
+      <div className="min-h-0 flex-1 overflow-hidden">
         {file.isError && (
-          <Empty title="That file could not be opened."
-                 hint={String(file.error)} />
+          <Empty title="That file could not be opened." hint={String(file.error)} />
         )}
         {file.data && (
-          <pre className="font-code p-3">
-            {file.data.content.split("\n").map((line, index) => (
-              <div key={index} className="flex">
-                <span className="w-12 shrink-0 select-none pr-3 text-right text-muted/50">
-                  {index + 1}
-                </span>
-                <span className="whitespace-pre-wrap break-words">{line || " "}</span>
-              </div>
-            ))}
-          </pre>
+          <CodeView
+            path={file.data.path}
+            content={file.data.content}
+            commentedLines={lines}
+            activeLine={pending}
+            onPickLine={(line) => { setPending(line); setNote(""); }}
+          />
         )}
         {!file.data && !file.isError && <Empty title="Pick a file to read it." />}
       </div>
+
+      {pending !== null && (
+        <form
+          className="flex items-start gap-2 border-t border-line p-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!note.trim()) return;
+            onComment(pending, note.trim())
+              .then(() => { setPending(null); setNote(""); })
+              .catch((error) => toast.err(String(error)));
+          }}
+        >
+          <Badge tone="accent" className="mt-1.5">line {pending}</Badge>
+          <Input
+            autoFocus value={note} placeholder={`what is wrong at line ${pending}?`}
+            onChange={(event) => setNote(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Escape") setPending(null); }}
+          />
+          <Button size="md" type="submit">add</Button>
+          <Button size="md" variant="ghost" type="button" onClick={() => setPending(null)}>
+            cancel
+          </Button>
+        </form>
+      )}
     </Panel>
   );
 }

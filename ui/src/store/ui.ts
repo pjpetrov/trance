@@ -8,7 +8,7 @@
 
 import { create } from "zustand";
 
-export type Screen = "home" | "plan" | "run" | "files";
+export type Screen = "home" | "plan" | "run" | "files" | "reviews";
 export type Modal =
   | "settings" | "agents" | "models" | "loops" | "commands" | "memory" | null;
 

@@ -219,7 +219,7 @@ export const api = {
   reviewChanges: (sid: string) =>
     request<ReviewChanges>(`/api/sessions/${id(sid)}/review/changes`),
   commit: (sid: string, sha: string) =>
-    request<{ sha: string; diff: string; message: string }>(
+    request<Commit & { stat: string; diff: string; clipped: boolean }>(
       `/api/sessions/${id(sid)}/commit/${id(sha)}`),
 
   /** A screenshot a visual step took, served from the project's .trance/shots. */
@@ -234,13 +234,19 @@ export interface ReviewBody {
 
 export interface Commit {
   sha: string;
-  message: string;
-  when?: string;
-  files?: string[];
+  short: string;
+  subject: string;
+  when: string;
+  who: string;
 }
 
 export interface ReviewRound {
-  when?: string;
-  comments: { path?: string; line?: number | null; note: string }[];
+  review: string;
+  at: string;
+  status: string;
+  notes: { path?: string; line?: number | null; note: string }[];
+  before: string;
+  after: string;
+  files: string[];
   commits: Commit[];
 }

@@ -17,6 +17,7 @@ import { HomeScreen } from "@/screens/HomeScreen";
 import { PlanScreen } from "@/screens/PlanScreen";
 import { RunScreen } from "@/screens/RunScreen";
 import { FilesScreen } from "@/screens/FilesScreen";
+import { ReviewsScreen } from "@/screens/ReviewsScreen";
 import { Modals } from "@/modals/Modals";
 import type { SessionStatus } from "@/api/types";
 
@@ -25,6 +26,7 @@ const SCREENS: { id: Screen; label: string }[] = [
   { id: "plan", label: "Plan" },
   { id: "run", label: "Run" },
   { id: "files", label: "Files" },
+  { id: "reviews", label: "Reviews" },
 ];
 
 /** One place deciding what a status looks like, so the dot in the picker and
@@ -81,6 +83,7 @@ export function Shell({ socket }: { socket: SocketState }) {
           : screen === "home" ? <HomeScreen />
           : screen === "plan" ? <PlanScreen />
           : screen === "run" ? <RunScreen />
+          : screen === "reviews" ? <ReviewsScreen />
           : <FilesScreen />}
       </main>
 

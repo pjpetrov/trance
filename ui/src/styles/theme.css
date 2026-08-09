@@ -109,3 +109,29 @@
     line-height: 1.55;
   }
 }
+
+/* CodeMirror fills its pane.
+   Percentage heights need every ancestor to have a definite one, and in a flex
+   column that chain is easy to break — the editor sized itself to 350px inside
+   a 600px pane and left the rest blank. Pinning the host to its positioned
+   parent takes the chain out of the question entirely. */
+.cm-host {
+  position: absolute;
+  inset: 0;
+}
+.cm-host .CodeMirror {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.cm-host .CodeMirror-gutters {
+  border-right-color: var(--color-line);
+}
+/* The line number is the target for leaving a comment, so it has to look like
+   one. */
+.cm-host .CodeMirror-linenumber {
+  cursor: pointer;
+}
+.cm-host .CodeMirror-linenumber:hover {
+  color: var(--color-accent);
+}
