@@ -116,7 +116,10 @@ function StepRail(
 ) {
   const hideFinished = useUi((state) => state.hideFinished);
   const toggle = useUi((state) => state.toggleHideFinished);
-  const shown = hideFinished ? steps.filter((step) => step.status !== "done") : steps;
+  // Finished means finished, however it went. Hiding only the successes left a
+  // rail full of failures you had already read.
+  const over = (step: Step) => step.status !== "pending" && step.status !== "running";
+  const shown = hideFinished ? steps.filter((step) => !over(step)) : steps;
   const done = steps.filter((step) => step.status === "done").length;
 
   return (
@@ -126,8 +129,8 @@ function StepRail(
         subtitle={`${done} of ${steps.length} done`}
         actions={
           <Button variant="ghost" size="sm" onClick={toggle}
-                  title="Hide steps that are already done">
-            {hideFinished ? "show all" : "hide done"}
+                  title="Hide every step that has finished, however it went">
+            {hideFinished ? "show all" : "hide finished"}
           </Button>
         }
       />

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import os
 import threading
@@ -27,6 +29,7 @@ from ..agents.store import (
 )
 from ..agents.tools import ALLOWED_COMMANDS, set_command_lists, set_command_policy
 from ..agents.visual import SHOTS_DIR, available as browser_available
+from ..vision import VISION_KINDS, image_block
 from ..config import Config
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
@@ -1325,6 +1328,80 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(404, "no such session")
         return {"deleted": session_id, "project_dir": session.project_dir}
 
+
+    #: A pasted screenshot, capped. Four is more than any bug report needs, and
+    #: an 8MB image costs more in tokens than it can possibly say.
+    MAX_CHAT_IMAGES = 4
+    MAX_CHAT_IMAGE_BYTES = 8_000_000
+
+    def _save_chat_images(session, raw: list) -> list[str]:
+        """Store pasted images beside the run's other screenshots.
+
+        Under .trance/shots so the endpoint that already serves screenshots
+        serves these too, and so they travel with the project rather than
+        living in a session file as base64.
+        """
+        if not isinstance(raw, list) or not raw:
+            return []
+        folder = _project_of(session) / SHOTS_DIR / "chat"
+        folder.mkdir(parents=True, exist_ok=True)
+
+        out: list[str] = []
+        for item in raw[:MAX_CHAT_IMAGES]:
+            data = str(item or "")
+            if "," in data and data.startswith("data:"):
+                data = data.split(",", 1)[1]
+            try:
+                blob = base64.b64decode(data, validate=True)
+            except (ValueError, binascii.Error):
+                raise HTTPException(400, "an attached image was not valid base64")
+            if not blob:
+                continue
+            if len(blob) > MAX_CHAT_IMAGE_BYTES:
+                raise HTTPException(413, (
+                    f"an attached image is {len(blob):,} bytes; the limit is "
+                    f"{MAX_CHAT_IMAGE_BYTES:,}"))
+            if not blob.startswith(b"\x89PNG\r\n\x1a\n") and not blob.startswith(b"\xff\xd8"):
+                raise HTTPException(400, "attached images must be PNG or JPEG")
+            name = f"chat/{uuid4().hex[:10]}.png"
+            (_project_of(session) / SHOTS_DIR / name).write_bytes(blob)
+            out.append(name)
+        return out
+
+    def _chat_history(session) -> list[dict]:
+        """The conversation, with pictures in it where the model can take them.
+
+        A model that cannot see gets told an image was attached rather than
+        having it silently dropped — an orchestrator answering about a
+        screenshot it never received is worse than one that says it cannot.
+        """
+        kind = getattr(config.for_orchestrator(), "kind", "") or "llamacpp"
+        sees = kind in VISION_KINDS
+        root = _project_of(session) / SHOTS_DIR
+
+        history: list[dict] = []
+        for message in session.chat:
+            role = "assistant" if message.role == "orchestrator" else "user"
+            images = list(getattr(message, "images", None) or [])
+            if not images:
+                history.append({"role": role, "content": message.content})
+                continue
+            if not sees:
+                history.append({"role": role, "content": (
+                    message.content
+                    + f"\n\n[{len(images)} screenshot(s) were attached, but this model "
+                      f"cannot be shown images — ask about them in words.]")})
+                continue
+            blocks: list[dict] = [{"type": "text", "text": message.content or
+                                   "(a screenshot, with nothing written with it)"}]
+            for name in images:
+                target = paths.inside(root, name)
+                if target is None or not target.is_file():
+                    continue
+                blocks.append(image_block(target.read_bytes(), kind))
+            history.append({"role": role, "content": blocks})
+        return history
+
     #: Fields worth megabytes that a history panel never shows: the prompt that
     #: went out, the reasoning behind it, the whole file that came back. One
     #: step of a long run is 13MB and three quarters of it is `messages`.
@@ -1424,7 +1501,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     async def chat(session_id: str, body: dict):
         session = _need(store, session_id)
         text = (body.get("message") or "").strip()
-        if not text:
+        saved = _save_chat_images(session, body.get("images") or [])
+        if not text and not saved:
             raise HTTPException(400, "message is required")
 
         # One at a time. Two questions in flight mean two proposals racing to
@@ -1438,13 +1516,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "written against different conversations."))
         thinking.add(session_id)
 
-        session.chat.append(ChatMessage(role="user", content=text))
-        bus.emit("chat", session_id, agent="user", payload={"content": text})
+        session.chat.append(ChatMessage(role="user", content=text, images=saved))
+        bus.emit("chat", session_id, agent="user",
+                 payload={"content": text, "images": saved})
 
-        history = [
-            {"role": "assistant" if m.role == "orchestrator" else "user", "content": m.content}
-            for m in session.chat
-        ]
+        history = _chat_history(session)
         try:
             result = await asyncio.to_thread(
                 orchestrator_agent.chat,

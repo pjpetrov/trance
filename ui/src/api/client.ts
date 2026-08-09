@@ -135,7 +135,7 @@ export const api = {
     request<{ deleted: string; project_dir: string }>(`/api/sessions/${id(sid)}`,
       { method: "DELETE" }),
 
-  chat: (sid: string, body: { message: string }) =>
+  chat: (sid: string, body: { message: string; images?: string[] }) =>
     request<{ session: Session; reply?: string }>(`/api/sessions/${id(sid)}/chat`,
       { method: "POST", body }),
   saveFlow: (sid: string, body: { steps: Partial<Step>[] }) =>

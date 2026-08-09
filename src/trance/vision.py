@@ -58,6 +58,18 @@ class VisionUnavailable(RuntimeError):
     """No usable vision model configured. The caller degrades to the cheap probes."""
 
 
+def image_block(png: bytes, kind: str) -> dict:
+    """One image, in whichever shape this API speaks. Shared with the chat, so
+    a screenshot pasted into the conversation travels the same way a visual
+    check's does."""
+    encoded = base64.b64encode(png).decode("ascii")
+    if kind == "anthropic":
+        return {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                            "data": encoded}}
+    return {"type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{encoded}"}}
+
+
 def _content(png: bytes, prompt: str, kind: str) -> list[dict]:
     """The image and the question, in whichever shape this API speaks."""
     encoded = base64.b64encode(png).decode("ascii")

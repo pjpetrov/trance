@@ -1,13 +1,14 @@
 /** Where a session starts: pick one, or describe a new project to the
  *  orchestrator until it has enough to propose a plan. */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useSession, useSessions } from "@/api/queries";
 import { useChat, useSessionLifecycle } from "@/api/mutations";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { duration } from "@/lib/format";
 import { statusTone } from "@/components/Shell";
+import { api } from "@/api/client";
 import { Badge, Button, Dot, Empty, Field, Input, Panel, PanelHeader, Textarea }
   from "@/components/ui/primitives";
 import { toast } from "@/components/Toaster";
@@ -18,7 +19,6 @@ export function HomeScreen() {
   const session = useSession(sessionId);
   const { create, remove } = useSessionLifecycle();
   const chat = useChat(sessionId ?? "");
-  const [draft, setDraft] = useState("");
 
   return (
     <div className="grid h-full min-w-0 grid-cols-[16rem_minmax(0,1fr)] gap-3 p-3">
@@ -104,6 +104,19 @@ export function HomeScreen() {
                 {message.role === "user" ? "you" : "orchestrator"}
               </div>
               <p className="whitespace-pre-wrap">{message.content}</p>
+              {(message.images ?? []).length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {message.images!.map((shot) => (
+                    <a key={shot} href={api.shotUrl(sessionId!, shot)}
+                       target="_blank" rel="noreferrer">
+                      <img
+                        src={api.shotUrl(sessionId!, shot)} alt="attached screenshot"
+                        className="max-h-56 rounded-[--radius] border border-line"
+                      />
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
 
@@ -119,33 +132,11 @@ export function HomeScreen() {
         </div>
 
         {session.data && (
-          <form
-            className="flex gap-2 border-t border-line p-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const message = draft.trim();
-              if (!message) return;
-              setDraft("");
-              chat.mutateAsync(message).catch((error) => {
-                toast.err(String(error));
-                setDraft(message);
-              });
-            }}
-          >
-            <Textarea
-              rows={4}
-              className="text-[13px]"
-              value={draft}
-              placeholder="A new project, a feature, or a bug — ⌘/Ctrl+Enter to send"
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-            />
-            <Button variant="primary" type="submit" busy={chat.isPending}>Send</Button>
-          </form>
+          <Composer
+            busy={chat.isPending}
+            onSend={(message, images) => chat.mutateAsync({ message, images })
+              .catch((error) => { toast.err(String(error)); throw error; })}
+          />
         )}
       </Panel>
     </div>
@@ -189,6 +180,120 @@ function NewSession(
       <div className="flex gap-2">
         <Button variant="primary" type="submit" busy={busy} className="flex-1">Create</Button>
         <Button type="button" onClick={() => setOpen(false)}>Cancel</Button>
+      </div>
+    </form>
+  );
+}
+
+/** The message box: type, paste a screenshot, drop one, or pick one.
+ *
+ * A picture of the bug is often the whole report — "the ship does not move,
+ * here" — and making someone describe a screenshot in words is work they should
+ * not have to do. Paste is the one that gets used, so it works without touching
+ * the + at all.
+ */
+function Composer(
+  { busy, onSend }:
+  { busy: boolean; onSend: (message: string, images: string[]) => Promise<unknown> },
+) {
+  const [draft, setDraft] = useState("");
+  const [images, setImages] = useState<{ id: string; url: string }[]>([]);
+  const [over, setOver] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+
+  const MAX = 4;
+
+  const take = (files: FileList | File[] | null) => {
+    const pictures = [...(files ?? [])].filter((file) => file.type.startsWith("image/"));
+    if (!pictures.length) return;
+    const room = MAX - images.length;
+    if (room <= 0) return toast.info(`Four screenshots is the limit.`);
+    pictures.slice(0, room).forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => setImages((held) => [
+        ...held, { id: `${file.name}:${Date.now()}:${held.length}`,
+                   url: String(reader.result) }]);
+      reader.readAsDataURL(file);
+    });
+    if (pictures.length > room) toast.info("Four screenshots is the limit.");
+  };
+
+  const send = () => {
+    const message = draft.trim();
+    if (!message && !images.length) return;
+    const held = { message, images: images.map((image) => image.url) };
+    setDraft("");
+    setImages([]);
+    onSend(held.message, held.images).catch(() => {
+      // Put it back rather than losing what was typed.
+      setDraft(held.message);
+      setImages(images);
+    });
+  };
+
+  return (
+    <form
+      className={cn("space-y-2 border-t border-line p-3 transition-colors",
+                    over && "bg-accent-soft")}
+      onSubmit={(event) => { event.preventDefault(); send(); }}
+      onDragOver={(event) => { event.preventDefault(); setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setOver(false);
+        take(event.dataTransfer?.files ?? null);
+      }}
+    >
+      {images.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {images.map((image) => (
+            <div key={image.id} className="relative">
+              <img src={image.url} alt="attached"
+                   className="h-20 rounded-[--radius] border border-line" />
+              <button
+                type="button"
+                title="Remove"
+                onClick={() => setImages((held) =>
+                  held.filter((other) => other.id !== image.id))}
+                className="absolute -right-2 -top-2 grid size-6 place-items-center
+                           rounded-full border border-line bg-panel text-muted
+                           hover:text-err"
+              >✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <Button
+          type="button" variant="ghost" title="Attach a screenshot"
+          onClick={() => picker.current?.click()}
+        >+</Button>
+        <input
+          ref={picker} type="file" accept="image/png,image/jpeg" multiple hidden
+          onChange={(event) => { take(event.target.files); event.target.value = ""; }}
+        />
+        <Textarea
+          rows={4}
+          className="text-[13px]"
+          value={draft}
+          placeholder="A new project, a feature, or a bug — paste or drop a screenshot; ⌘/Ctrl+Enter to send"
+          onChange={(event) => setDraft(event.target.value)}
+          onPaste={(event) => {
+            const files = [...(event.clipboardData?.items ?? [])]
+              .filter((item) => item.kind === "file")
+              .map((item) => item.getAsFile())
+              .filter((file): file is File => Boolean(file));
+            if (files.length) { event.preventDefault(); take(files); }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              send();
+            }
+          }}
+        />
+        <Button variant="primary" type="submit" busy={busy}>Send</Button>
       </div>
     </form>
   );

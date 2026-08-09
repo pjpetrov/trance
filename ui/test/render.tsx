@@ -28,14 +28,14 @@ export interface FakeServer {
   to: (path: string) => FakeRequest[];
 }
 
-/** Installs a `fetch` that answers from `routes`, matched longest-prefix first.
+/** Installs a `fetch` that answers from `routes`, matched on the exact path.
  *
  *  An unmatched route is a *failed* test, not an empty answer: a component
  *  quietly rendering nothing because a call 404'd is exactly the failure the
  *  old harness used to pass. */
 export function fakeServer(routes: Record<string, Route>): FakeServer {
   const calls: FakeRequest[] = [];
-  const paths = Object.keys(routes).sort((a, b) => b.length - a.length);
+  const paths = Object.keys(routes);
 
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -46,7 +46,13 @@ export function fakeServer(routes: Record<string, Route>): FakeServer {
     };
     calls.push(request);
 
-    const key = paths.find((path) => url.split("?")[0] === path || url.startsWith(path));
+    // Exact match on the path, query string aside. Prefix matching quietly
+    // answered /api/sessions/s1/chat from the /api/sessions/s1 route — so a
+    // test that never defined /chat saw a *successful* send returning a
+    // session. A route that is not defined must fail, or the test is checking
+    // nothing.
+    const wanted = url.split("?")[0]!;
+    const key = paths.find((path) => wanted === path);
     if (key === undefined) {
       return new Response(JSON.stringify({ detail: `no fake route for ${url}` }),
                           { status: 404, headers: { "Content-Type": "application/json" } });

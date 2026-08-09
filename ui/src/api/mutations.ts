@@ -51,7 +51,8 @@ export function useSteer(sessionId: string) {
 export function useChat(sessionId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (message: string) => api.chat(sessionId, { message }),
+    mutationFn: ({ message, images }: { message: string; images?: string[] }) =>
+      api.chat(sessionId, { message, images }),
     onSuccess: (result) => {
       if (result.session) putSession(client, result.session);
     },

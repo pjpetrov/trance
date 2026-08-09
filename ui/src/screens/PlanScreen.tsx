@@ -90,7 +90,7 @@ export function PlanScreen() {
     setGenerating(false);
     const ask = fresh ? persist([]) : Promise.resolve();
     Promise.resolve(ask)
-      .then(() => chat.mutateAsync(GENERATE))
+      .then(() => chat.mutateAsync({ message: GENERATE }))
       .then(() => toast.ok("Asked the orchestrator for a plan."))
       .catch((error) => toast.err(String(error)));
   };

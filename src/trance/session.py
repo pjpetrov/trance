@@ -24,6 +24,10 @@ SessionStatus = ("planning", "ready", "running", "paused", "finished", "error")
 class ChatMessage:
     role: str  # "user" | "orchestrator"
     content: str
+    #: Screenshots attached to this message, as paths under the project's
+    #: .trance/shots. A picture of the bug is often the whole report, and
+    #: describing one in words is work the user should not have to do.
+    images: list[str] = field(default_factory=list)
     ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 

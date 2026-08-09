@@ -170,9 +170,11 @@ export interface Progress {
 // --------------------------------------------------------------- session
 
 export interface ChatMessage {
-  role: "user" | "assistant" | string;
+  role: "user" | "orchestrator" | string;
   content: string;
   ts?: string;
+  /** Screenshots attached to this message, as paths under .trance/shots. */
+  images?: string[];
 }
 
 export interface ReviewComment {

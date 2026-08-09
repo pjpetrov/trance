@@ -12,7 +12,7 @@ import type { SocketState } from "@/hooks/useSessionSocket";
 import { useUi, type Screen } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { duration } from "@/lib/format";
-import { Badge, Button, Dot, Select, type Tone } from "@/components/ui/primitives";
+import { Badge, Button, Dot, type Tone } from "@/components/ui/primitives";
 import { HomeScreen } from "@/screens/HomeScreen";
 import { PlanScreen } from "@/screens/PlanScreen";
 import { RunScreen } from "@/screens/RunScreen";
@@ -98,31 +98,27 @@ export function Shell({ socket }: { socket: SocketState }) {
 }
 
 function TopBar({ socket }: { socket: SocketState }) {
-  const { sessionId, selectSession, openModal } = useUi();
-  const sessions = useSessions();
+  const { sessionId, openModal, go } = useUi();
   const session = useSession(sessionId);
 
   const live = session.data;
 
   return (
     <header className="flex items-center gap-3 border-b border-line bg-panel px-3 py-2">
-      <span className="select-none text-sm font-semibold tracking-tight text-accent">
-        trance
+      <span className="select-none whitespace-nowrap text-sm font-semibold
+                       tracking-tight text-accent">
+        Trance Harness
       </span>
 
-      <Select
-        aria-label="Session"
-        className="h-8 w-64 shrink-0"
-        value={sessionId ?? ""}
-        onChange={(event) => selectSession(event.target.value || null)}
-      >
-        {!sessions.data?.length && <option value="">no sessions yet</option>}
-        {sessions.data?.map((item) => (
-          <option key={item.id} value={item.id}>
-            {item.name} — {item.status}
-          </option>
-        ))}
-      </Select>
+      {/* The session is chosen on the Chat page, where the list shows what each
+          one is and where it got to. A dropdown here said only its name. */}
+      {live && (
+        <button
+          onClick={() => go("home")}
+          className="min-w-0 truncate text-sm hover:text-accent"
+          title="Sessions are chosen on the Chat page"
+        >{live.name}</button>
+      )}
 
       {live && (
         <div className="flex min-w-0 items-center gap-2">

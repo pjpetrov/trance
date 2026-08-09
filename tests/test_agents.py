@@ -7665,3 +7665,112 @@ def test_each_execution_of_a_step_is_marked_as_one_run(tmp_path, monkeypatch):
     assert all(m.step_id == step.id for m in marks)
     # It names what ran, so the run list reads without opening anything.
     assert "backend" in marks[0].payload["message"]
+
+
+def test_a_screenshot_pasted_into_the_chat_reaches_the_orchestrator(tmp_path, monkeypatch):
+    """A picture of the bug is often the whole report, and describing one in
+    words is work the user should not have to do."""
+    import base64
+    import struct
+    import zlib
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    def png(colour=(255, 0, 0)):
+        rows = b"".join(b"\x00" + bytes(colour) * 4 for _ in range(4))
+        def chunk(kind, body):
+            return (struct.pack(">I", len(body)) + kind + body
+                    + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+        return (b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+
+    seen = {}
+
+    def fake_chat(*, messages, **_kwargs):
+        seen["messages"] = messages
+        return {"text": "got it", "proposal": None}
+
+    monkeypatch.setattr(app_module.orchestrator_agent, "chat", fake_chat)
+
+    body = {"message": "the ship does not move",
+            "images": ["data:image/png;base64," + base64.b64encode(png()).decode()]}
+    assert client.post(f"/api/sessions/{sid}/chat", json=body).status_code == 200
+
+    # The local default is multimodal, so the image rides the message.
+    content = seen["messages"][-1]["content"]
+    assert isinstance(content, list)
+    assert content[0]["text"] == "the ship does not move"
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    # It is on disk under the shots the UI already serves, not base64 in a
+    # session file.
+    stored = client.get(f"/api/sessions/{sid}").json()["chat"][0]["images"]
+    assert len(stored) == 1 and stored[0].startswith("chat/")
+    assert client.get(f"/api/sessions/{sid}/shot/{stored[0]}").status_code == 200
+
+
+def test_a_model_that_cannot_see_is_told_rather_than_left_blind(tmp_path, monkeypatch):
+    """An orchestrator answering about a screenshot it never received is worse
+    than one that says it cannot see."""
+    import base64
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    client.put("/api/presets/cli", json={"kind": "claudecode", "model": "opus"})
+    client.put("/api/agents/orchestrator", json={"preset": "cli"})
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+
+    seen = {}
+    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
+                        lambda *, messages, **_k: (seen.update(messages=messages)
+                                                   or {"text": "ok", "proposal": None}))
+
+    png = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 40)
+    client.post(f"/api/sessions/{sid}/chat",
+                json={"message": "look", "images": [base64.b64encode(png).decode()]})
+
+    content = seen["messages"][-1]["content"]
+    assert isinstance(content, str)
+    assert "cannot be shown images" in content
+
+
+def test_attached_images_are_checked_before_they_are_stored(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+
+    import base64
+    not_an_image = base64.b64encode(b"just some text").decode()
+    refused = client.post(f"/api/sessions/{sid}/chat",
+                          json={"message": "hi", "images": [not_an_image]})
+    assert refused.status_code == 400 and "PNG or JPEG" in refused.json()["detail"]
+
+    huge = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 9_000_000).decode()
+    too_big = client.post(f"/api/sessions/{sid}/chat",
+                          json={"message": "hi", "images": [huge]})
+    assert too_big.status_code == 413
