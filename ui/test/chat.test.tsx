@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HomeScreen } from "@/screens/HomeScreen";
 import { useUi } from "@/store/ui";
@@ -88,5 +88,56 @@ describe("the chat composer", () => {
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     expect(server.to("/api/sessions/s1/chat")).toHaveLength(0);
+  });
+});
+
+describe("deleting a session", () => {
+  it("keeps the project files unless asked, and names the path", async () => {
+    const user = userEvent.setup();
+    const server = fakeServer({
+      "/api/sessions": [session({ id: "s1", name: "pacman",
+                                  project_dir: "/w/pacman" })],
+      "/api/sessions/s1": session(),
+    });
+
+    renderWithQuery(<HomeScreen />);
+    const row = (await screen.findAllByText("pacman"))[0]!;
+    await user.click(row.closest("div")!.querySelector("button")!);
+
+    // The dialog says which directory, which window.confirm never could.
+    expect(await screen.findByText(/Delete the session "pacman"\?/)).toBeInTheDocument();
+    // Also in the session list, so scope to the dialog.
+    expect(within(screen.getByRole("dialog")).getByText("/w/pacman"))
+      .toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete the session" }));
+    await waitFor(() => {
+      const gone = server.calls.find((call) => call.method === "DELETE");
+      expect(gone?.url).toBe("/api/sessions/s1");     // no ?files=true
+    });
+  });
+
+  it("asks for the files explicitly, and warns once ticked", async () => {
+    const user = userEvent.setup();
+    const server = fakeServer({
+      "/api/sessions": [session({ id: "s1", name: "pacman", project_dir: "/w/pacman" })],
+      "/api/sessions/s1": session(),
+      "/api/sessions/s1?files=true": { deleted: "s1", project_dir: "/w/pacman",
+                                       files_deleted: true },
+    });
+
+    renderWithQuery(<HomeScreen />);
+    const row = (await screen.findAllByText("pacman"))[0]!;
+    await user.click(row.closest("div")!.querySelector("button")!);
+    await user.click(await screen.findByLabelText(/Delete the project files too/));
+
+    expect(screen.getByText(/cannot be undone from here/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button",
+                                      { name: "Delete the session and its files" }));
+
+    await waitFor(() => {
+      const gone = server.calls.find((call) => call.method === "DELETE");
+      expect(gone?.url).toContain("files=true");
+    });
   });
 });

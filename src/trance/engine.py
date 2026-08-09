@@ -258,7 +258,8 @@ class FlowEngine:
                 graph_tools=self._graph_tools(role),
                 should_stop=lambda: self.session.stopping,
                 memory=self.memory, project_map=self._project_map(role, step.task),
-                goal=self._loop_goal(loop), placement=self._placement(step),
+                goal=self._loop_goal(loop), requirements=self.session.requirements,
+                placement=self._placement(step),
                 approve=self.approve, reindex=self._reindex,
                 steering_inbox=step.take_steering,
             )
@@ -598,7 +599,8 @@ class FlowEngine:
             history=self.session.history, graph_tools=self._graph_tools(role),
             should_stop=lambda: self.session.stopping,
             memory=self.memory, project_map=self._project_map(role, step.task),
-            goal=self.session.goal, placement=self._placement(step),
+            goal=self.session.goal, requirements=self.session.requirements,
+            placement=self._placement(step),
             approve=self.approve, reindex=self._reindex,
             steering_inbox=step.take_steering,
             steering=[carry.body] if carry and carry.body else None,
@@ -781,7 +783,7 @@ class FlowEngine:
                 graph_tools=self._graph_tools(gate),
                 should_stop=lambda: self.session.stopping,
                 memory=self.memory, project_map=self._project_map(gate, step.task),
-                goal=self.session.goal,
+                goal=self.session.goal, requirements=self.session.requirements,
                 approve=self.approve, reindex=self._reindex,
                 steering_inbox=step.take_steering,
             )

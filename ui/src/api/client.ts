@@ -131,9 +131,9 @@ export const api = {
   session: (sid: string) => request<Session>(`/api/sessions/${id(sid)}`),
   createSession: (body: { name: string; project_dir: string; goal?: string }) =>
     request<Session>("/api/sessions", { method: "POST", body }),
-  deleteSession: (sid: string) =>
-    request<{ deleted: string; project_dir: string }>(`/api/sessions/${id(sid)}`,
-      { method: "DELETE" }),
+  deleteSession: (sid: string, files = false) =>
+    request<{ deleted: string; project_dir: string; files_deleted: boolean }>(
+      `/api/sessions/${id(sid)}${files ? "?files=true" : ""}`, { method: "DELETE" }),
 
   chat: (sid: string, body: { message: string; images?: string[] }) =>
     request<{ session: Session; reply?: string }>(`/api/sessions/${id(sid)}/chat`,

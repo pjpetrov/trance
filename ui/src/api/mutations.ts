@@ -97,8 +97,9 @@ export function useSessionLifecycle() {
       onSuccess: (session) => putSession(client, session),
     }),
     remove: useMutation({
-      mutationFn: (sessionId: string) => api.deleteSession(sessionId),
-      onSuccess: (_result, sessionId) => {
+      mutationFn: ({ sessionId, files }: { sessionId: string; files?: boolean }) =>
+        api.deleteSession(sessionId, files),
+      onSuccess: (_result, { sessionId }) => {
         client.removeQueries({ queryKey: keys.session(sessionId) });
         client.removeQueries({ queryKey: keys.events(sessionId) });
         void client.invalidateQueries({ queryKey: keys.sessions });
@@ -225,8 +226,17 @@ export function useFileMutations(sessionId: string) {
   return {
     write: useMutation({
       mutationFn: (body: { path: string; content: string }) => api.writeFile(sessionId, body),
-      onSuccess: (_result, body) => {
-        void client.invalidateQueries({ queryKey: keys.file(sessionId, body.path) });
+      onSuccess: (result, body) => {
+        // Put what was saved into the cache, rather than invalidating and
+        // hoping. The editor drops its draft the moment the save returns, so
+        // between that and the refetch landing it would fall back to the old
+        // cached content — which reads as the save having done nothing.
+        client.setQueryData(keys.file(sessionId, body.path), {
+          path: body.path,
+          content: body.content,
+          bytes: result?.bytes ?? new TextEncoder().encode(body.content).length,
+          lines: body.content.split("\n").length,
+        });
         void client.invalidateQueries({ queryKey: keys.files(sessionId) });
       },
     }),

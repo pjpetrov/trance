@@ -8,6 +8,8 @@ import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { duration } from "@/lib/format";
 import { statusTone } from "@/components/Shell";
+import { Confirm } from "@/components/ui/Confirm";
+import { Checkbox } from "@/components/ui/primitives";
 import { api } from "@/api/client";
 import { Badge, Button, Dot, Empty, Field, Input, Panel, PanelHeader, Textarea }
   from "@/components/ui/primitives";
@@ -15,6 +17,9 @@ import { toast } from "@/components/Toaster";
 
 export function HomeScreen() {
   const { sessionId, selectSession, go } = useUi();
+  const [removing, setRemoving] = useState<{ id: string; name: string;
+                                             dir: string } | null>(null);
+  const [alsoFiles, setAlsoFiles] = useState(false);
   const sessions = useSessions();
   const session = useSession(sessionId);
   const { create, remove } = useSessionLifecycle();
@@ -45,8 +50,8 @@ export function HomeScreen() {
                 className="opacity-0 transition-opacity group-hover:opacity-100"
                 onClick={(event) => {
                   event.stopPropagation();
-                  if (!confirm(`Delete the session "${item.name}"? The project files stay.`)) return;
-                  remove.mutateAsync(item.id).catch((error) => toast.err(String(error)));
+                  setAlsoFiles(false);
+                  setRemoving({ id: item.id, name: item.name, dir: item.project_dir });
                 }}
               >✕</Button>
             </div>
@@ -58,6 +63,45 @@ export function HomeScreen() {
             .then((made) => { selectSession(made.id); go("home"); })
             .catch((error) => toast.err(String(error)))} busy={create.isPending} />
       </Panel>
+
+      <Confirm
+        open={Boolean(removing)}
+        title={`Delete the session "${removing?.name ?? ""}"?`}
+        confirmLabel={alsoFiles ? "Delete the session and its files" : "Delete the session"}
+        danger
+        busy={remove.isPending}
+        onClose={() => setRemoving(null)}
+        onConfirm={() => {
+          if (!removing) return;
+          remove.mutateAsync({ sessionId: removing.id, files: alsoFiles })
+            .then((result) => {
+              if (removing.id === sessionId) selectSession(null);
+              setRemoving(null);
+              toast.ok(result.files_deleted
+                ? "Session and project deleted."
+                : "Session deleted. The files are still there.");
+            })
+            .catch((error) => toast.err(String(error)));
+        }}
+      >
+        <p>
+          Its conversation, plan and run history go. The project at{" "}
+          <code className="text-accent">{removing?.dir}</code> stays where it is unless
+          you say otherwise.
+        </p>
+        <Checkbox
+          label="Delete the project files too"
+          hint="Everything in that directory, permanently. Only allowed for a folder inside your workspace — a path you named yourself is refused."
+          checked={alsoFiles}
+          onChange={(event) => setAlsoFiles(event.target.checked)}
+        />
+        {alsoFiles && (
+          <p className="text-err">
+            This cannot be undone from here. If the project is a git repository, its
+            history goes with it.
+          </p>
+        )}
+      </Confirm>
 
       <Panel className="flex min-h-0 min-w-0 flex-col">
         <PanelHeader

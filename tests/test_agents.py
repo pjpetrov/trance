@@ -7828,3 +7828,140 @@ def test_deleting_refuses_a_directory_and_anything_outside_the_project(tmp_path)
                             params={"path": "../secret.txt"})
     assert escape.status_code == 404
     assert outside.exists()
+
+
+def test_the_proposal_asks_for_checkable_requirements():
+    """They are read by the tester, who writes tests for them, and the visual
+    tester, who looks for them on screen — so they have to be settleable."""
+    from trance.agents.orchestrator import propose_flow_tool
+    from trance.agents.roles import BUILTIN_ROLES
+
+    props = (propose_flow_tool(list(BUILTIN_ROLES.values()))["function"]["parameters"]
+             ["properties"])
+    assert props["requirements"]["type"] == "array"
+    described = props["requirements"]["description"]
+    assert "checked one at a time" in described
+    # The schema says what a bad one looks like, because "the game feels good"
+    # is what a model writes when nobody tells it not to.
+    assert "cannot" in described
+
+
+def test_requirements_reach_the_agent_as_the_definition_of_done(tmp_path, monkeypatch):
+    """A coder builds to them, a tester writes tests for them and a visual
+    tester looks for them on screen — all three read the same list."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    sent = {}
+
+    class _Client:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            sent["messages"] = messages
+            return ChatResponse(text="Did it.\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _Client())
+
+    runner.run_agent(
+        role=BUILTIN_ROLES["frontend"], task="draw the maze", project=tmp_path,
+        config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st",
+        requirements=["exactly four ghosts are visible", "arrow keys move the ship"],
+    )
+
+    prompt = "\n".join(str(m.get("content") or "") for m in sent["messages"])
+    assert "exactly four ghosts are visible" in prompt
+    assert "arrow keys move the ship" in prompt
+    # And it is clear they are the project's bar, not this step's task — an
+    # agent trying to satisfy all of them in one step is the failure mode.
+    assert "not for your step" in prompt.replace("\n", " ")
+
+
+def test_the_testers_are_told_to_work_from_the_requirements():
+    from trance.agents.roles import BUILTIN_ROLES
+
+    tester = BUILTIN_ROLES["tester"].system_prompt
+    assert "what it must do" in tester
+    # A criterion only a picture can settle is not the tester's to fake.
+    assert "visual tester's, not yours" in tester
+
+    looker = BUILTIN_ROLES["visual-tester"].system_prompt
+    assert "same list the tester writes tests from" in looker
+
+
+def _client_for_workspace(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "workspace")
+    (tmp_path / "workspace").mkdir()
+    return TestClient(app_module.create_app(config, tmp_path / "sessions")), config
+
+
+def test_deleting_a_session_leaves_the_files_unless_asked(tmp_path):
+    client, config = _client_for_workspace(tmp_path)
+    project = config.workspace_root / "game"
+    sid = client.post("/api/sessions",
+                      json={"name": "g", "project_dir": str(project)}).json()["id"]
+    client.put(f"/api/sessions/{sid}/file", json={"path": "a.js", "content": "x"})
+
+    body = client.request("DELETE", f"/api/sessions/{sid}").json()
+    assert body["files_deleted"] is False
+    # The work outliving the session that made it is the safe way round.
+    assert (project / "a.js").is_file()
+
+
+def test_a_session_can_take_its_project_with_it(tmp_path):
+    client, config = _client_for_workspace(tmp_path)
+    project = config.workspace_root / "game"
+    sid = client.post("/api/sessions",
+                      json={"name": "g", "project_dir": str(project)}).json()["id"]
+    client.put(f"/api/sessions/{sid}/file", json={"path": "a.js", "content": "x"})
+
+    body = client.request("DELETE", f"/api/sessions/{sid}",
+                          params={"files": "true"}).json()
+    assert body["files_deleted"] is True
+    assert not project.exists()
+
+
+def test_a_project_outside_the_workspace_is_never_deleted(tmp_path):
+    """The one action here that cannot be undone from inside trance, so it is
+    allowed only for a folder trance made."""
+    client, _config = _client_for_workspace(tmp_path)
+    outside = tmp_path / "somewhere-else"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("mine")
+
+    sid = client.post("/api/sessions",
+                      json={"name": "x", "project_dir": str(outside)}).json()["id"]
+    refused = client.request("DELETE", f"/api/sessions/{sid}", params={"files": "true"})
+
+    assert refused.status_code == 400 and "outside the workspace" in refused.json()["detail"]
+    assert (outside / "precious.txt").exists()
+    # And the session is still there: a refusal must not half-delete.
+    assert client.get(f"/api/sessions/{sid}").status_code == 200
+
+
+def test_the_workspace_itself_and_home_are_refused(tmp_path, monkeypatch):
+    client, config = _client_for_workspace(tmp_path)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "w", "project_dir": str(config.workspace_root)}).json()["id"]
+    refused = client.request("DELETE", f"/api/sessions/{sid}", params={"files": "true"})
+    assert refused.status_code == 400 and "workspace itself" in refused.json()["detail"]
+    assert config.workspace_root.exists()
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda _cls: home))
+    monkeypatch.setattr(type(config), "workspace_root", property(lambda _self: home.parent))
+    hid = client.post("/api/sessions",
+                      json={"name": "h", "project_dir": str(home)}).json()["id"]
+    stopped = client.request("DELETE", f"/api/sessions/{hid}", params={"files": "true"})
+    assert stopped.status_code == 400 and "home directory" in stopped.json()["detail"]
+    assert home.exists()

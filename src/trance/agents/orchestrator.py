@@ -196,6 +196,20 @@ def propose_flow_tool(roles: list, loop_names: list | None = None) -> dict:
                 "properties": {
                     "summary": {"type": "string",
                                 "description": "One paragraph: what is being built."},
+                    "requirements": {
+                        "type": "array",
+                        "description": (
+                            "What the finished thing must do, as statements that can be "
+                            "checked one at a time. These are read by the tester, who "
+                            "writes tests for them, and by the visual tester, who looks "
+                            "for them on screen — so write each one so that looking at "
+                            "the running app, or at a test result, settles it. "
+                            "'Exactly four ghosts are visible once the game starts' can "
+                            "be checked; 'the game feels good' cannot. Six to twelve of "
+                            "these is usually right."
+                        ),
+                        "items": {"type": "string"},
+                    },
                     "team": {
                         "type": "array",
                         "description": "Which agents this project needs.",
@@ -340,6 +354,11 @@ def chat(
             truncated_call = True
             continue
         proposal = ensure_checks(_normalize(call.arguments, roles), roles=roles)
+        proposal["requirements"] = [
+            str(item).strip()
+            for item in (call.arguments.get("requirements") or [])
+            if str(item).strip()
+        ][:20]
         proposal = ensure_final_check(proposal, loops=loops, roles=roles)
 
     text = response.text.strip()

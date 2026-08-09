@@ -401,6 +401,7 @@ def _run_agent(
     memory=None,
     project_map: str = "",
     goal: str = "",
+    requirements: list[str] | None = None,
     placement: str = "",
     approve=None,
     reindex=None,
@@ -457,6 +458,17 @@ def _run_agent(
         # an instruction and the goal as the thing the instruction is for.
         user_parts.append("## What this project is\n" + goal)
     user_parts.append(f"## Your task — this and nothing else\n{task}")
+    if requirements:
+        # Not the task: what the whole project is judged against. A coder builds
+        # to these, a tester writes tests for them, and a visual tester looks
+        # for them on screen — so all three read the same list rather than each
+        # inventing its own idea of done.
+        user_parts.append(
+            "## What the finished project must do\n"
+            + "\n".join(f"- {item}" for item in requirements)
+            + "\n\nThese are the acceptance criteria for the project as a whole, not "
+              "for your step. Do not try to satisfy all of them; do your task in a way "
+              "that does not make any of them harder to reach.")
     if placement:
         user_parts.append("## Where your step sits\n" + placement)
     # What the team already settled comes before what this agent may do: the

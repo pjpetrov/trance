@@ -19,6 +19,7 @@ import { cn } from "@/lib/cn";
 import { Badge, Button, Empty, Input, Panel, PanelHeader, Select, Textarea }
   from "@/components/ui/primitives";
 import { Modal } from "@/components/ui/Modal";
+import { Confirm } from "@/components/ui/Confirm";
 import { CodeView, type LineComment } from "@/components/CodeView";
 import { toast } from "@/components/Toaster";
 import type { ProjectFile, ReviewComment, TreeNode } from "@/api/types";
@@ -359,10 +360,13 @@ function FileEditor(
   const [note, setNote] = useState("");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
+  const [asking, setAsking] = useState<"discard" | "delete" | null>(null);
 
   // A new file is a new edit. Carrying a draft across files would save one
   // file's contents over another's.
-  useEffect(() => { setEditing(false); setDraft(null); setPending(null); }, [path]);
+  useEffect(() => {
+    setEditing(false); setDraft(null); setPending(null); setAsking(null);
+  }, [path]);
 
   const running = session.data?.status === "running";
   const text = draft ?? file.data?.content ?? "";
@@ -390,9 +394,9 @@ function FileEditor(
               <Button
                 size="sm"
                 onClick={() => {
-                  if (dirty && !confirm("Discard your changes to this file?")) return;
-                  setDraft(null);
-                  setEditing(false);
+                  // Nothing to lose, nothing to ask.
+                  if (!dirty) { setDraft(null); setEditing(false); return; }
+                  setAsking("discard");
                 }}
               >Cancel</Button>
               {dirty && <span className="text-xs text-warn">unsaved changes</span>}
@@ -412,16 +416,48 @@ function FileEditor(
 
           <Button
             size="sm" variant="danger" busy={remove.isPending}
-            onClick={() => {
-              if (!confirm(`Delete ${path}? It is removed from disk and committed.`
-                           + (running ? " A step is running right now." : ""))) return;
-              remove.mutateAsync(path)
-                .then(() => { onDeleted(); toast.ok(`Deleted ${path}.`); })
-                .catch((error) => toast.err(String(error)));
-            }}
+            onClick={() => setAsking("delete")}
           >Delete file</Button>
         </div>
       )}
+
+      <Confirm
+        open={asking === "discard"}
+        title="Discard your changes?"
+        confirmLabel="Discard them"
+        danger
+        onClose={() => setAsking(null)}
+        onConfirm={() => { setDraft(null); setEditing(false); setAsking(null); }}
+      >
+        <p>
+          The edits you have made to <b>{path}</b> have not been saved, and closing the
+          editor loses them.
+        </p>
+      </Confirm>
+
+      <Confirm
+        open={asking === "delete"}
+        title={`Delete ${path}?`}
+        confirmLabel="Delete it"
+        danger
+        busy={remove.isPending}
+        onClose={() => setAsking(null)}
+        onConfirm={() => {
+          if (!path) return;
+          remove.mutateAsync(path)
+            .then(() => { setAsking(null); onDeleted(); toast.ok(`Deleted ${path}.`); })
+            .catch((error) => toast.err(String(error)));
+        }}
+      >
+        <p>It is removed from disk and the deletion is committed, so it is recoverable
+          from git — but not from here.</p>
+        {running && (
+          <p className="text-warn">
+            A step is running right now. If an agent is working on this file, deleting it
+            underneath will fail that step rather than stopping it.
+          </p>
+        )}
+      </Confirm>
 
       <div className="min-h-0 flex-1 overflow-hidden">
         {file.isError && (

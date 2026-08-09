@@ -41,6 +41,11 @@ class Session:
     #: this: one that does not know the goal makes locally sensible, globally
     #: wrong choices — an API shape nothing downstream can use.
     goal: str = ""
+    #: What the finished thing must do, written so each one can be settled by
+    #: looking. The tester writes tests for these and the visual tester looks
+    #: for them on screen, so they are the closest thing the run has to a
+    #: definition of done.
+    requirements: list[str] = field(default_factory=list)
     chat: list[ChatMessage] = field(default_factory=list)
     team: list[AgentRole] = field(default_factory=default_team)
     flow: Flow = field(default_factory=Flow)

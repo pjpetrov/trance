@@ -7,6 +7,7 @@ import base64
 import binascii
 import json
 import os
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -1337,9 +1338,39 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         }
         return data
 
+    def _safe_to_remove(project: Path) -> str:
+        """Why this directory must not be deleted, or "" if it may be.
+
+        Deleting a directory the user named by hand is the one action here that
+        cannot be undone from inside trance, so it is allowed only for a project
+        that lives under the workspace root — a folder trance made. A path they
+        typed themselves, a home directory, or the workspace itself are refused
+        whatever the request says.
+        """
+        root = config.workspace_root.resolve()
+        try:
+            target = project.resolve()
+        except OSError as exc:
+            return str(exc)
+        if target == target.parent:
+            return "that is the filesystem root"
+        if target == Path.home().resolve():
+            return "that is your home directory"
+        if target == root:
+            return "that is the workspace itself, not a project in it"
+        if root not in target.parents:
+            return (f"{target} is outside the workspace ({root}). Delete it yourself, "
+                    f"where you can see what is in it.")
+        return ""
+
     @app.delete("/api/sessions/{session_id}")
-    def delete_session(session_id: str):
-        """Delete a session and its trace. Files the agents wrote are left alone."""
+    def delete_session(session_id: str, files: bool = False):
+        """Delete a session and its trace.
+
+        `files=true` takes the project directory with it. Off by default: the
+        agents' work outliving the session that made it is the safe way round,
+        and a session is cheap to recreate over the same folder.
+        """
         # Nothing should outlive the session it belongs to — least of all a
         # public URL to a folder whose session no longer exists.
         for registry in (previews, tunnels):
@@ -1350,9 +1381,20 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         session = _need(store, session_id)
         if session.status == "running":
             session.stop()  # let the engine unwind before the directory goes
+        project = _project_of(session)
+        refusal = _safe_to_remove(project) if files else ""
+        if files and refusal:
+            raise HTTPException(400, f"the session was not deleted: {refusal}")
+
         if not store.delete(session_id):
             raise HTTPException(404, "no such session")
-        return {"deleted": session_id, "project_dir": session.project_dir}
+
+        removed = False
+        if files and project.exists():
+            shutil.rmtree(project, ignore_errors=True)
+            removed = not project.exists()
+        return {"deleted": session_id, "project_dir": session.project_dir,
+                "files_deleted": removed}
 
 
     #: A pasted screenshot, capped. Four is more than any bug report needs, and
@@ -1578,6 +1620,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if result["proposal"]:
             proposal = result["proposal"]
             session.goal = proposal.get("summary") or session.goal
+            # Added to rather than replaced, for the same reason steps are: a
+            # proposal for a new feature should not drop what the rest of the
+            # project still has to do.
+            for wanted in proposal.get("requirements") or []:
+                if wanted not in session.requirements:
+                    session.requirements.append(wanted)
             session.team = roles.resolve_team(proposal["team"])
             # Added to, not replaced. A new plan proposed halfway through used
             # to delete every finished step and its history with it — the

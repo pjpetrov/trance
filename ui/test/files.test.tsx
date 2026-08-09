@@ -11,7 +11,8 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FilesScreen, buildTree } from "@/screens/FilesScreen";
 import { useUi } from "@/store/ui";
-import { fakeServer, renderWithQuery, stubWebSocket } from "./render";
+import { fakeServer, renderWithQuery, stubWebSocket, type FakeRequest }
+  from "./render";
 import { session } from "./fixtures";
 
 /** Verbatim from GET /api/sessions/{id}/files. Flat — there is no server tree. */
@@ -259,32 +260,41 @@ describe("editing and deleting a file", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
-  it("deletes the open file and closes it", async () => {
+  it("asks before deleting, then deletes and closes the file", async () => {
     const user = userEvent.setup();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const server = fakeServer(open({
-      "/api/sessions/s1/file?path=index.html": { deleted: "index.html", committed: true },
+      "/api/sessions/s1/file": (request: FakeRequest) => (request.method === "DELETE"
+        ? { deleted: "index.html", committed: true }
+        : { path: "index.html", content: "<html>", bytes: 6, lines: 1 }),
     }));
 
     await openIt(user);
     await user.click(await screen.findByRole("button", { name: "Delete file" }));
 
+    // A dialog that can name the file and warn about a running step, rather
+    // than one line the browser wrote.
+    expect(await screen.findByText("Delete index.html?")).toBeInTheDocument();
+    expect(screen.getByText(/recoverable from git/)).toBeInTheDocument();
+    expect(server.calls.some((call) => call.method === "DELETE")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Delete it" }));
     await waitFor(() => {
       const gone = server.calls.find((call) => call.method === "DELETE");
-      expect(gone?.url).toContain("path=index.html");
+      expect(String(gone?.url)).toContain("path=index.html");
     });
     // The pane cannot keep showing a file that is no longer there.
     await waitFor(() => expect(useUi.getState().filePath).toBeNull());
   });
 
-  it("does not delete when the confirmation is declined", async () => {
+  it("does not delete when the dialog is dismissed", async () => {
     const user = userEvent.setup();
-    vi.spyOn(window, "confirm").mockReturnValue(false);
     const server = fakeServer(open());
 
     await openIt(user);
     await user.click(await screen.findByRole("button", { name: "Delete file" }));
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
 
     expect(server.calls.some((call) => call.method === "DELETE")).toBe(false);
   });
+
 });
