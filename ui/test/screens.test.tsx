@@ -324,3 +324,73 @@ describe("empty states", () => {
       .toBeInTheDocument();
   });
 });
+
+describe("the run page's step actions", () => {
+  it("opens the run history even when only one run exists", async () => {
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/sessions/s1": session(),
+      "/api/sessions/s1/events": eventsRoute([], [
+        event({ kind: "memory", note: "did a thing", stored: true }),
+      ]),
+    });
+
+    renderWithQuery(<RunScreen />);
+    await user.click(await screen.findByText(/Build the maze renderer/));
+
+    // Disabling this below two runs made it permanently dead for every step
+    // recorded before run markers existed — which is all of them.
+    const history = await screen.findByRole("button", { name: /history/ });
+    expect(history).toBeEnabled();
+
+    await user.click(history);
+    // The console header names the run too, so scope to the list's own row.
+    expect(await screen.findByRole("button", { name: /before runs were recorded/ }))
+      .toBeInTheDocument();
+  });
+
+  it("says so rather than showing an empty list when a step never ran", async () => {
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/sessions/s1": session(),
+      "/api/sessions/s1/events": eventsRoute([], []),
+    });
+
+    renderWithQuery(<RunScreen />);
+    await user.click(await screen.findByText(/Build the maze renderer/));
+    await user.click(await screen.findByRole("button", { name: /history/ }));
+    expect(await screen.findByText(/Nothing recorded for this step yet/))
+      .toBeInTheDocument();
+  });
+
+  it("no longer offers skip", async () => {
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/sessions/s1": session(),
+      "/api/sessions/s1/events": eventsRoute([]),
+    });
+
+    renderWithQuery(<RunScreen />);
+    await user.click(await screen.findByText(/Build the maze renderer/));
+    await screen.findByRole("button", { name: "rerun" });
+    expect(screen.queryByRole("button", { name: "skip" })).not.toBeInTheDocument();
+  });
+
+  it("scrolls to the end of a run when it is opened", async () => {
+    const user = userEvent.setup();
+    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    fakeServer({
+      "/api/sessions/s1": session(),
+      "/api/sessions/s1/events": eventsRoute([], [
+        event({ kind: "memory", note: "the last thing that happened", stored: true }),
+      ]),
+    });
+
+    renderWithQuery(<RunScreen />);
+    scrolled.mockClear();
+    await user.click(await screen.findByText(/Build the maze renderer/));
+
+    // The last thing that happened is what you opened the run to read.
+    await waitFor(() => expect(scrolled).toHaveBeenCalled());
+  });
+});

@@ -101,7 +101,7 @@ function StepRow(
   },
 ) {
   const sessionId = useUi((state) => state.sessionId);
-  const { rerun, skip } = useStepActions(sessionId ?? "");
+  const { rerun } = useStepActions(sessionId ?? "");
   const steer = useSteer(sessionId ?? "");
   const [showRuns, setShowRuns] = useState(false);
 
@@ -135,20 +135,21 @@ function StepRow(
                 .then(() => { onPickRun(null); toast.ok("Running it again."); })
                 .catch((error) => toast.err(String(error)))}
             >rerun</Button>
-            <Button size="sm" variant="ghost" onClick={() => setShowRuns(!showRuns)}
-                    disabled={runs.length < 2}
-                    title={runs.length < 2 ? "Only one run so far" : "Every run of this step"}>
-              history{runs.length > 1 ? ` (${runs.length})` : ""}
+            <Button size="sm" variant={showRuns ? "default" : "ghost"}
+                    onClick={() => setShowRuns(!showRuns)}
+                    title="Every run of this step">
+              history{runs.length ? ` (${runs.length})` : ""}
             </Button>
-            <Button
-              size="sm" variant="ghost" busy={skip.isPending}
-              onClick={() => skip.mutateAsync(step.id)
-                .catch((error) => toast.err(String(error)))}
-            >skip</Button>
           </div>
 
           {showRuns && (
             <div className="space-y-0.5 rounded-[--radius] border border-line p-1">
+              {!runs.length && !events.isLoading && (
+                <p className="px-1.5 py-1 text-xs text-muted">
+                  Nothing recorded for this step yet.
+                </p>
+              )}
+              {events.isLoading && <Spinner className="m-2 text-muted" />}
               {runs.slice().reverse().map((run) => (
                 <button
                   key={run.n}
@@ -216,6 +217,15 @@ function Console(
   // arrive on the page rather than having clicked anything.
   const events = stepId ? (shown?.events ?? []) : (tail.data ?? []);
   const loading = stepId ? stepEvents.isLoading : tail.isLoading;
+
+  // Two different scrolls. Arriving at a run puts you at its end, because the
+  // last thing that happened is what you opened it to read. After that the
+  // console only follows if you are already at the bottom — yanking the view
+  // while someone reads an earlier failure is worse than not following.
+  const landedOn = `${stepId ?? "session"}:${shown?.n ?? ""}:${loading}`;
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [landedOn]);
 
   useEffect(() => {
     const node = bottom.current;
