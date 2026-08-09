@@ -305,8 +305,13 @@ class ToolOutcome:
 class AgentTools:
     def __init__(self, project: Path, role: AgentRole, graph_tools=None, notify=None,
                  memory=None, approve=None, session_id: str = "", step_id: str = "",
-                 reindex=None):
+                 reindex=None, vision_config=None):
         self.project = Path(project).resolve()
+        #: The model that answers `look` — the agent's own. None only when this
+        #: is built outside a run; the browser tools still open pages and probe
+        #: canvases then, and only the question-asking is refused.
+        self.vision_config = vision_config
+        self._visual = None
         self.role = role
         self.graph = graph_tools
         #: The team's shared notebook. Every agent may write to it, including
@@ -464,6 +469,66 @@ class AgentTools:
                 {"note": {"type": "string",
                           "description": "One specific, self-contained sentence."}},
                 ["note"]))
+        if "browser" in self.role.toolsets:
+            out += [
+                _fn("open_page",
+                    "Open this project in a real browser and report what happened: "
+                    "console errors, failed requests, whether a canvas exists and "
+                    "whether it painted. Call this first. The page stays open, so "
+                    "later calls act on the same running app.",
+                    {"path": {"type": "string",
+                              "description": ("The HTML file to open, relative to the "
+                                              "project root. Omit to use the project's "
+                                              "index.html.")}},
+                    []),
+                _fn("press_key",
+                    "Send a key to the page, as a keyboard would. Use this to get past "
+                    "a title screen or menu — an app waiting on 'press SPACE' shows you "
+                    "nothing about itself until you do — and to drive it once running. "
+                    "The result says whether the page received the key and whether the "
+                    "picture changed, so you never have to assume either.",
+                    {"key": {"type": "string",
+                             "description": ("Space, Enter, Escape, ArrowUp, ArrowDown, "
+                                             "ArrowLeft, ArrowRight, Tab, or a single "
+                                             "character such as w or 1.")},
+                     "times": {"type": "integer",
+                               "description": "How many times to press it. Default 1."}},
+                    ["key"]),
+                _fn("wait",
+                    "Let the app run for a number of animation frames before you judge "
+                    "it. A screen is not finished the moment it appears — characters "
+                    "enter, animations play, a countdown runs — so judging the frame "
+                    "straight after a keypress can fail an app that is working. 60 "
+                    "frames is about a second. Use 120-240 after starting something.",
+                    {"frames": {"type": "integer",
+                                "description": "Animation frames to let run. Default 120."}},
+                    []),
+                _fn("check_canvas",
+                    "Check the canvas without a screenshot: whether it painted at all "
+                    "(a single flat colour means it did not), whether the picture is "
+                    "still changing (an unchanged one means the render loop is dead), "
+                    "and any errors since the last check. Cheap — prefer it over `look` "
+                    "for anything it can answer.",
+                    {"frames": {"type": "integer",
+                                "description": "Frames to watch for movement. Default 30."}},
+                    []),
+                _fn("look",
+                    "Take a screenshot and ask a vision model about it. Costs a model "
+                    "call, so ask about what only a picture can settle — layout, "
+                    "overlap, what is drawn where. Ask specific, answerable questions, "
+                    "not whether it looks good.",
+                    {"question": {"type": "string",
+                                  "description": ("What you want to know about what is "
+                                                  "on screen right now.")},
+                     "checks": {"type": "array", "items": {"type": "string"},
+                                "description": ("Specific things to verify, one per "
+                                                "entry. The task's acceptance criteria "
+                                                "belong here.")},
+                     "whole_page": {"type": "boolean",
+                                    "description": ("Photograph the whole page instead "
+                                                    "of just the canvas. Default false.")}},
+                    ["question"]),
+            ]
         if ("graph" in self.role.toolsets and self.graph is not None
                 and "files" in self.role.toolsets):
             out.append(_fn(
@@ -501,6 +566,11 @@ class AgentTools:
             "check_file": self.check_file,
             "check_files": self.check_files,
             "remember": self.remember,
+            "open_page": self.open_page,
+            "press_key": self.press_key,
+            "wait": self.wait,
+            "check_canvas": self.check_canvas,
+            "look": self.look,
         }
         # A tool the role was not granted must be refused even if the model
         # invents the name — specs() omitting it is not enough on its own.
@@ -853,6 +923,234 @@ class AgentTools:
         return ToolOutcome("\n".join(_render_stat(s) for s in stats), ok=True,
                            detail={"kind": "check", "files": stats})
 
+    # ------------------------------------------------------------- browser
+    #
+    # The one toolset whose absence is normal. Every failure below reports
+    # itself as a tool result the agent can read and act on, never as an
+    # exception that ends the step: "there is no browser here" is information,
+    # and an agent that learns it can still say so in its verdict.
+
+    @property
+    def visual(self):
+        """The step's browser session, started on first use."""
+        if self._visual is None:
+            from .visual import VisualSession
+
+            self._visual = VisualSession(
+                self.project, session_id=self.session_id, step_id=self.step_id,
+                cancel_token=self.session_id)
+        return self._visual
+
+    def close(self) -> None:
+        """Release anything the step held open. Safe to call twice."""
+        if self._visual is not None:
+            self._visual.close()
+            self._visual = None
+
+    def open_page(self, path: str = "") -> ToolOutcome:
+        from ..browser import BrowserUnavailable
+
+        try:
+            found = self.visual.open(path)
+        except BrowserUnavailable as exc:
+            return ToolOutcome(f"Could not open the page: {exc}", ok=False,
+                               detail={"kind": "page_failed", "error": str(exc)})
+
+        probe, errors = found["probe"], found["errors"]
+        lines = [f"Opened {found['page']} at {found['url']}"]
+        if found["frames"] < found["asked_frames"]:
+            lines.append(f"WARNING: only {found['frames']} of {found['asked_frames']} "
+                         "animation frames ran — the page's main thread is blocked or "
+                         "the tab is being throttled. (An app whose own draw loop has "
+                         "died still produces frames; check_canvas is what finds that.)")
+        if found["needs_build"]:
+            lines.append(f"WARNING: this project is built by a bundler ({found['build_command']}). "
+                         "Served as static files its imports will fail. What you see may be "
+                         "the failure, not the app.")
+        if probe.get("canvas"):
+            lines.append(f"Canvas: {probe.get('w')}x{probe.get('h')}"
+                         + (f" ({probe['count']} canvases, largest measured)"
+                            if probe.get("count", 1) > 1 else ""))
+            if probe.get("uniform") is True:
+                lines.append("The canvas is a single flat colour — nothing has been drawn on it.")
+            elif probe.get("uniform") is False:
+                lines.append("The canvas has been painted.")
+            else:
+                lines.append(f"Could not read the canvas back ({probe.get('note') or 'unknown'}); "
+                             "use look to see it instead.")
+        else:
+            lines.append("No canvas on this page.")
+        lines.append(_render_page_errors(errors))
+        return ToolOutcome("\n".join(lines), ok=True,
+                           detail={"kind": "page", "page": found["page"], "url": found["url"],
+                                   "frames": found["frames"], "asked_frames": found["asked_frames"],
+                                   "needs_build": found["needs_build"], "errors": errors,
+                                   "canvas": probe.get("canvas", False),
+                                   "size": (f"{probe.get('w')}x{probe.get('h')}"
+                                            if probe.get("canvas") else ""),
+                                   "blank": probe.get("uniform")})
+
+    def press_key(self, key: str, times: int = 1) -> ToolOutcome:
+        from ..browser import BrowserUnavailable
+
+        try:
+            times = max(1, min(int(times or 1), 100))
+        except (TypeError, ValueError):
+            times = 1
+        try:
+            result = self.visual.press(str(key), times)
+        except (BrowserUnavailable, ValueError) as exc:
+            return ToolOutcome(f"Could not press {key!r}: {exc}", ok=False,
+                               detail={"kind": "key_failed", "key": str(key), "error": str(exc)})
+
+        delivered, changed = bool(result.get("delivered")), result.get("changed")
+        lines = [f"Pressed {key}" + (f" {times} times" if times > 1 else "") + "."]
+        # Said in full because the two halves have different fixes, and because
+        # an agent told only "pressed" has no reason to believe anything
+        # happened — which is exactly how a working keypress got reported as a
+        # dead one.
+        if not delivered:
+            lines.append("The page did not receive the key at all. That is a browser "
+                         "problem, not the app ignoring you.")
+        elif changed is True:
+            lines.append(f"The page received it and the screen changed over "
+                         f"{result.get('frames', 0)} frames — the app responded.")
+        elif changed is False:
+            lines.append(f"The page received it but the screen did not change over "
+                         f"{result.get('frames', 0)} frames. Either the app does not act "
+                         f"on this key in its current state, or it needs a different one.")
+        else:
+            lines.append("The page received it, but the screen could not be compared.")
+        # The measured comparison, in full. "Changed" alone cannot tell a moving
+        # starfield from a screen transition, and 0.5% versus 14% is exactly
+        # that difference.
+        described = (result.get("diff") or {}).get("described")
+        if described:
+            lines.append(described)
+        probe = result.get("probe") or {}
+        if probe.get("uniform") is True:
+            lines.append("The canvas is a single flat colour — nothing is drawn on it.")
+        return ToolOutcome(
+            " ".join(lines), ok=True,
+            detail={"kind": "key", "key": str(key), "times": times,
+                    "delivered": delivered, "changed": changed,
+                    "frames": result.get("frames", 0), "diff": result.get("diff"),
+                    "shot_before": result.get("shot_before", ""),
+                    "shot_after": result.get("shot_after", "")})
+
+    def wait(self, frames: int = 120) -> ToolOutcome:
+        from ..browser import BrowserUnavailable
+
+        try:
+            frames = max(1, min(int(frames or 120), 1200))
+        except (TypeError, ValueError):
+            frames = 120
+        try:
+            found = self.visual.wait(frames)
+        except BrowserUnavailable as exc:
+            return ToolOutcome(f"Could not wait: {exc}", ok=False,
+                               detail={"kind": "wait_failed", "error": str(exc)})
+
+        lines = [f"Let {found['frames']} animation frames run"
+                 + (f" (asked for {found['asked_frames']})" if found["stalled"] else "") + "."]
+        if found["stalled"]:
+            # Careful what this means. The frame counter runs on its own
+            # requestAnimationFrame chain, so it keeps counting after the app's
+            # draw loop stops — falling short means the *browser* stopped
+            # producing frames, which is a blocked main thread, not a dead
+            # render loop. That one shows up as the picture not changing.
+            lines.append("The page stopped producing frames before that — its main "
+                         "thread is blocked or the tab was throttled.")
+        lines.append("The screen changed while waiting." if found["changed"]
+                     else "The screen did not change at all while waiting."
+                     if found["changed"] is False else "")
+        described = (found.get("diff") or {}).get("described")
+        if described:
+            lines.append(described)
+        lines.append(_render_page_errors(found["errors"]))
+        return ToolOutcome("\n".join(l for l in lines if l), ok=True,
+                           detail={"kind": "wait", "frames": found["frames"],
+                                   "asked_frames": found["asked_frames"],
+                                   "changed": found["changed"], "stalled": found["stalled"],
+                                   "errors": found["errors"], "diff": found.get("diff"),
+                                   "shot_before": found.get("shot_before", ""),
+                                   "shot_after": found.get("shot_after", "")})
+
+    def check_canvas(self, frames: int = 30) -> ToolOutcome:
+        from ..browser import BrowserUnavailable
+
+        try:
+            frames = max(2, min(int(frames or 30), 600))
+        except (TypeError, ValueError):
+            frames = 30
+        try:
+            found = self.visual.check(frames)
+        except BrowserUnavailable as exc:
+            return ToolOutcome(f"Could not check the canvas: {exc}", ok=False,
+                               detail={"kind": "canvas_failed", "error": str(exc)})
+
+        if not found["canvas"]:
+            lines = ["There is no canvas on this page."]
+        else:
+            lines = [f"Canvas {found['size']}"
+                     + (f" ({found['canvases']} on the page)" if found["canvases"] > 1 else "")]
+            lines.append("BLANK — a single flat colour, nothing drawn." if found["blank"] is True
+                         else "Painted." if found["blank"] is False
+                         else f"Could not read the canvas back ({found['note'] or 'unknown'}).")
+            lines.append("FROZEN — the picture did not change over "
+                         f"{found['frames']} frames; the render loop is not running."
+                         if found["moving"] is False
+                         else f"Moving — the picture changed over {found['frames']} frames."
+                         if found["moving"] else "Could not tell whether the picture is changing.")
+        lines.append(_render_page_errors(found["errors"]))
+        # A blank or frozen canvas is a finding, not a broken tool: the call
+        # worked. `ok` stays true so the UI shows it as an answer, and the words
+        # carry the bad news.
+        return ToolOutcome("\n".join(lines), ok=True,
+                           detail={"kind": "canvas", **{k: found[k] for k in
+                                   ("canvas", "canvases", "size", "blank", "moving", "frames",
+                                    "note", "errors")}})
+
+    def look(self, question: str, checks: list | None = None,
+             whole_page: bool = False) -> ToolOutcome:
+        """Screenshot the app and ask the vision model about it."""
+        from ..browser import BrowserUnavailable
+        from ..vision import VisionUnavailable, look as ask_vision
+
+        if self.vision_config is None:
+            return ToolOutcome(
+                "No model is available to look at the screen. Use check_canvas for what "
+                "can be measured without one, and say in your verdict that the visual "
+                "check could not be made.",
+                ok=False, detail={"kind": "look_failed", "error": "no vision model"})
+        if isinstance(checks, str):
+            checks = [checks]
+        checks = [str(c) for c in (checks or [])][:12]
+
+        try:
+            png, meta = self.visual.capture(whole_page=bool(whole_page))
+        except BrowserUnavailable as exc:
+            return ToolOutcome(f"Could not take a screenshot: {exc}", ok=False,
+                               detail={"kind": "look_failed", "error": str(exc)})
+        shot = self.visual.save(png)
+        try:
+            seen = ask_vision(png, str(question), self.vision_config,
+                              checks=checks, cancel_token=self.session_id)
+        except VisionUnavailable as exc:
+            # The picture was taken and is worth keeping even though nothing
+            # judged it — it is the one artefact that lets a person check.
+            return ToolOutcome(
+                f"The screenshot was taken but the vision model could not answer: {exc}",
+                ok=False,
+                detail={"kind": "screenshot", "shot": shot, "question": str(question),
+                        "checks": checks, "answer": "", "error": str(exc), **meta})
+        return ToolOutcome(
+            seen["answer"], ok=True,
+            detail={"kind": "screenshot", "shot": shot, "question": str(question),
+                    "checks": checks, "answer": seen["answer"], "prompt": seen["prompt"],
+                    "model": seen["model"], "preset": seen["preset"],
+                    "usage": seen["usage"], **meta})
+
     def _stat(self, path: str) -> dict:
         target = self._resolve(path)
         if target is None:
@@ -1068,6 +1366,27 @@ def _shell_missing(programs: list[str], allowed: set[str]) -> list[str]:
     return sorted({p for p in programs if p not in allowed})
 
 
+#: How many of a page's complaints to quote. A broken import can log the same
+#: error every frame, and a hundred identical lines tell the agent nothing the
+#: first three did not.
+MAX_PAGE_ERRORS = 6
+
+
+def _render_page_errors(errors: dict) -> str:
+    """The page's complaints, deduped, as one readable block."""
+    lines: list[str] = []
+    for label, key in (("exception", "exceptions"), ("console error", "console"),
+                       ("failed request", "failed_requests")):
+        seen = list(dict.fromkeys(errors.get(key) or []))
+        for text in seen[:MAX_PAGE_ERRORS]:
+            lines.append(f"  {label}: {text}")
+        if len(seen) > MAX_PAGE_ERRORS:
+            lines.append(f"  ... and {len(seen) - MAX_PAGE_ERRORS} more {label}s")
+    if not lines:
+        return "No console errors, exceptions or failed requests."
+    return "Errors on the page:\n" + "\n".join(lines)
+
+
 def _render_stat(s: dict) -> str:
     if s.get("error"):
         return f"{s['path']}: ERROR — {s['error']}"
@@ -1159,6 +1478,16 @@ def permissions_brief(role: AgentRole) -> str:
         )
     else:
         lines.append("You may NOT run commands. You cannot execute tests, builds, or scripts.")
+
+    if "browser" in role.toolsets:
+        lines.append(
+            "You may open this project in a real headless browser (open_page), send it keys "
+            "(press_key), measure its canvas (check_canvas) and photograph it for a vision "
+            "model to describe (look). The app is served as static files from the folder "
+            "holding the page — no build or dev server is started, so a project that needs "
+            "one will show you its failure rather than itself, and open_page says when that "
+            "is the case."
+        )
 
     lines.append(
         "Everything is confined to the project directory; a path that escapes it is refused."

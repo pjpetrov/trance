@@ -94,12 +94,22 @@ def ensure_repo(project: Path) -> GitResult:
 IGNORED = (".trance/graph.db", ".trance/graph.db-shm", ".trance/graph.db-wal",
            # Handed to a delegated step's tool server and read back from it.
            # Working files, not the project's.
-           ".trance/mcp-calls.jsonl", ".trance/mcp-role.json")
-_IGNORE_BLOCK = "\n".join(("# trance's index — regenerated, not source", *IGNORED))
+           ".trance/mcp-calls.jsonl", ".trance/mcp-role.json",
+           # Screenshots a visual step took. Evidence for the run, shown in the
+           # step history and served from disk — but PNGs, and committing them
+           # puts "Binary files differ" through the history of a repo whose
+           # whole point is being readable afterwards.
+           ".trance/shots/")
+_IGNORE_HEADER = "# trance's index — regenerated, not source"
 
 
 def ignore_trance_files(project: Path) -> bool:
     """Add trance's own working files to .gitignore. True if it changed it.
+
+    Adds whatever is *missing*, rather than nothing at all once the file has
+    been touched before. The all-or-nothing version meant a project set up by an
+    older trance never picked up anything added later — and the first thing
+    added later was screenshots, which are binaries.
 
     PLAN.md and memory.md are deliberately *not* ignored: they are written for
     you to read, and their history is part of the record of the run.
@@ -107,10 +117,13 @@ def ignore_trance_files(project: Path) -> bool:
     path = Path(project) / ".gitignore"
     try:
         current = path.read_text(encoding="utf8") if path.exists() else ""
-        if ".trance/graph.db" in current:
+        listed = {line.strip() for line in current.splitlines()}
+        missing = [entry for entry in IGNORED if entry not in listed]
+        if not missing:
             return False
+        block = "\n".join(([_IGNORE_HEADER] if _IGNORE_HEADER not in current else []) + missing)
         prefix = "" if not current or current.endswith("\n") else "\n"
-        path.write_text(current + prefix + _IGNORE_BLOCK + "\n", encoding="utf8")
+        path.write_text(current + prefix + block + "\n", encoding="utf8")
     except OSError:
         return False
     return True

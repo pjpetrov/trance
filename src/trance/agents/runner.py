@@ -363,7 +363,27 @@ class AgentTurn:
         return self.outcome[0] in ("UNSTATED", "UNCLEAR")
 
 
-def run_agent(
+def run_agent(**kwargs) -> AgentTurn:
+    """Run one agent turn and release whatever it opened.
+
+    The browser toolset launches a real Chrome and a static server, and both
+    outlive any single tool call by design — a game has to still be running
+    between the keypress that starts it and the screenshot that judges it. That
+    makes the *turn* their owner, and something has to close them on every way
+    out of it, including the ones that raise.
+    """
+    opened: list = []
+    try:
+        return _run_agent(_opened=opened, **kwargs)
+    finally:
+        for closable in opened:
+            try:
+                closable.close()
+            except Exception:              # noqa: BLE001 — teardown never fails a step
+                pass
+
+
+def _run_agent(
     *,
     role: AgentRole,
     task: str,
@@ -385,6 +405,7 @@ def run_agent(
     approve=None,
     reindex=None,
     steering_inbox=None,
+    _opened: list | None = None,
 ) -> AgentTurn:
     model_config = config
     # The agent's own budget, or the default. Deliberately not ModelConfig's
@@ -419,9 +440,15 @@ def run_agent(
         bus.emit(kind, session_id, agent=role.name, step_id=step_id, payload=payload)
 
     memory = memory if memory is not None else ProjectMemory(project)
+    # Screenshots go to the agent's own model. There used to be one global
+    # "vision model" setting for this, which was a second thing to configure
+    # and a second thing to get wrong: an agent with the browser toolset needs
+    # a model that can see, and that is a property of the agent, not of trance.
     tools = AgentTools(project, role, graph_tools, notify=notify, memory=memory,
                        approve=approve, session_id=session_id, step_id=step_id,
-                       reindex=reindex)
+                       reindex=reindex, vision_config=model_config)
+    if _opened is not None:
+        _opened.append(tools)
     specs = tools.specs()
 
     user_parts = []

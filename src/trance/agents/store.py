@@ -250,8 +250,8 @@ def _policy_from(raw: dict) -> CommandPolicy:
 class LoopStore:
     """Reusable loops, persisted to JSON next to the agents.
 
-    Seeded with one: tester → developer → tester is the shape people build by
-    hand every time, and having it there makes the feature legible without
+    Seeded with the shapes people build by hand every time — tester → developer
+    → tester, and its visual counterpart — so the feature is legible without
     reading any documentation.
     """
 
@@ -262,10 +262,20 @@ class LoopStore:
         self._loops: dict[str, Loop] = {}
         if self.path.exists():
             self._load()
-        elif seed:
+        if seed:
+            # Any default missing from disk is restored, the same way roles are:
+            # this file existing used to mean "seeded already", so a loop added
+            # in a later version never reached anyone who had run trance before
+            # it shipped. The cost is that deleting a default brings it back on
+            # restart — the same trade the agent library already makes, and the
+            # one that keeps an upgrade from being invisible.
+            added = False
             for loop in default_loops():
-                self._loops[loop.name] = loop
-            self._save()
+                if loop.name not in self._loops:
+                    self._loops[loop.name] = loop
+                    added = True
+            if added:
+                self._save()
 
     def _load(self) -> None:
         try:
@@ -319,10 +329,40 @@ def default_loops() -> list[Loop]:
         on={SUCCESS: Edge(target="n_test", max_visits=3),
             FAILED: Edge(target=FAIL_LOOP)},
     )
-    return [Loop(
-        name="test-and-fix",
-        description="Tester runs; on a failure the developer fixes and the tester runs again.",
-        prompt=("This block is finished when the tests pass. Nobody leaves it by "
-                "declaring success — the tester's run decides."),
-        nodes=[test, fix], start="n_test", max_steps=10,
-    )]
+    # The visual pair. Same shape, different evidence: what settles this one is
+    # a picture of the running app rather than an exit code, which is the only
+    # thing that works for a canvas where the DOM says nothing.
+    look = LoopNode(
+        id="n_look", role="visual-tester", check=None,
+        focus=("Open the app in the browser, get past any title screen, and judge what "
+               "is actually on screen against the task. Do not change any code."),
+        on={SUCCESS: Edge(target=EXIT_LOOP),
+            FAILED: Edge(target="n_repair", max_visits=3)},
+    )
+    repair = LoopNode(
+        id="n_repair", role="frontend",
+        focus=("The app does not look right. The visual tester's report says what was "
+               "on screen and what was wrong with it — fix the rendering, then it "
+               "looks again."),
+        on={SUCCESS: Edge(target="n_look", max_visits=3),
+            FAILED: Edge(target=FAIL_LOOP)},
+    )
+    return [
+        Loop(
+            name="test-and-fix",
+            description="Tester runs; on a failure the developer fixes and the tester runs again.",
+            prompt=("This block is finished when the tests pass. Nobody leaves it by "
+                    "declaring success — the tester's run decides."),
+            nodes=[test, fix], start="n_test", max_steps=10,
+        ),
+        Loop(
+            name="visual-test-and-fix",
+            description=("Opens the app in a real browser and judges it by what is on "
+                         "screen; on a defect the developer fixes it and it looks again."),
+            prompt=("This block is finished when the running app looks right. The "
+                    "verdict comes from what was actually on screen — a screenshot and "
+                    "the measurements around it — not from anyone's description of "
+                    "what the code should do."),
+            nodes=[look, repair], start="n_look", max_steps=8,
+        ),
+    ]

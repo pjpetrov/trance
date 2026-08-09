@@ -365,6 +365,34 @@ body { overflow-x: hidden; }
 .c-fail  .c-icon { color: var(--err); }
 .c-read, .c-graph { opacity: .72; }
 
+/* A capability that is switched on but cannot work yet — no browser on the
+   machine, no vision model chosen. Said where the switch is, not at run time. */
+.warn { color: var(--warn); }
+.agent-note { margin: 2px 0 6px; line-height: 1.5; }
+.agent-note:empty { display: none; }
+
+.c-look  .c-icon { color: var(--purple); }
+
+/* A visual step's evidence. The screenshot is the entry — sized to be read at
+   a glance without opening it in a new tab, and capped so a 4K canvas cannot
+   push the answer below the fold. */
+.shot-wrap { display: flex; flex-direction: column; gap: 8px; }
+.shot {
+  max-width: 100%; max-height: 420px; width: auto; align-self: flex-start;
+  border: 1px solid var(--line); border-radius: 6px; background: #000;
+  image-rendering: pixelated;                 /* game art, not photographs */
+}
+/* Before and after, side by side, so "nothing changed" is checkable by eye.
+   Wraps on a narrow pane rather than shrinking both to illegibility. */
+.shot-pair { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.shot-cell { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.shot-cell .shot { max-height: 260px; }
+
+.shot-h { margin: 2px 0 0; font-size: 11px; text-transform: uppercase;
+          letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.shot-checks { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+.shot-err { color: var(--err); font-size: 12px; line-height: 1.5; word-break: break-word; }
+
 .c-path { color: var(--accent); }
 .c-add { color: var(--ok); } .c-del { color: var(--err); }
 .c-exit-0 { color: var(--ok); } .c-exit-n { color: var(--err); }

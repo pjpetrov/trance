@@ -67,7 +67,7 @@ class ChatClient:
         self.endpoint = config.base_url.rstrip("/") + "/chat/completions"
 
     def complete(self, messages: list[dict], tools: list[dict] | None = None,
-                 cancel_token: str = "") -> ChatResponse:
+                 cancel_token: str = "", extra_body: dict | None = None) -> ChatResponse:
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
@@ -77,6 +77,12 @@ class ChatClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        # Endpoint-specific knobs the caller knows this backend accepts. Kept
+        # opt-in and passed only where it was checked: a strict gateway answers
+        # 400 to a body field it does not recognise, so "harmless if ignored" is
+        # not a safe assumption to make on the caller's behalf.
+        if extra_body:
+            payload.update(extra_body)
 
         request = urllib.request.Request(
             self.endpoint,

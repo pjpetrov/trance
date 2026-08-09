@@ -566,7 +566,10 @@ def test_an_inspect_only_agent_is_valid_without_a_remit():
 
 def test_only_inspection_capable_agents_are_verifiers():
     verifiers = {n for n, r in BUILTIN_ROLES.items() if r.verifier}
-    assert verifiers == {"tester", "reviewer", "factchecker"}
+    assert verifiers == {"tester", "reviewer", "factchecker", "visual-tester"}
+    # Every one of them can actually look at something before judging it.
+    assert all(set(BUILTIN_ROLES[n].toolsets) & {"files", "inspect", "commands", "browser"}
+               for n in verifiers)
     # The orchestrator has no toolsets at all — it could only ever guess.
     assert BUILTIN_ROLES["orchestrator"].verifier is False
     assert BUILTIN_ROLES["backend"].verifier is False
@@ -988,7 +991,7 @@ def test_the_proposal_schema_only_offers_real_verifiers():
 
     props = (propose_flow_tool(_roles())["function"]["parameters"]
              ["properties"]["steps"]["items"]["properties"])
-    assert set(props["check"]["enum"]) == {"tester", "reviewer", "factchecker"}
+    assert set(props["check"]["enum"]) == {"tester", "reviewer", "factchecker", "visual-tester"}
     assert "orchestrator" not in props["role"]["enum"]     # it assigns work, not does it
     # No fixer here any more: bringing in a second agent on failure is what a
     # loop is, and offering both invited a plan the step editor cannot show.
@@ -3792,9 +3795,14 @@ def test_the_seeded_loop_is_valid_and_describes_the_common_shape(tmp_path):
     from trance.loops import validate
 
     loops = LoopStore(tmp_path / "loops.json").all()
-    assert [l.name for l in loops] == ["test-and-fix"]
-    assert validate(loops[0], set(R), {n for n, r in R.items() if r.verifier}) is None
+    assert [l.name for l in loops] == ["test-and-fix", "visual-test-and-fix"]
+    # Every seeded loop has to validate against the builtin roles, or it is a
+    # loop that only fails once someone puts it on a step.
+    verifiers = {n for n, r in R.items() if r.verifier}
+    for loop in loops:
+        assert validate(loop, set(R), verifiers) is None, loop.name
     assert loops[0].roles() == ["tester", "backend"]
+    assert loops[1].roles() == ["visual-tester", "frontend"]
 
 
 def test_a_flow_step_can_name_a_loop_and_pulls_in_its_agents(tmp_path):
@@ -4011,7 +4019,7 @@ def test_the_orchestrator_can_put_a_loop_on_a_step(tmp_path, monkeypatch):
                                session_id="s", loops=loops)
 
     step_props = captured["schema"]["properties"]["steps"]["items"]["properties"]
-    assert step_props["loop"]["enum"] == ["test-and-fix"]
+    assert step_props["loop"]["enum"] == ["test-and-fix", "visual-test-and-fix"]
     assert "END THE PLAN BY VERIFYING IT" in captured["system"]
     assert "test-and-fix" in captured["system"]
 

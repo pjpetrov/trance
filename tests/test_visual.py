@@ -1,0 +1,872 @@
+"""The browser toolset: driving a real page, and judging a picture of it.
+
+Two things are worth being careful about here and both have a test below. The
+first is that absence of a browser is a normal state, not a failure — every
+path has to degrade to a readable tool result rather than an exception that
+kills a step. The second is that a vision model will answer confidently when it
+has been shown nothing, so an empty or missing answer must never reach the agent
+looking like an opinion.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from trance.agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
+from trance.agents.tools import AgentTools, permissions_brief
+from trance.agents.visual import default_page
+from trance.browser import find_chrome, key_spec
+from trance.config import ModelConfig
+
+needs_chrome = pytest.mark.skipif(find_chrome() is None,
+                                  reason="no Chrome on this machine")
+
+
+def _role(**kw) -> AgentRole:
+    base = dict(name="looker", title="Looker", description="", system_prompt="",
+                toolsets=["browser"], paths=[])
+    return AgentRole(**{**base, **kw})
+
+
+# ------------------------------------------------------------------ wiring
+
+def test_browser_is_a_toolset_and_the_visual_tester_writes_nothing():
+    assert "browser" in TOOLSETS
+    role = BUILTIN_ROLES["visual-tester"]
+    assert role.toolsets == ["browser", "inspect"]
+    # It judges other agents' work, so it must not be able to do that work.
+    assert role.paths == [] and role.may_write("src/game.js") is False
+    assert role.verifier is True
+
+
+def test_the_browser_tools_are_offered_only_to_agents_granted_them(tmp_path):
+    with_browser = AgentTools(tmp_path, _role())
+    names = {s["function"]["name"] for s in with_browser.specs()}
+    assert {"open_page", "press_key", "check_canvas", "look"} <= names
+
+    without = AgentTools(tmp_path, _role(toolsets=["files"], paths=["**"]))
+    plain = {s["function"]["name"] for s in without.specs()}
+    assert not plain & {"open_page", "press_key", "check_canvas", "look"}
+
+    # And naming one anyway is refused rather than dispatched.
+    refused = without.call("look", {"question": "how does it look?"})
+    assert refused.ok is False and "do not have" in refused.text
+
+
+def test_the_prompt_says_the_app_is_served_statically():
+    """The agent has to know why a Vite project might show it a failure."""
+    brief = permissions_brief(_role())
+    assert "headless browser" in brief
+    assert "static" in brief and "no build or dev server is started" in brief
+
+
+def test_looking_without_a_vision_model_is_a_readable_refusal(tmp_path):
+    tools = AgentTools(tmp_path, _role(), vision_config=None)
+    out = tools.call("look", {"question": "is it right?"})
+    assert out.ok is False
+    assert "no vision model" in out.detail["error"]
+    # It must tell the agent what to do instead, or the step just stops here.
+    assert "check_canvas" in out.text and "could not be made" in out.text
+
+
+# ------------------------------------------------------------------- keys
+
+@pytest.mark.parametrize("name, expected_code, expected_key_code", [
+    ("Space", "Space", 32),
+    ("space", "Space", 32),            # a model will not match our capitals
+    ("ArrowLeft", "ArrowLeft", 37),
+    ("w", "KeyW", 87),
+    ("1", "Digit1", 49),
+])
+def test_key_names_map_to_what_a_game_listens_for(name, expected_code, expected_key_code):
+    key, code, key_code, _text = key_spec(name)
+    assert code == expected_code
+    # keyCode matters: plenty of game input reads event.keyCode and a 0 there
+    # means the press silently does nothing.
+    assert key_code == expected_key_code
+
+
+def test_an_unknown_key_says_what_is_available():
+    with pytest.raises(ValueError) as exc:
+        key_spec("PageUpTwice")
+    assert "ArrowLeft" in str(exc.value)
+
+
+# ------------------------------------------------------------- page finding
+
+def test_the_page_is_found_where_projects_actually_put_it(tmp_path):
+    assert default_page(tmp_path) == ""                     # nothing to open yet
+    (tmp_path / "public").mkdir()
+    (tmp_path / "public" / "index.html").write_text("<canvas></canvas>")
+    assert default_page(tmp_path) == "public/index.html"
+    (tmp_path / "index.html").write_text("<canvas></canvas>")
+    assert default_page(tmp_path) == "index.html"           # the root one wins
+
+
+def test_node_modules_is_never_offered_as_the_page(tmp_path):
+    deep = tmp_path / "node_modules" / "pkg"
+    deep.mkdir(parents=True)
+    (deep / "index.html").write_text("<p>a dependency's own demo page</p>")
+    assert default_page(tmp_path) == ""
+
+
+# ----------------------------------------------------------- page errors
+
+def test_page_errors_are_deduped_and_capped():
+    from trance.agents.tools import MAX_PAGE_ERRORS, _render_page_errors
+
+    same = ["Uncaught TypeError: x is not a function"] * 40
+    rendered = _render_page_errors({"console": same, "exceptions": [], "failed_requests": []})
+    # One broken import can log every frame; forty identical lines tell the
+    # agent nothing the first one did and cost it context to read.
+    assert rendered.count("Uncaught TypeError") == 1
+
+    many = [f"error {n}" for n in range(MAX_PAGE_ERRORS + 5)]
+    capped = _render_page_errors({"console": many, "exceptions": [], "failed_requests": []})
+    assert "and 5 more" in capped
+
+    assert "No console errors" in _render_page_errors({})
+
+
+# ---------------------------------------------------------------- vision
+
+class _Stub:
+    """Stands in for a chat client, recording what it was sent."""
+
+    def __init__(self, text="ok", finish_reason="stop"):
+        self.text, self.finish_reason, self.sent, self.extra = text, finish_reason, None, None
+
+    def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+        from trance.providers.base import ChatResponse
+
+        self.sent, self.extra = messages, extra_body
+        return ChatResponse(text=self.text, finish_reason=self.finish_reason,
+                            usage={"prompt_tokens": 400, "completion_tokens": 20})
+
+
+def _vision_config(kind="llamacpp", max_tokens=4096):
+    return ModelConfig(base_url="http://localhost:1/v1", model="m", kind=kind,
+                       preset="looker", max_tokens=max_tokens)
+
+
+def test_the_image_rides_the_message_in_the_shape_each_api_speaks(monkeypatch):
+    from trance import vision
+
+    stub = _Stub(text="1. DESCRIBE ... 3. ANSWER fine")
+    monkeypatch.setattr(vision, "client_for", lambda config: stub)
+    result = vision.look(b"\x89PNG-not-really", "is it right?", _vision_config(),
+                         checks=["the maze is drawn"])
+
+    content = stub.sent[0]["content"]
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    # The question is asked in the shape that keeps the answer checkable.
+    assert "DESCRIBE" in content[0]["text"] and "the maze is drawn" in content[0]["text"]
+    assert result["answer"].endswith("fine") and result["preset"] == "looker"
+
+    anthropic = _Stub(text="fine")
+    monkeypatch.setattr(vision, "client_for", lambda config: anthropic)
+    vision.look(b"png", "q", _vision_config(kind="anthropic"))
+    assert anthropic.sent[0]["content"][1]["source"]["type"] == "base64"
+    # Only backends known to accept it are told not to think.
+    assert anthropic.extra is None
+
+
+def test_a_reasoning_model_is_told_not_to_think_and_given_room_to_answer(monkeypatch):
+    """Regression: measured against the local Qwen, the whole output budget went
+    to reasoning and the answer came back empty with finish_reason=length."""
+    from trance import vision
+
+    stub = _Stub(text="an answer")
+    captured = {}
+
+    def factory(config):
+        captured["max_tokens"] = config.max_tokens
+        return stub
+
+    monkeypatch.setattr(vision, "client_for", factory)
+    vision.look(b"png", "q", _vision_config(max_tokens=120))
+    assert stub.extra == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert captured["max_tokens"] >= vision.MIN_ANSWER_TOKENS
+
+
+def test_an_empty_answer_is_never_passed_off_as_an_opinion(monkeypatch):
+    """A model that said nothing has judged nothing, and "" reads as "no
+    problems found" to everything downstream."""
+    from trance import vision
+
+    monkeypatch.setattr(vision, "client_for",
+                        lambda config: _Stub(text="   ", finish_reason="length"))
+    with pytest.raises(vision.VisionUnavailable) as exc:
+        vision.look(b"png", "q", _vision_config())
+    assert "empty answer" in str(exc.value)
+    assert "raise max_tokens" in str(exc.value)          # says how to fix it
+
+
+def test_a_model_that_cannot_see_says_so_rather_than_guessing():
+    from trance import vision
+
+    with pytest.raises(vision.VisionUnavailable) as exc:
+        vision.look(b"png", "q", _vision_config(kind="claudecode"))
+    assert "cannot be sent an image" in str(exc.value)
+
+
+def test_a_failed_vision_call_still_keeps_the_screenshot(tmp_path, monkeypatch):
+    """The picture is the one artefact that lets a person check the verdict, so
+    losing it because the model errored is the worst of both outcomes."""
+    from trance import vision as vision_module
+    from trance.agents import tools as tools_module
+
+    tools = AgentTools(tmp_path, _role(), step_id="st-9", vision_config=_vision_config())
+
+    class _Session:
+        def capture(self, whole_page=False):
+            return b"png-bytes", {"clipped": True, "page": "index.html", "url": "u", "bytes": 9}
+
+        def save(self, png):
+            return "st-9/001.png"
+
+    monkeypatch.setattr(type(tools), "visual", property(lambda self: _Session()))
+    monkeypatch.setattr(vision_module, "client_for",
+                        lambda config: _Stub(text="", finish_reason="stop"))
+
+    out = tools.call("look", {"question": "anything?"})
+    assert out.ok is False
+    assert out.detail["kind"] == "screenshot"          # still renders as evidence
+    assert out.detail["shot"] == "st-9/001.png"
+    assert out.detail["answer"] == "" and out.detail["error"]
+    assert tools_module is not None
+
+
+# ----------------------------------------------------------- serving shots
+
+def test_screenshots_are_served_from_the_session_and_nothing_else_is(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.agents.visual import SHOTS_DIR
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    shots = project / SHOTS_DIR / "st-1"
+    shots.mkdir(parents=True)
+    (shots / "001.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    (project / "secret.txt").write_text("not a screenshot")
+
+    good = client.get(f"/api/sessions/{sid}/shot/st-1/001.png")
+    assert good.status_code == 200
+    assert good.headers["content-type"] == "image/png"
+    assert good.content == b"\x89PNG\r\n\x1a\nfake"
+
+    assert client.get(f"/api/sessions/{sid}/shot/st-1/nope.png").status_code == 404
+    # The shot route must not become a way to read the project.
+    assert client.get(f"/api/sessions/{sid}/shot/../../secret.txt").status_code == 404
+
+
+def test_the_config_reports_whether_visual_checks_are_possible(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    visual = client.get("/api/config").json()["visual"]
+    # Whether a browser exists, and nothing else. There is deliberately no
+    # vision-model setting: screenshots go to the model the agent already has,
+    # so there is no second place to configure and no way for the two to
+    # disagree about which model an agent is using.
+    assert set(visual) == {"browser"}
+    assert isinstance(visual["browser"], bool)
+    assert "vision_preset" not in client.put("/api/config/planning", json={}).json()
+
+
+def test_the_agents_own_model_is_what_gets_shown_the_screenshot(tmp_path, monkeypatch):
+    """The `look` tool sends the image to whatever model the agent runs on, so
+    an agent with the browser toolset needs one that can see."""
+    from trance.agents import runner
+
+    captured = {}
+
+    class _Tools:
+        def __init__(self, *a, **kw):
+            captured.update(kw)
+
+        def specs(self):
+            raise RuntimeError("stop here — the wiring is all this test needs")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runner, "AgentTools", _Tools)
+    monkeypatch.setattr(runner, "client_for", lambda config: object())
+    config = _vision_config()
+    with pytest.raises(RuntimeError):
+        runner.run_agent(role=_role(), task="t", project=tmp_path, config=config,
+                         bus=__import__("trance.events", fromlist=["EventBus"]).EventBus(),
+                         session_id="s", step_id="st")
+    assert captured["vision_config"] is config
+
+
+# ------------------------------------------------- the real thing, if we can
+
+@needs_chrome
+def test_a_real_browser_loads_a_page_and_reads_its_canvas_back(tmp_path):
+    """The whole chain against a real Chrome: paint, measure, key, screenshot."""
+    from trance.browser import Browser
+
+    page = tmp_path / "index.html"
+    page.write_text("""
+      <canvas id="c" width="120" height="80"></canvas>
+      <script>
+        const ctx = document.getElementById('c').getContext('2d');
+        let started = false, n = 0;
+        addEventListener('keydown', e => { if (e.code === 'Space') started = true; });
+        (function draw() {
+          ctx.fillStyle = started ? '#c00' : '#000';
+          ctx.fillRect(0, 0, 120, 80);
+          if (started) { ctx.fillStyle = '#ff0'; ctx.fillRect((n += 2) % 100, 20, 10, 10); }
+          requestAnimationFrame(draw);
+        })();
+      </script>
+    """, encoding="utf8")
+
+    from trance import preview
+
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            loaded = browser.navigate(f"http://127.0.0.1:{served.port}/index.html")
+            assert loaded["frames"] == loaded["asked_frames"]   # the loop is running
+            assert loaded["errors"]["total"] == 0
+
+            before = browser.probe()
+            assert before["canvas"] is True and before["w"] == 120
+            # Painted one flat colour: exactly what a crashed game looks like,
+            # and the reason this check exists at all.
+            assert before["uniform"] is True
+
+            browser.press("Space")
+            browser.wait_frames(30)
+            after = browser.probe()
+            assert after["uniform"] is False                    # it drew something
+            assert after["hash"] != before["hash"]
+
+            png = browser.screenshot(browser.canvas_clip(after))
+            assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    finally:
+        served.stop()
+
+
+@needs_chrome
+def test_a_dead_render_loop_shows_up_as_frozen(tmp_path):
+    """The bug this whole toolset exists to catch: it paints once, then stops."""
+    from trance import preview
+    from trance.browser import Browser
+
+    (tmp_path / "index.html").write_text("""
+      <canvas id="c" width="60" height="60"></canvas>
+      <script>
+        const ctx = document.getElementById('c').getContext('2d');
+        ctx.fillStyle = '#00f'; ctx.fillRect(0, 0, 40, 40);   /* and never again */
+      </script>
+    """, encoding="utf8")
+
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            browser.navigate(f"http://127.0.0.1:{served.port}/index.html", settle_frames=10)
+            live = browser.liveness(20)
+            # Not blank — it did paint — but nothing changes, which no amount of
+            # looking at a single screenshot would tell you.
+            assert live["after"]["uniform"] is False
+            assert live["moving"] is False
+    finally:
+        served.stop()
+
+
+@needs_chrome
+def test_the_browsers_own_favicon_request_is_not_reported_as_a_defect(tmp_path):
+    """Regression: a static server 404s /favicon.ico and Chrome logs it as a
+    console error, so every visual check of every project reported a defect
+    that was not in the project."""
+    from trance import preview
+    from trance.browser import Browser
+
+    (tmp_path / "index.html").write_text("<canvas width=10 height=10></canvas>")
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            loaded = browser.navigate(f"http://127.0.0.1:{served.port}/index.html",
+                                      settle_frames=5)
+            assert loaded["errors"]["total"] == 0
+    finally:
+        served.stop()
+
+
+@needs_chrome
+def test_a_real_missing_file_is_still_reported_and_names_itself(tmp_path):
+    """The other half: filtering the browser's noise must not filter the app's."""
+    from trance import preview
+    from trance.browser import Browser
+
+    (tmp_path / "index.html").write_text(
+        "<canvas width=10 height=10></canvas><script src='game.js'></script>")
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            loaded = browser.navigate(f"http://127.0.0.1:{served.port}/index.html",
+                                      settle_frames=5)
+            assert loaded["errors"]["total"] >= 1
+            # "Failed to load resource: 404" names nothing anyone could fix.
+            assert any("game.js" in line for line in loaded["errors"]["console"])
+    finally:
+        served.stop()
+
+
+def test_screenshots_are_gitignored_even_in_an_older_project(tmp_path):
+    """Regression: the ignore list was all-or-nothing, so a project set up by an
+    earlier trance never picked up anything added afterwards — and the first
+    thing added afterwards was PNGs."""
+    from trance import vcs
+
+    older = tmp_path / ".gitignore"
+    older.write_text("node_modules\n"
+                     "# trance's index — regenerated, not source\n"
+                     ".trance/graph.db\n", encoding="utf8")
+
+    assert vcs.ignore_trance_files(tmp_path) is True
+    now = older.read_text(encoding="utf8")
+    assert ".trance/shots/" in now
+    assert now.count(".trance/graph.db\n") == 1        # not duplicated
+    assert now.startswith("node_modules")              # nothing of theirs lost
+    assert vcs.ignore_trance_files(tmp_path) is False  # nothing left to add
+
+
+def test_a_new_default_loop_reaches_a_setup_that_already_exists(tmp_path):
+    """Regression: the loop file existing meant "seeded already", so a loop
+    added in a later version never appeared for anyone who had run trance
+    before it shipped."""
+    import json
+
+    from trance.agents.store import LoopStore
+
+    path = tmp_path / "loops.json"
+    # A store written before visual-test-and-fix existed, with an edit of their
+    # own in it.
+    first = LoopStore(path)
+    mine = first.get("test-and-fix")
+    mine.description = "my own wording"
+    first.upsert(mine)
+    data = json.loads(path.read_text(encoding="utf8"))
+    data["loops"] = [l for l in data["loops"] if l["name"] != "visual-test-and-fix"]
+    path.write_text(json.dumps(data), encoding="utf8")
+
+    after = LoopStore(path)
+    assert after.get("visual-test-and-fix") is not None      # the upgrade lands
+    assert after.get("test-and-fix").description == "my own wording"   # theirs survives
+
+
+@needs_chrome
+def test_a_keypress_reports_whether_it_arrived_and_whether_it_did_anything(tmp_path):
+    """Regression: press_key only ever said "Pressed Space", so an agent had no
+    evidence a working keypress had worked — and reported that nothing
+    happened when the game had in fact started."""
+    from trance import preview
+    from trance.browser import Browser
+
+    (tmp_path / "index.html").write_text("""
+      <canvas id="c" width="80" height="80"></canvas>
+      <script>
+        const ctx = document.getElementById('c').getContext('2d');
+        let on = false;
+        addEventListener('keydown', e => { if (e.code === 'Space') on = true; });
+        (function draw() {
+          ctx.fillStyle = on ? '#c00' : '#004';
+          ctx.fillRect(0, 0, 80, 80);
+          requestAnimationFrame(draw);
+        })();
+      </script>
+    """, encoding="utf8")
+
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            browser.navigate(f"http://127.0.0.1:{served.port}/index.html", settle_frames=10)
+
+            acted = browser.press("Space")
+            assert acted["delivered"] == ["Space"]     # the page really got it
+            assert acted["changed"] is True            # and did something with it
+
+            # A key the app receives and ignores is a different finding from one
+            # that never arrived, and the two have different fixes.
+            ignored = browser.press("ArrowUp")
+            assert ignored["delivered"] == ["ArrowUp"]
+            assert ignored["changed"] is False
+    finally:
+        served.stop()
+
+
+@needs_chrome
+def test_an_app_that_swallows_the_event_cannot_hide_that_it_arrived(tmp_path):
+    """The delivery check listens in the capture phase, so stopPropagation in
+    the app's own handler does not make a delivered key look lost."""
+    from trance import preview
+    from trance.browser import Browser
+
+    (tmp_path / "index.html").write_text("""
+      <canvas id="c" width="40" height="40"></canvas>
+      <script>
+        addEventListener('keydown', e => { e.stopPropagation(); e.preventDefault(); }, true);
+        const ctx = document.getElementById('c').getContext('2d');
+        ctx.fillStyle = '#0a0'; ctx.fillRect(0, 0, 20, 20);
+      </script>
+    """, encoding="utf8")
+
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            browser.navigate(f"http://127.0.0.1:{served.port}/index.html", settle_frames=5)
+            result = browser.press("Space")
+            assert result["delivered"] == ["Space"]
+            assert result["changed"] is False
+    finally:
+        served.stop()
+
+
+def test_the_tool_says_which_of_the_two_things_went_wrong(tmp_path, monkeypatch):
+    """The wording matters: "the app ignored you" and "the browser lost it" send
+    an agent to different places."""
+    tools = AgentTools(tmp_path, _role(), step_id="st-k")
+
+    class _Session:
+        def __init__(self, **kw):
+            self.kw = kw
+
+        def press(self, key, times=1):
+            return {"key": key, "times": times, "frames": 20, "probe": {}, **self.kw}
+
+    for kw, want in [
+        ({"delivered": [], "changed": None}, "did not receive the key at all"),
+        ({"delivered": ["Space"], "changed": True}, "the screen changed"),
+        ({"delivered": ["Space"], "changed": False}, "did not change"),
+        ({"delivered": ["Space"], "changed": None}, "could not be compared"),
+    ]:
+        monkeypatch.setattr(type(tools), "visual",
+                            property(lambda self, kw=kw: _Session(**kw)))
+        out = tools.call("press_key", {"key": "Space"})
+        assert out.ok is True and want in out.text, (kw, out.text)
+        assert out.detail["delivered"] is bool(kw["delivered"])
+
+
+def test_the_press_settle_is_long_enough_to_have_been_worth_measuring():
+    """Regression: 20 frames after the start key showed one ghost of four on a
+    real game — the rest were still leaving the pen two seconds later — so a
+    look straight after a press failed a game that was working."""
+    from trance import browser
+
+    assert browser.PRESS_SETTLE_FRAMES >= 60
+
+
+@needs_chrome
+def test_waiting_lets_late_arrivals_appear_and_notices_a_loop_that_stops(tmp_path):
+    from trance import preview
+    from trance.browser import Browser
+
+    # Draws one square immediately and a second only much later — the shape of
+    # every "characters enter over the first seconds" screen. The threshold is
+    # far out because navigate() itself drains for a second before returning,
+    # which is already ~60 frames of the page's own loop.
+    (tmp_path / "index.html").write_text("""
+      <canvas id="c" width="80" height="80"></canvas>
+      <script>
+        const ctx = document.getElementById('c').getContext('2d');
+        window.N = 0;
+        (function draw() {
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 80, 80);
+          ctx.fillStyle = '#0f0'; ctx.fillRect(0, 0, 20, 20);
+          if (++window.N > 400) { ctx.fillStyle = '#f00'; ctx.fillRect(40, 40, 20, 20); }
+          if (window.N < 900) requestAnimationFrame(draw);      /* then it stops */
+        })();
+      </script>
+    """, encoding="utf8")
+
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            browser.navigate(f"http://127.0.0.1:{served.port}/index.html", settle_frames=20)
+            early = browser.probe()
+            assert browser._eval("window.N") < 400        # nothing has arrived yet
+            browser.wait_frames(400)
+            late = browser.probe()
+            # The second square arrived: judging the early frame would have
+            # called a working page a broken one.
+            assert late["hash"] != early["hash"]
+
+            # And once the page's own draw loop stops, the frame counter keeps
+            # counting — it runs on its own requestAnimationFrame chain, which
+            # the browser goes on serving. So a dead draw loop is NOT "fewer
+            # frames than asked"; it is the picture no longer changing, and
+            # conflating the two is how a blocked tab and a dead render loop
+            # would get reported as each other.
+            browser.wait_frames(500)                 # past the page's cutoff
+            assert browser.wait_frames(120) == 120   # frames still arrive
+            assert browser.liveness(30)["moving"] is False   # but nothing moves
+    finally:
+        served.stop()
+
+
+def test_wait_is_granted_with_the_browser_and_reports_a_blocked_page(tmp_path, monkeypatch):
+    tools = AgentTools(tmp_path, _role())
+    assert "wait" in {s["function"]["name"] for s in tools.specs()}
+
+    class _Session:
+        def wait(self, frames):
+            return {"asked_frames": frames, "frames": 12, "changed": False,
+                    "stalled": True, "probe": {}, "errors": {}}
+
+    monkeypatch.setattr(type(tools), "visual", property(lambda self: _Session()))
+    out = tools.call("wait", {"frames": 200})
+    assert out.ok is True
+    # Specifically *not* "the render loop is dead": frames keep arriving after an
+    # app's draw loop stops, so falling short means the browser stopped serving
+    # them — a blocked main thread. The two have different causes and fixes.
+    assert "main thread is blocked" in out.text
+    assert "render loop" not in out.text
+    assert out.detail["stalled"] is True and out.detail["frames"] == 12
+
+    # A silly number is clamped rather than hanging the step.
+    class _Big(_Session):
+        def wait(self, frames):
+            assert frames <= 1200
+            return super().wait(frames)
+
+    monkeypatch.setattr(type(tools), "visual", property(lambda self: _Big()))
+    assert tools.call("wait", {"frames": 10 ** 9}).ok is True
+
+
+@needs_chrome
+def test_a_change_to_one_colour_channel_is_not_invisible_to_the_hash(tmp_path):
+    """Regression, and a bad one: the digest packed RGBA into a single int, so a
+    change to red alone moved the hash by a multiple of 2^24 and vanished mod
+    2^32. A red square appearing on a black canvas was reproducibly invisible —
+    which reads as "the picture never changed", and to the liveness check as a
+    dead render loop on an app that is working perfectly."""
+    from trance import preview
+    from trance.browser import Browser
+
+    (tmp_path / "index.html").write_text("""
+      <canvas id="c" width="80" height="80"></canvas>
+      <script>
+        const ctx = document.getElementById('c').getContext('2d');
+        window.RED = false;
+        addEventListener('keydown', () => { window.RED = true; });
+        (function draw() {
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 80, 80);
+          // Red only. Nothing else about the canvas differs.
+          if (window.RED) { ctx.fillStyle = '#f00'; ctx.fillRect(40, 40, 20, 20); }
+          requestAnimationFrame(draw);
+        })();
+      </script>
+    """, encoding="utf8")
+
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            browser.navigate(f"http://127.0.0.1:{served.port}/index.html", settle_frames=20)
+            result = browser.press("Space")
+            assert result["delivered"] == ["Space"]
+            assert result["changed"] is True, "a red-only change was invisible to the hash"
+    finally:
+        served.stop()
+
+
+def test_function_keys_and_editing_keys_are_known():
+    """A game binds F1 for help and Escape for pause; an agent asking for one
+    should not be told the key does not exist."""
+    assert key_spec("F1")[2] == 112
+    assert key_spec("F12")[2] == 123
+    assert key_spec("Backspace")[2] == 8
+    assert key_spec("PageDown")[2] == 34
+
+
+@needs_chrome
+def test_a_press_keeps_a_picture_of_each_side_of_itself(tmp_path):
+    """"Nothing changed" is a claim about pixels. Without the pixels it cannot
+    be checked, and a wrong one looks exactly like a right one."""
+    from trance.agents.visual import VisualSession
+
+    (tmp_path / "index.html").write_text("""
+      <canvas id="c" width="60" height="60"></canvas>
+      <script>
+        const ctx = document.getElementById('c').getContext('2d');
+        window.ON = false;
+        addEventListener('keydown', e => { if (e.code === 'Space') window.ON = true; });
+        (function draw() {
+          ctx.fillStyle = window.ON ? '#0a0' : '#008';
+          ctx.fillRect(0, 0, 60, 60);
+          requestAnimationFrame(draw);
+        })();
+      </script>
+    """, encoding="utf8")
+
+    session = VisualSession(tmp_path, session_id="s", step_id="st-pair")
+    try:
+        session.open("index.html", settle_frames=10)
+
+        pressed = session.press("Space")
+        assert pressed["changed"] is True
+        for side in ("shot_before", "shot_after"):
+            saved = tmp_path / ".trance" / "shots" / pressed[side]
+            assert saved.is_file() and saved.read_bytes().startswith(b"\x89PNG")
+        assert pressed["shot_before"] != pressed["shot_after"]
+
+        # A wait keeps both ends too — that is where "some time later" happens.
+        waited = session.wait(30)
+        assert waited["shot_before"] and waited["shot_after"]
+    finally:
+        session.close()
+
+
+def test_the_key_and_wait_details_carry_their_screenshots(tmp_path, monkeypatch):
+    tools = AgentTools(tmp_path, _role(), step_id="st-d")
+
+    class _Session:
+        def press(self, key, times=1):
+            return {"key": key, "times": times, "frames": 60, "probe": {},
+                    "delivered": ["Space"], "changed": False,
+                    "shot_before": "st-d/001.png", "shot_after": "st-d/002.png"}
+
+        def wait(self, frames):
+            return {"asked_frames": frames, "frames": frames, "changed": True,
+                    "stalled": False, "probe": {}, "errors": {},
+                    "shot_before": "st-d/003.png", "shot_after": "st-d/004.png"}
+
+    monkeypatch.setattr(type(tools), "visual", property(lambda self: _Session()))
+    key = tools.call("press_key", {"key": "Space"}).detail
+    assert (key["shot_before"], key["shot_after"]) == ("st-d/001.png", "st-d/002.png")
+    waited = tools.call("wait", {"frames": 60}).detail
+    assert (waited["shot_before"], waited["shot_after"]) == ("st-d/003.png", "st-d/004.png")
+
+
+# ------------------------------------------------------- comparing pictures
+
+def _png(width, height, pixel_at):
+    """A minimal RGBA PNG, so the diff can be tested without an image library."""
+    import struct
+    import zlib
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)                                   # filter: none
+        for x in range(width):
+            rows += bytes(pixel_at(x, y))
+
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body
+                + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(rows)))
+            + chunk(b"IEND", b""))
+
+
+def test_two_screenshots_are_compared_as_pixels_and_counted():
+    from trance.imagediff import compare
+
+    black = _png(20, 10, lambda x, y: (0, 0, 0, 255))
+    same = compare(black, black)
+    assert same.identical and same.how == "bytes"        # no need to decode
+
+    # One pixel differs, and only in red — the channel the old canvas hash was
+    # blind to. It must be found, and counted as exactly one.
+    nearly = _png(20, 10, lambda x, y: (255, 0, 0, 255) if (x, y) == (3, 4)
+                  else (0, 0, 0, 255))
+    one = compare(black, nearly)
+    assert one.identical is False
+    assert (one.differing, one.total, one.how) == (1, 200, "pixels")
+    assert "1 of 200 pixels" in one.describe()
+
+    half = _png(20, 10, lambda x, y: (9, 9, 9, 255) if x < 10 else (0, 0, 0, 255))
+    assert compare(black, half).differing == 100
+    assert abs(compare(black, half).fraction - 0.5) < 1e-9
+
+
+def test_a_resized_canvas_counts_as_a_change_rather_than_an_error():
+    from trance.imagediff import compare
+
+    assert compare(_png(4, 4, lambda x, y: (0, 0, 0, 255)),
+                   _png(8, 4, lambda x, y: (0, 0, 0, 255))).identical is False
+
+
+def test_an_undecodable_image_still_gets_an_answer():
+    """Falling back to bytes keeps a wrong "identical" off the screen — the one
+    outcome that matters, since it is what a stuck app looks like."""
+    from trance.imagediff import compare
+
+    assert compare(b"not a png", b"not a png").identical is True      # same bytes
+    assert compare(b"not a png", b"different").identical is False
+    assert compare(b"", b"anything").identical is False               # nothing captured
+    assert compare(b"not a png", b"different").how == "bytes"
+
+
+def test_every_png_scanline_filter_decodes():
+    """Chrome picks filters per row; getting one wrong would corrupt the rows
+    after it and inflate every diff."""
+    from trance.imagediff import _decode
+
+    # A gradient gives the encoder a reason to use the interesting filters.
+    original = _png(16, 16, lambda x, y: ((x * 13) % 256, (y * 7) % 256,
+                                          (x + y) % 256, 255))
+    width, height, step, pixels = _decode(original)
+    assert (width, height, step) == (16, 16, 4)
+    assert pixels[0:4] == bytearray((0, 0, 0, 255))
+    at = (5 * 16 + 3) * 4
+    assert pixels[at:at + 4] == bytearray(((3 * 13) % 256, (5 * 7) % 256, 8, 255))
+
+
+@needs_chrome
+def test_a_webgl_canvas_that_animates_is_not_reported_as_frozen(tmp_path):
+    """Regression, and the one that reached the user: a WebGL canvas reads back
+    empty, so the digest of that empty buffer was a CONSTANT — every probe
+    agreed with every other and a moving game reported "nothing changed"
+    forever, next to two screenshots that visibly differed."""
+    from trance.agents.visual import VisualSession
+
+    (tmp_path / "index.html").write_text("""
+      <canvas id="c" width="120" height="120"></canvas>
+      <script>
+        const gl = document.getElementById('c').getContext('webgl');
+        let t = 0;
+        (function draw() {
+          t += 0.05;
+          gl.clearColor(Math.abs(Math.sin(t)), 0.2, 0.6, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          requestAnimationFrame(draw);
+        })();
+      </script>
+    """, encoding="utf8")
+
+    session = VisualSession(tmp_path, session_id="s", step_id="st-gl")
+    try:
+        opened = session.open("index.html", settle_frames=10)
+        # The canvas itself genuinely cannot answer — and says so rather than
+        # inventing a hash that never changes.
+        assert opened["probe"]["uniform"] is None
+        assert opened["probe"]["hash"] is None
+
+        waited = session.wait(30)
+        assert waited["changed"] is True, "an animating WebGL canvas read as frozen"
+        assert waited["diff"]["how"] == "pixels"
+        assert waited["diff"]["differing"] > 0
+    finally:
+        session.close()

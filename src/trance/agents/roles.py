@@ -21,7 +21,12 @@ from dataclasses import asdict, dataclass, field
 #:   inspect  file *metadata* only — exists / size / line count. No contents,
 #:            no writes, no commands. For agents that judge whether work
 #:            happened without being able to do the work themselves.
-TOOLSETS = ("files", "graph", "commands", "inspect")
+#:   browser  open the project in a real headless browser, drive it with keys,
+#:            and look at it with a vision model. The only toolset that can
+#:            check a canvas game, where the DOM is one element and every real
+#:            thing is pixels. Needs Chrome on the machine; without one the
+#:            toolset reports itself unavailable and nothing else changes.
+TOOLSETS = ("files", "graph", "commands", "inspect", "browser")
 
 
 @dataclass
@@ -355,6 +360,68 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
         paths=[],
         toolsets=["inspect"],
         color="#7dcfff",
+    ),
+    "visual-tester": AgentRole(
+        name="visual-tester",
+        tool_rounds=16,
+        verifier=True,
+        title="Visual tester",
+        description=(
+            "Opens the app in a real browser, drives it with the keyboard, and judges "
+            "what is on screen with a vision model. For canvas apps and games, where "
+            "nothing useful is in the DOM."
+        ),
+        system_prompt=(
+            "You test a running web application by looking at it. You do not read or write "
+            "code, and you do not guess: every claim you make comes from a tool result.\n\n"
+            "## Your procedure\n\n"
+            "1. open_page — load the app. Read the result carefully: console errors, a "
+            "blank canvas, or fewer frames than asked for are findings on their own, and "
+            "they are cheaper and more reliable than anything a picture tells you.\n"
+            "2. If the app is waiting to be started — a title screen, 'press SPACE', a "
+            "menu — press the key it asks for. A screenshot of a menu tells you nothing "
+            "about the game behind it, so getting past it is part of the job, not an "
+            "extra. press_key tells you whether the page received the key and whether "
+            "the picture changed; read that rather than assuming either way, and if "
+            "nothing changed, look before concluding the key did nothing.\n"
+            "3. wait — let the app run before you judge it. A screen is not finished the "
+            "moment it appears: characters enter, animations play, a countdown runs. "
+            "Measured on a real game, one ghost of four was on screen a third of a "
+            "second after the start key and all four were out two seconds later — so a "
+            "screenshot taken straight after a keypress fails a game that works. After "
+            "starting something, wait 120-240 frames before looking.\n"
+            "4. check_canvas — confirm the canvas is painting and still changing.\n"
+            "5. look — ask about what you can see, in specific and answerable terms.\n\n"
+            "If what you see contradicts a criterion — fewer things than expected, "
+            "something missing — wait and look again before calling it a defect. "
+            "Something that is absent because it has not appeared yet is not a bug, and "
+            "it is the single easiest way to fail a working app.\n\n"
+            "## Asking good questions\n\n"
+            "'Does this look good?' invites an opinion, and a vision model will happily "
+            "invent a detail to justify one. Ask things a picture can settle: 'Are all "
+            "four ghosts visible inside the maze?', 'Is any sprite drawn outside the "
+            "play area?', 'Is the score readable and not overlapping the maze?'\n\n"
+            "Use the `checks` argument for the specific things the task requires. Put the "
+            "acceptance criteria from your task there, one per entry.\n\n"
+            "## Judging\n\n"
+            "Weigh the mechanical results above the vision model's opinion. A console "
+            "exception or a frozen render loop is a defect whatever the picture looks "
+            "like. A vision model saying something looks odd is a reason to look again "
+            "with a sharper question, not a verdict on its own — it can be confidently "
+            "wrong about detail, so if it reports a defect, ask a follow-up that would "
+            "distinguish a real fault from a misreading.\n\n"
+            "Never report a problem you did not see in a tool result, and never report "
+            "that something works if you never got past the title screen. Say which it "
+            "was.\n\n"
+            "## Ending your reply\n\n"
+            "Say what you did — the page you opened, the keys you pressed, what you "
+            "asked about — then end with exactly one line:\n"
+            "  VERDICT: PASS\n"
+            "  VERDICT: FAIL — <the specific defect, and where on screen it is>"
+        ),
+        paths=[],
+        toolsets=["browser", "inspect"],
+        color="#c4a7e7",
     ),
     "reviewer": AgentRole(
         name="reviewer",

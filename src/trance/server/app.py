@@ -26,6 +26,7 @@ from ..agents.store import (
     validate as validate_agent,
 )
 from ..agents.tools import ALLOWED_COMMANDS, set_command_lists, set_command_policy
+from ..agents.visual import SHOTS_DIR, available as browser_available
 from ..config import Config
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
@@ -311,6 +312,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                          "escalation_role": config.escalation_role,
                          "git_commits": config.git_commits,
                          "git_auto_init": config.git_auto_init},
+            # Reported, never required. Without a browser the visual toolset is
+            # simply unavailable and every other toolset works as before. There
+            # is no vision model setting: screenshots go to the model the agent
+            # itself is configured with.
+            "visual": {"browser": browser_available()},
             "orchestrator": {"preset": config.orchestrator.preset,
                              "provider": orchestrator.provider, "model": orchestrator.model,
                              "base_url": orchestrator.base_url,
@@ -756,6 +762,24 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(415, f"{path} is not text")
         return {"path": path, "content": text, "bytes": size,
                 "lines": len(text.splitlines())}
+
+    @app.get("/api/sessions/{session_id}/shot/{shot:path}")
+    def read_screenshot(session_id: str, shot: str):
+        """A screenshot a visual step took.
+
+        Served from disk rather than carried in the event, because the history
+        panel reads a step's events back whole and a base64 PNG in each one is
+        what made that panel unusable the last time payloads grew.
+        """
+        session = _need(store, session_id)
+        root = _project_of(session)
+        target = _inside(root / SHOTS_DIR, shot)
+        if target is None or not target.is_file() or target.suffix.lower() != ".png":
+            raise HTTPException(404, f"no such screenshot: {shot}")
+        # Shots are written once under a name that includes the step, so they
+        # never change and the browser should not keep asking.
+        return FileResponse(target, media_type="image/png",
+                            headers={"Cache-Control": "public, max-age=86400"})
 
     @app.put("/api/sessions/{session_id}/file")
     def write_project_file(session_id: str, body: dict):

@@ -1329,9 +1329,38 @@ function headline(event) {
     case "model_call":
       return `${shortModel(p.model, p.preset)} · round ${p.round} · ${p.summary?.est_tokens ?? "?"} tok in · ` +
              (p.tool_calls?.length ? `${p.tool_calls.length} tool call(s)` : clip(p.response_text, 90));
-    case "tool_call":
+    case "tool_call": {
+      const d = p.detail || {};
+      // A visual check reads as what it saw, not as its arguments: "look(...)"
+      // twice in a row tells you nothing about which screenshot is which.
+      if (d.kind === "screenshot") {
+        return `looked · ${clip(d.question, 70)}${d.error ? " — no answer" : ""}`;
+      }
+      if (d.kind === "page") {
+        return `opened ${d.page || d.url || ""}` +
+               (d.canvas ? ` · canvas ${d.size}` : " · no canvas") +
+               (d.blank === true ? " · BLANK" : "") +
+               (d.errors && d.errors.total ? ` · ${d.errors.total} error(s)` : "");
+      }
+      if (d.kind === "canvas") {
+        return `canvas ${d.size || "none"}` +
+               (d.blank === true ? " · BLANK" : d.blank === false ? " · painted" : "") +
+               (d.moving === false ? " · FROZEN" : d.moving ? " · moving" : "");
+      }
+      if (d.kind === "wait") {
+        return `waited ${d.frames} frames` +
+               (d.stalled ? ` — stopped short of ${d.asked_frames}, render loop dead`
+                : d.changed === false ? " — nothing moved" : "");
+      }
+      if (d.kind === "key") {
+        return `pressed ${d.key}${d.times > 1 ? ` ×${d.times}` : ""}` +
+               (d.delivered === false ? " — never reached the page"
+                : d.changed === true ? " — the picture changed"
+                : d.changed === false ? " — nothing changed" : "");
+      }
       return `${p.name}(${Object.values(p.arguments || {}).map((v) => clip(String(v), 28)).join(", ")})` +
              (p.ok === false ? " — refused" : "");
+    }
     case "step_started": return `${clip(p.task, 90)} (attempt ${p.attempt})`;
     case "step_finished": return `${clip(p.summary, 70)} · ${(p.files || []).join(", ") || "no files"}`;
     case "step_failed": return p.reason || "failed";
@@ -1419,6 +1448,23 @@ function body(event) {
   }
 
   if (event.type === "tool_call") {
+    const d = p.detail || {};
+    // A visual check's screenshot belongs above its arguments: the picture is
+    // the evidence, and coming back to a step to work out why it was judged
+    // that way means looking at what the model was shown first.
+    if (d.kind === "screenshot") {
+      box.append(shotBlock(d, p.result));
+      return box;
+    }
+    if (d.kind === "key" || d.kind === "wait") {
+      box.append(shotPair(d, p.result));
+      return box;
+    }
+    if (d.kind === "page" || d.kind === "canvas") {
+      box.append(pageErrorList(d.errors || {}));
+      box.append(el("pre", "code", p.result || ""));
+      return box;
+    }
     box.append(el("div", "msg-role", "arguments"));
     box.append(el("pre", "code", JSON.stringify(p.arguments, null, 2)));
     if (p.remit_violation) {
@@ -1488,6 +1534,7 @@ function clip(text, n) {
   state.roles = info.roles;
   state.presets = info.presets;
   state.planning = info.planning || { max_step_points: 0, scale: [1, 2, 3, 5, 8, 13] };
+  state.visual = info.visual || { browser: false };
   state.orchestrator = info.orchestrator;
   state.kinds = info.kinds;
   await loadWorkspace();
@@ -1948,6 +1995,9 @@ const TOOLSET_HELP = {
   files: "read / write / list files inside the remit",
   graph: "look up symbols, callers and callees in the indexed code",
   commands: "run allowlisted commands (pytest, npm, tsc, …)",
+  inspect: "check a file exists and has content — never its contents",
+  browser: "open the app in a real browser, press keys, and look at what is on "
+           + "screen with a vision model. The only way to check a canvas.",
 };
 
 function agentCard(agent, isNew) {
@@ -2134,6 +2184,36 @@ function agentCard(agent, isNew) {
     boxes[t] = cb;
   });
   perms.append(toolsetRow);
+
+  // The browser toolset is the only one whose usefulness depends on the
+  // machine. Ticking it and finding out at run time that there is no Chrome
+  // costs a step, so it is answered here, while you are deciding. Screenshots
+  // go to this agent's own model, so the note names it: an agent that cannot
+  // see is the other way this silently does nothing.
+  const browserNote = el("div", "agent-note small");
+  const paintBrowserNote = () => {
+    if (!boxes.browser || !boxes.browser.checked) {
+      browserNote.textContent = "";
+      browserNote.className = "agent-note small";
+      return;
+    }
+    if ((state.visual || {}).browser === false) {
+      browserNote.textContent = "No Chrome or Chromium on this machine — this agent's "
+        + "browser tools will refuse and say so. Install one, or leave this off.";
+      browserNote.className = "agent-note small warn";
+      return;
+    }
+    const named = preset.value || "";
+    browserNote.textContent =
+      `Browser found · screenshots go to this agent's own model${named ? ` (${named})` : ""}, `
+      + "which must be able to see images. The app is served as static files — no build "
+      + "or dev server is started.";
+    browserNote.className = "agent-note small muted";
+  };
+  if (boxes.browser) boxes.browser.addEventListener("change", paintBrowserNote);
+  preset.addEventListener("change", paintBrowserNote);
+  paintBrowserNote();
+  perms.append(browserNote);
 
   // Commands + where they run — only meaningful with the commands toolset.
   const cmdRow = el("div", "agent-fields");
@@ -3117,7 +3197,106 @@ function trackActivity(event) {
 const ICON = {
   write: "✎", create: "✚", cmd: "$", read: "◇", graph: "⌕",
   think: "◐", tool: "▸", fail: "✕", step: "▶", verdict: "✓",
+  page: "◱", eye: "◉", key: "⌨",
 };
+
+/** The <img> for a screenshot a visual step took, fetched from the session. */
+function shotImage(shot) {
+  const img = el("img", "shot");
+  img.loading = "lazy";
+  img.alt = "screenshot the vision model was shown";
+  img.src = `/api/sessions/${state.session.id}/shot/${shot}`;
+  // A shot from an older session, or one whose project moved, must not leave a
+  // broken-image icon where the evidence should be.
+  img.onerror = () => {
+    const gone = el("div", "muted small", `screenshot ${shot} is no longer on disk`);
+    if (img.parentNode) img.parentNode.replaceChild(gone, img);
+  };
+  return img;
+}
+
+/** A visual check's evidence: the picture, the question, the answer.
+ *
+ * Shared by the live console and the step history on purpose — this is the one
+ * kind of entry you cannot verify by reading the code afterwards, so what you
+ * see while it runs and what you see when you come back to debug it have to be
+ * the same thing.
+ */
+function shotBlock(d, fallbackText) {
+  const wrap = el("div", "shot-wrap");
+  if (d.shot) wrap.append(shotImage(d.shot));
+  const meta = [
+    d.region ? `${Math.round(d.region.width)}×${Math.round(d.region.height)}` : "",
+    d.clipped ? "canvas only" : "whole page",
+    d.preset || d.model || "",
+    d.usage && d.usage.total_tokens ? `${tokens(d.usage.total_tokens)} tok` : "",
+  ].filter(Boolean).join(" · ");
+  if (meta) wrap.append(el("div", "muted small", meta));
+
+  wrap.append(el("h4", "shot-h", "asked"));
+  wrap.append(el("pre", "code", d.question || ""));
+  if ((d.checks || []).length) {
+    const list = el("ul", "shot-checks");
+    d.checks.forEach((c) => list.append(el("li", null, c)));
+    wrap.append(list);
+  }
+  wrap.append(el("h4", "shot-h", d.error ? "no answer" : "answered"));
+  wrap.append(el("pre", "code", d.error || d.answer || fallbackText || ""));
+  // The exact text the model was sent, for when the answer makes no sense and
+  // the question is the suspect.
+  if (d.prompt) {
+    const full = el("details");
+    full.append(el("summary", "muted small", "▸ the full prompt it was sent"));
+    full.append(el("pre", "code", d.prompt));
+    wrap.append(full);
+  }
+  return wrap;
+}
+
+/** The screen either side of a press or a wait, so "nothing changed" is
+ *  checkable rather than something you have to take the tool's word for. */
+function shotPair(d, fallbackText) {
+  const wrap = el("div", "shot-wrap");
+  if (d.shot_before || d.shot_after) {
+    const pair = el("div", "shot-pair");
+    [["before", d.shot_before], ["after", d.shot_after]].forEach(([label, shot]) => {
+      const cell = el("div", "shot-cell");
+      cell.append(el("div", "shot-h", label));
+      cell.append(shot ? shotImage(shot) : el("div", "muted small", "not captured"));
+      pair.append(cell);
+    });
+    wrap.append(pair);
+    // The measured comparison of these two images, not a claim about the
+    // canvas behind them. The canvas readback and the screen disagree wherever
+    // the readback is unavailable — a WebGL buffer, a tainted canvas, anything
+    // drawn outside the canvas — and it said "identical" about two pictures
+    // that plainly were not.
+    const diff = d.diff || {};
+    wrap.append(el("div", diff.identical === false ? "muted small" : "shot-err",
+      diff.described
+        || (d.changed === true ? "The two differ."
+            : d.changed === false ? "These two are identical."
+            : "These two were not compared.")));
+  }
+  wrap.append(el("pre", null, fallbackText || ""));
+  return wrap;
+}
+
+/** Page errors, in the shape both open_page and check_canvas report them. */
+function pageErrorList(errors) {
+  const wrap = el("div");
+  const rows = [
+    ["exception", errors.exceptions || []],
+    ["console", errors.console || []],
+    ["request failed", errors.failed_requests || []],
+  ];
+  rows.forEach(([label, items]) => {
+    [...new Set(items)].forEach((text) =>
+      wrap.append(el("div", "shot-err", `${label}: ${text}`)));
+  });
+  if (!wrap.children.length) wrap.append(el("div", "muted small", "no errors on the page"));
+  return wrap;
+}
 let consoleStep = null;
 
 function consoleReset(label) {
@@ -3325,6 +3504,116 @@ function consoleAppend(event) {
             ["tool call cut off", ""],
             [`  ${d.limit}-token output limit`, "c-exit-n"],
           ]),
+          body: () => el("pre", null, p.result || ""),
+          open: true,
+        }));
+        return;
+      }
+      // ── the browser toolset ────────────────────────────────────────────
+      // A visual step's whole evidence is what it saw, so the screenshot, the
+      // question and the model's answer are shown together and open by
+      // default. This is the one entry you cannot check by reading code.
+      if (d.kind === "screenshot") {
+        const errored = !!d.error;
+        consolePush(consoleEntry({
+          kind: "look", icon: ICON.eye, time, tag: event.agent, failed: errored,
+          label: labelWith([
+            ["look ", ""], [clip(d.question, 70), "c-path"],
+            [d.clipped ? "  canvas" : "  whole page", "muted"],
+            [d.usage && d.usage.total_tokens ? `  ${tokens(d.usage.total_tokens)}` : "", "muted"],
+          ]),
+          body: () => shotBlock(d, p.result),
+          open: true,
+        }));
+        return;
+      }
+      if (d.kind === "page") {
+        const bad = d.blank === true || d.frames < d.asked_frames
+                    || (d.errors && d.errors.total > 0) || d.needs_build;
+        consolePush(consoleEntry({
+          kind: "look", icon: ICON.page, time, tag: event.agent, failed: bad,
+          label: labelWith([
+            ["opened ", ""], [d.page || d.url || "", "c-path"],
+            [d.canvas ? `  canvas ${d.size}` : "  no canvas", "muted"],
+            [d.blank === true ? "  BLANK" : "", "c-exit-n"],
+            [d.frames < d.asked_frames ? `  ${d.frames}/${d.asked_frames} frames` : "", "c-exit-n"],
+          ]),
+          body: () => {
+            const wrap = el("div");
+            if (d.needs_build) {
+              wrap.append(el("div", "shot-err",
+                "served statically — this project needs a build, so the page may fail"));
+            }
+            wrap.append(pageErrorList(d.errors || {}));
+            wrap.append(el("pre", null, p.result || ""));
+            return wrap;
+          },
+          open: bad,
+        }));
+        return;
+      }
+      if (d.kind === "canvas") {
+        const bad = d.blank === true || d.moving === false;
+        consolePush(consoleEntry({
+          kind: "look", icon: ICON.page, time, tag: event.agent, failed: bad,
+          label: labelWith([
+            ["canvas ", ""], [d.size || "none", "c-path"],
+            [d.blank === true ? "  BLANK" : d.blank === false ? "  painted" : "  unreadable",
+             d.blank === true ? "c-exit-n" : "muted"],
+            [d.moving === false ? "  FROZEN" : d.moving ? "  moving" : "",
+             d.moving === false ? "c-exit-n" : "c-exit-0"],
+          ]),
+          body: () => {
+            const wrap = el("div");
+            wrap.append(pageErrorList(d.errors || {}));
+            wrap.append(el("pre", null, p.result || ""));
+            return wrap;
+          },
+          open: bad,
+        }));
+        return;
+      }
+      if (d.kind === "key") {
+        // Whether the press did anything is the whole reason to look at this
+        // line — "pressed Space" on its own is what made a working keypress
+        // read as a dead one.
+        const lost = d.delivered === false;
+        consolePush(consoleEntry({
+          kind: "look", icon: ICON.key, time, tag: event.agent, failed: lost,
+          label: labelWith([
+            ["pressed ", ""], [d.key + (d.times > 1 ? ` ×${d.times}` : ""), "c-path"],
+            [` after ${d.frames || 0} frames`, "muted"],
+            [lost ? "  never reached the page"
+              : d.changed === true ? "  the picture changed"
+              : d.changed === false ? "  nothing changed" : "",
+             lost || d.changed === false ? "c-exit-n" : "c-exit-0"],
+          ]),
+          // Open when it claims nothing happened: that is the claim you came
+          // to check, and the two pictures are the only way to check it.
+          body: () => shotPair(d, p.result),
+          open: lost || d.changed === false,
+        }));
+        return;
+      }
+      if (d.kind === "wait") {
+        consolePush(consoleEntry({
+          kind: "look", icon: "⏱", time, tag: event.agent, failed: !!d.stalled,
+          label: labelWith([
+            [`waited ${d.frames} frames`, ""],
+            [d.stalled ? `  stopped short of ${d.asked_frames} — page blocked`
+              : d.changed === false ? "  nothing moved" : "  the picture moved",
+             d.stalled || d.changed === false ? "c-exit-n" : "c-exit-0"],
+          ]),
+          body: () => shotPair(d, p.result),
+          open: !!d.stalled || d.changed === false,
+        }));
+        return;
+      }
+      if (["page_failed", "canvas_failed", "key_failed", "look_failed",
+           "wait_failed"].includes(d.kind)) {
+        consolePush(consoleEntry({
+          kind: "look", icon: ICON.fail, time, tag: event.agent, failed: true,
+          label: labelWith([[`${p.name} could not run`, ""], ["  " + clip(d.error, 60), "muted"]]),
           body: () => el("pre", null, p.result || ""),
           open: true,
         }));

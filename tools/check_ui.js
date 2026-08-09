@@ -117,6 +117,7 @@ const RESPONSES = {
                        spend: { calls: 12, input_tokens: 1450000,
                                 output_tokens: 60000, total: 1510000 } }],
                    planning: { max_step_points: 5, scale: [1, 2, 3, 5, 8, 13] },
+                   visual: { browser: true },
                    orchestrator: { provider: "p", model: "m", base_url: "u" } },
   "/api/workspace": { workspace: "/w", writable: true, suggested_name: "project",
                       suggested_dir: "/w/project", state_dir: "/s" },
@@ -199,7 +200,7 @@ const RESPONSES = {
                       max_loops: 2, attempts: [] }] },
     progress: { total: 1, done: 0, pending: 1 },
   },
-  "/api/agents": { toolsets: ["files", "graph", "commands", "inspect"], agents: [
+  "/api/agents": { toolsets: ["files", "graph", "commands", "inspect", "browser"], agents: [
     { name: "backend", title: "Backend", description: "server work", system_prompt: "p",
       paths: ["server/**"], toolsets: ["files"], preset: null, color: "#7aa2f7",
       protected: true, tries: 2, backup_tries: 2, verifier: false, commands: [] },
@@ -924,6 +925,55 @@ try {
       process.exit(1);
     }
 
+    // "browser" is a capability you tick like any other, but the only one whose
+    // usefulness depends on the machine. Ticking it and finding out at run time
+    // costs a step, so the card answers it here — including which model will be
+    // shown the screenshots, since that is now the agent's own.
+    {
+      const looker = { name: "looker", title: "Looker", description: "d", system_prompt: "p",
+                       paths: [], toolsets: ["browser"], preset: "claude", color: "#7aa2f7",
+                       protected: false, tries: 2, backup_tries: 2, commands: [] };
+      const ready = flat(api.agentCard(looker, false)).replace(/\s+/g, " ");
+      if (!ready.includes("screenshots go to this agent's own model (claude)")) {
+        console.log("BROKEN: a browser agent does not say where its screenshots go:",
+                    ready.slice(0, 260));
+        process.exit(1);
+      }
+
+      api.state.visual = { browser: false };
+      const none = flat(api.agentCard(looker, false)).replace(/\s+/g, " ");
+      if (!none.includes("No Chrome or Chromium")) {
+        console.log("BROKEN: a missing browser is not flagged on the agent:", none.slice(0, 220));
+        process.exit(1);
+      }
+
+      // An agent without the toolset says nothing about browsers at all.
+      const plain = flat(api.agentCard({ ...looker, toolsets: ["files"], paths: ["a/**"] },
+                                       false)).replace(/\s+/g, " ");
+      if (plain.includes("No Chrome")) {
+        console.log("BROKEN: a non-browser agent warns about browsers:", plain.slice(0, 200));
+        process.exit(1);
+      }
+
+      // Ticking the box mid-edit answers immediately, without a save.
+      api.state.visual = { browser: true };
+      const card = api.agentCard({ ...looker, toolsets: ["files"], paths: ["a/**"] }, false);
+      const browserLabel = card.querySelectorAll("label")
+        .find((l) => flat(l).trim() === "browser");
+      const browserBox = browserLabel
+        && browserLabel.children.find((c) => c.type === "checkbox");
+      if (!browserBox) {
+        console.log("BROKEN: there is no browser checkbox on an agent card");
+        process.exit(1);
+      }
+      browserBox.checked = true;
+      browserBox.fire("change");
+      if (!flat(card).includes("screenshots go to")) {
+        console.log("BROKEN: ticking browser did not explain itself");
+        process.exit(1);
+      }
+    }
+
     // Saving an agent and then picking another must not lose the model list —
     // the picker on the card is built from state.presets, which the save path
     // reloads.
@@ -1462,6 +1512,146 @@ try {
       console.log("BROKEN: an attempt with no trace does not say why:",
                   text.slice(0, 140));
       process.exit(1);
+    }
+  }
+
+  // A visual step's evidence has to survive into the step history, not just
+  // scroll past in the live console: the screenshot the vision model was shown,
+  // the question it was asked, and what it answered. That is the whole reason
+  // to open one of these blocks afterwards.
+  {
+    const shot = {
+      id: "sh1", type: "tool_call", step_id: "st1", agent: "visual-tester",
+      ts: "2026-08-08T02:00:00+00:00",
+      payload: {
+        name: "look", ok: true, arguments: { question: "does the maze look right?" },
+        result: "1. DESCRIBE ... 3. ANSWER only one ghost is visible",
+        detail: {
+          kind: "screenshot", shot: "st1/001.png", clipped: true,
+          question: "does the maze look right?",
+          checks: ["exactly four ghosts are visible"],
+          answer: "1. DESCRIBE a blue maze ... only one red ghost is visible",
+          prompt: "You are inspecting a screenshot ...",
+          preset: "qwen-local", usage: { total_tokens: 675 },
+          region: { x: 0, y: 0, width: 462, height: 534 },
+        },
+      },
+    };
+    const block = api.blockSection(
+      { kind: "attempt", n: 1, agent: "visual-tester", label: "1. visual-tester",
+        attempt: null, events: [shot] }, true);
+    const text = flat(block).replace(/\s+/g, " ");
+    for (const want of ["does the maze look right?", "only one red ghost is visible",
+                        "exactly four ghosts are visible"]) {
+      if (!text.includes(want)) {
+        console.log("BROKEN: a visual step's history lost its evidence:", text.slice(0, 200));
+        process.exit(1);
+      }
+    }
+    const img = block.querySelectorAll("img")[0];
+    if (!img || !String(img.src).includes(`/api/sessions/${api.state.session.id}/shot/st1/001.png`)) {
+      console.log("BROKEN: the screenshot is not fetched from the session:",
+                  img ? img.src : "no <img> at all");
+      process.exit(1);
+    }
+    // Each event's own fold line names what it saw. Two `look(...)` lines in a
+    // row say nothing about which screenshot is which.
+    if (!text.includes("looked ·")) {
+      console.log("BROKEN: a visual event does not say what it looked at:",
+                  text.slice(0, 200));
+      process.exit(1);
+    }
+  }
+
+  // The measurements that need no model at all still have to read as findings.
+  {
+    api.consoleAppend({
+      type: "tool_call", agent: "visual-tester", step_id: "st1",
+      ts: "2026-08-08T02:00:01+00:00",
+      payload: { name: "check_canvas", ok: true, arguments: {},
+                 result: "Canvas 456x528\nBLANK\nFROZEN",
+                 detail: { kind: "canvas", canvas: true, canvases: 1, size: "456x528",
+                           blank: true, moving: false, frames: 30, note: null,
+                           errors: { console: ["Uncaught TypeError — app.js"],
+                                     exceptions: [], failed_requests: [], total: 1 } } },
+    });
+    const console_ = flat(document.getElementById("console")).replace(/\s+/g, " ");
+    for (const want of ["BLANK", "FROZEN", "Uncaught TypeError"]) {
+      if (!console_.includes(want)) {
+        console.log("BROKEN: a dead canvas does not read as one:", console_.slice(-220));
+        process.exit(1);
+      }
+    }
+
+    // A keypress says what came of it. "pressed Space" alone is what made a
+    // working keypress read as a dead one.
+    const keyLine = (detail) => {
+      api.consoleAppend({
+        type: "tool_call", agent: "visual-tester", step_id: "st1",
+        ts: "2026-08-09T02:00:00+00:00",
+        payload: { name: "press_key", ok: true, arguments: { key: "Space" },
+                   result: "Pressed Space.",
+                   detail: { kind: "key", key: "Space", times: 1, frames: 60,
+                             shot_before: "st1/001.png", shot_after: "st1/002.png",
+                             ...detail } },
+      });
+      return flat(document.getElementById("console")).replace(/\s+/g, " ");
+    };
+    if (!keyLine({ delivered: true, changed: true }).includes("the picture changed")) {
+      console.log("BROKEN: a keypress that worked does not say so");
+      process.exit(1);
+    }
+    if (!keyLine({ delivered: true, changed: false }).includes("nothing changed")) {
+      console.log("BROKEN: a keypress that changed nothing does not say so");
+      process.exit(1);
+    }
+    if (!keyLine({ delivered: false, changed: null }).includes("never reached the page")) {
+      console.log("BROKEN: a lost keypress is not distinguished from an ignored one");
+      process.exit(1);
+    }
+
+    // "Nothing changed" is a claim about pixels, so the pixels come with it —
+    // opened by default, because that claim is the one you came to check.
+    {
+      const box = document.getElementById("console");
+      box.innerHTML = "";
+      keyLine({
+        delivered: true, changed: false,
+        diff: { identical: true, differing: 0, total: 246708, how: "pixels",
+                described: "The two screenshots are identical — every one of "
+                           + "246708 pixels matches." },
+      });
+      const text = flat(box).replace(/\s+/g, " ");
+      if (!text.includes("before") || !text.includes("after")
+          || !text.includes("246708 pixels matches")) {
+        console.log("BROKEN: a no-change keypress does not show its two pictures:",
+                    text.slice(0, 240));
+        process.exit(1);
+      }
+      // The caption is the measured comparison of the two images, not a claim
+      // about the canvas behind them — the canvas said "identical" about two
+      // screenshots that visibly differed.
+      box.innerHTML = "";
+      keyLine({
+        delivered: true, changed: true,
+        diff: { identical: false, differing: 1247, total: 246708, how: "pixels",
+                described: "The two screenshots differ in 1247 of 246708 pixels (0.51%)." },
+      });
+      // A press that worked stays folded — it is the "nothing changed" ones you
+      // open — so unfold it the way a click would before reading the body.
+      const head = box.querySelectorAll(".c-head").pop();
+      if (head && head.onclick) head.onclick();
+      if (!flat(box).includes("1247 of 246708 pixels")) {
+        console.log("BROKEN: the measured pixel difference is not shown:",
+                    flat(box).replace(/\s+/g, " ").slice(0, 240));
+        process.exit(1);
+      }
+      const shots = box.querySelectorAll("img").map((i) => String(i.src));
+      if (shots.length !== 2 || !shots[0].includes("st1/001.png")
+          || !shots[1].includes("st1/002.png")) {
+        console.log("BROKEN: the before/after pair is not both images:", shots.join(" "));
+        process.exit(1);
+      }
     }
   }
 
