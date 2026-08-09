@@ -7590,3 +7590,43 @@ def test_the_plan_hears_about_a_review_step(tmp_path):
     snapshot = seen[-1]
     assert snapshot["type"] == "snapshot"
     assert len(snapshot["payload"]["flow"]["steps"]) == 1
+
+
+def test_the_orchestrator_takes_its_model_from_its_agent_card(tmp_path):
+    """It used to be set in two places that never agreed: the agent card had a
+    model picker nothing read, and the real setting lived under Settings."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    client.put("/api/presets/fast", json={"kind": "llamacpp", "model": "small"})
+    client.put("/api/presets/deep", json={"kind": "llamacpp", "model": "large"})
+
+    client.put("/api/agents/orchestrator", json={"preset": "deep"})
+    assert config.for_orchestrator().model == "large"
+
+    client.put("/api/agents/orchestrator", json={"preset": "fast"})
+    assert config.for_orchestrator().model == "small"
+
+    # And what the UI reads back agrees with what the engine would use.
+    shown = client.get("/api/config").json()["orchestrator"]
+    assert shown["model"] == "small"
+
+
+def test_the_orchestrator_agent_still_supplies_the_prompt(tmp_path):
+    """The agent entry is not redundant with the model setting: the prompt it
+    holds is what decides how the plan gets designed."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import RoleStore
+
+    store = RoleStore(tmp_path / "agents.json")
+    orchestrator = store.get("orchestrator")
+    assert "orchestrator of a team" in orchestrator.system_prompt
+    # No tools at all — it assigns work rather than doing any.
+    assert orchestrator.toolsets == [] and orchestrator.paths == []
+    assert BUILTIN_ROLES["orchestrator"].verifier is False

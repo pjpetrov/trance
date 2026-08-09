@@ -1,11 +1,13 @@
 import { useConfig } from "@/api/queries";
 import { useSettingsMutations } from "@/api/mutations";
-import { Checkbox, Empty, Field, Select } from "@/components/ui/primitives";
+import { useUi } from "@/store/ui";
+import { Button, Checkbox, Empty } from "@/components/ui/primitives";
 import { toast } from "@/components/Toaster";
 
 export function SettingsPanel() {
   const config = useConfig();
-  const { planning, orchestrator } = useSettingsMutations();
+  const { planning } = useSettingsMutations();
+  const openModal = useUi((state) => state.openModal);
   const data = config.data;
   if (!data) return <Empty title="Loading…" />;
 
@@ -16,19 +18,17 @@ export function SettingsPanel() {
     <div className="space-y-5 p-5">
       <section className="space-y-2">
         <h3 className="text-sm font-medium">Orchestrator</h3>
-        <p className="text-xs text-muted">
+        <p className="text-xs leading-relaxed text-muted">
           The agent you talk to. It designs the team and the order of work, and writes no
-          code itself.
+          code itself. Its prompt and its model are both on its agent card — this used to
+          offer a second model picker that disagreed with the one there.
         </p>
-        <Select
-          value={data.orchestrator.preset ?? ""}
-          onChange={(event) => orchestrator.mutateAsync({ preset: event.target.value })
-            .catch((error) => toast.err(String(error)))}
-        >
-          {data.presets.map((preset) => (
-            <option key={preset.name} value={preset.name}>{preset.name}</option>
-          ))}
-        </Select>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => openModal("agents")}>Open the orchestrator</Button>
+          <span className="text-xs text-muted">
+            currently {data.orchestrator.model || "unset"}
+          </span>
+        </div>
       </section>
 
       <section className="space-y-1">
@@ -51,15 +51,14 @@ export function SettingsPanel() {
 
       <section className="space-y-2">
         <h3 className="text-sm font-medium">Visual testing</h3>
-        <Field label="Browser">
-          <p className="text-xs text-muted">
-            {data.visual.browser
-              ? "Chrome found. Agents with the browser toolset can open the app and look at it; "
-                + "screenshots go to that agent's own model, which must be able to see images."
-              : "No Chrome or Chromium on this machine — the browser toolset reports itself "
-                + "unavailable and every other toolset works as before."}
-          </p>
-        </Field>
+        <p className="text-xs leading-relaxed text-muted">
+          {data.visual.browser
+            ? "Chrome found. An agent with the browser toolset can open the app and look at "
+              + "it; screenshots go to that agent's own model, which must be able to see "
+              + "images."
+            : "No Chrome or Chromium on this machine — the browser toolset reports itself "
+              + "unavailable and every other toolset works as before."}
+        </p>
       </section>
     </div>
   );

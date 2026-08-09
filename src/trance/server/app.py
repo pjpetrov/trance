@@ -292,6 +292,25 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         config.providers = {p.name: p for p in providers.all()}
         config.presets = {m.name: m for m in providers.all_presets()}
 
+    def _follow_orchestrator(role) -> None:
+        """Keep the orchestrator's model where every other agent's model is.
+
+        It was set in two places that never agreed: the agent card had a model
+        picker that nothing read, and the real setting lived under Settings. One
+        of those had to be the truth, and the agent card is where you choose a
+        model for every other agent — so the role wins and Settings stops
+        offering a second answer.
+        """
+        if role.name != "orchestrator":
+            return
+        if role.preset and role.preset in config.presets:
+            config.orchestrator.preset = role.preset
+
+    # The role is the source of truth from startup, not only after an edit.
+    _orchestrator_role = roles.get("orchestrator")
+    if _orchestrator_role is not None:
+        _follow_orchestrator(_orchestrator_role)
+
     #: When this process started. Anything under src/ newer than this is code
     #: the running server has never executed.
     STARTED_AT = time.time()
@@ -487,6 +506,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if body.get("preset") and body["preset"] not in config.presets:
             raise HTTPException(400, f"unknown model {body['preset']!r}")
         saved = roles.upsert(AgentRole.from_dict(body))
+        _follow_orchestrator(saved)
         for session in store.all():          # live sessions pick up the edit
             refresh_team(session)
             touch(session)

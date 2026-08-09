@@ -12,10 +12,11 @@ import userEvent from "@testing-library/user-event";
 import { RunScreen } from "@/screens/RunScreen";
 import { PlanScreen } from "@/screens/PlanScreen";
 import { AgentsEditor } from "@/modals/AgentsEditor";
+import { ModelsEditor } from "@/modals/ModelsEditor";
 import { SettingsPanel } from "@/modals/SettingsPanel";
 import { useUi } from "@/store/ui";
 import { fakeServer, renderWithQuery, stubWebSocket } from "./render";
-import { config, event, eventsRoute, role, session, step } from "./fixtures";
+import { config, event, eventsRoute, preset, role, session, step } from "./fixtures";
 
 beforeEach(() => {
   stubWebSocket();
@@ -223,7 +224,46 @@ describe("the agents editor", () => {
   });
 });
 
+describe("the models editor", () => {
+  it("can add a model, which it previously could not", async () => {
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/presets": { presets: [preset()] },
+      "/api/config": config(),
+    });
+
+    renderWithQuery(<ModelsEditor />);
+    await user.click(await screen.findByRole("button", { name: "New model" }));
+
+    expect(await screen.findByDisplayValue("new-model")).toBeEnabled();
+    expect(screen.getByText("1 unsaved change")).toBeInTheDocument();
+  });
+
+  it("will not test a model with unapplied edits", async () => {
+    const user = userEvent.setup();
+    fakeServer({ "/api/presets": { presets: [preset()] }, "/api/config": config() });
+
+    renderWithQuery(<ModelsEditor />);
+    expect(await screen.findByRole("button", { name: "Test" })).toBeEnabled();
+
+    await user.type(await screen.findByDisplayValue("qwen3.6"), "x");
+    // Testing sends a request to what is *saved*, so a pending edit would make
+    // the result answer a different question than the one being asked.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Test" })).toBeDisabled());
+  });
+});
+
 describe("settings", () => {
+  it("no longer offers a second orchestrator model picker", async () => {
+    fakeServer({ "/api/config": config() });
+    renderWithQuery(<SettingsPanel />);
+    // The agent card is the one place a model is chosen; this panel used to
+    // offer a picker that disagreed with it.
+    expect(await screen.findByText(/both on its agent card/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
   it("reports what visual testing can do on this machine", async () => {
     fakeServer({ "/api/config": config({ visual: { browser: false } }) });
     renderWithQuery(<SettingsPanel />);
