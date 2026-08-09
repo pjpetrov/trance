@@ -57,6 +57,13 @@ MAX_SHOT_EDGE = 900
 #: A press is still not a substitute for waiting; see `wait`.
 PRESS_SETTLE_FRAMES = 60
 
+#: How long a key stays down, in animation frames. Not zero, which is what
+#: dispatching keyDown and keyUp back to back amounts to: a game that polls
+#: `isDown` once per frame never observes a key that went down and up between
+#: two frames. Measured on a real Phaser game — ten tapped presses of ArrowLeft
+#: moved the ship 0 pixels; one press held for 40 frames moved it 249.
+HOLD_FRAMES = 8
+
 
 class BrowserUnavailable(RuntimeError):
     """No browser on this machine. The visual toolset degrades; runs do not."""
@@ -512,17 +519,23 @@ class Browser:
                 "stalled": ran < frames, "probe": after,
                 "png_before": shot_before, "png_after": self._safe_shot(after)}
 
-    def press(self, key: str, times: int = 1, settle_frames: int = PRESS_SETTLE_FRAMES) -> dict:
+    def press(self, key: str, times: int = 1, settle_frames: int = PRESS_SETTLE_FRAMES,
+              hold_frames: int = HOLD_FRAMES) -> dict:
         """Send a key the way a keyboard would, and report what came of it.
 
-        Two separate questions, because they have different fixes. *Delivered*
-        is whether the page received the key at all — answered by a listener of
-        our own, in the capture phase so the app cannot stop it. *Changed* is
-        whether the picture then differed. A press that was delivered and
-        changed nothing means the app ignored it; one that was never delivered
-        is a browser problem. Reporting only "pressed" told the agent neither,
-        and an agent with no evidence a keypress worked reasonably concludes it
-        did not.
+        The key is *held* for `hold_frames` before being released. A key that
+        goes down and up between two frames is invisible to any game that polls
+        `isDown` in its update loop, which is most of them — and the press then
+        reports itself delivered, correctly, while nothing moves.
+
+        Two separate questions are answered, because they have different fixes.
+        *Delivered* is whether the page received the key at all — answered by a
+        listener of our own, in the capture phase so the app cannot stop it.
+        *Changed* is whether the picture then differed. A press that was
+        delivered and changed nothing means the app ignored it; one that was
+        never delivered is a browser problem. Reporting only "pressed" told the
+        agent neither, and an agent with no evidence a keypress worked
+        reasonably concludes it did not.
         """
         spec, code, key_code, text = key_spec(key)
         self._eval(_KEY_HOOK_JS)
@@ -532,14 +545,20 @@ class Browser:
         # changed" are claims you can check rather than take on trust. A verdict
         # about pixels whose pixels nobody kept is not evidence of anything.
         shot_before = self._safe_shot(before)
-        for _ in range(max(1, times)):
-            for kind in ("keyDown", "keyUp"):
-                params = {"type": kind, "key": spec, "code": code,
-                          "windowsVirtualKeyCode": key_code, "nativeVirtualKeyCode": key_code}
-                if text and kind == "keyDown":
-                    params["text"] = text
-                self._call("Input.dispatchKeyEvent", params, session=True)
-            self.wait_frames(4)
+        def event(kind: str) -> None:
+            params = {"type": kind, "key": spec, "code": code,
+                      "windowsVirtualKeyCode": key_code, "nativeVirtualKeyCode": key_code}
+            if text and kind == "keyDown":
+                params["text"] = text
+            self._call("Input.dispatchKeyEvent", params, session=True)
+
+        held = max(1, hold_frames)
+        for index in range(max(1, times)):
+            event("keyDown")
+            self.wait_frames(held)             # the frames the game polls in
+            event("keyUp")
+            if index + 1 < max(1, times):
+                self.wait_frames(2)            # a gap, so it reads as two presses
         # A screen that swaps on a keypress needs longer than the four frames
         # between presses to have drawn its new state.
         frames = self.wait_frames(settle_frames)
@@ -547,6 +566,7 @@ class Browser:
         after = self.probe()
         return {"key": key, "times": max(1, times), "delivered": [str(s) for s in seen],
                 "changed": _differs(before, after), "frames": frames, "probe": after,
+                "held_frames": held,
                 "png_before": shot_before, "png_after": self._safe_shot(after)}
 
     def _safe_shot(self, probe: dict) -> bytes:

@@ -551,8 +551,9 @@ def test_the_tool_says_which_of_the_two_things_went_wrong(tmp_path, monkeypatch)
         def __init__(self, **kw):
             self.kw = kw
 
-        def press(self, key, times=1):
-            return {"key": key, "times": times, "frames": 20, "probe": {}, **self.kw}
+        def press(self, key, times=1, hold_frames=None):
+            return {"key": key, "times": times, "frames": 20, "probe": {},
+                    "held_frames": hold_frames or 8, **self.kw}
 
     for kw, want in [
         ({"delivered": [], "changed": None}, "did not receive the key at all"),
@@ -740,9 +741,9 @@ def test_the_key_and_wait_details_carry_their_screenshots(tmp_path, monkeypatch)
     tools = AgentTools(tmp_path, _role(), step_id="st-d")
 
     class _Session:
-        def press(self, key, times=1):
+        def press(self, key, times=1, hold_frames=None):
             return {"key": key, "times": times, "frames": 60, "probe": {},
-                    "delivered": ["Space"], "changed": False,
+                    "delivered": ["Space"], "changed": False, "held_frames": hold_frames or 8,
                     "shot_before": "st-d/001.png", "shot_after": "st-d/002.png"}
 
         def wait(self, frames):
@@ -870,3 +871,76 @@ def test_a_webgl_canvas_that_animates_is_not_reported_as_frozen(tmp_path):
         assert waited["diff"]["differing"] > 0
     finally:
         session.close()
+
+
+@needs_chrome
+def test_a_key_is_held_long_enough_for_a_polling_game_to_see_it(tmp_path):
+    """Regression, measured on a real Phaser game: ten presses of ArrowLeft
+    dispatched as keyDown-then-keyUp moved the ship 0 pixels, while one press
+    held for 40 frames moved it 249. Most games poll `isDown` once per frame, so
+    a key that goes down and up between two frames is invisible to them — and
+    the press reports itself delivered, correctly, while nothing moves."""
+    from trance import preview
+    from trance.browser import Browser
+
+    # Counts only the frames on which the key was observed held, the way a game
+    # loop sees it — not the events, which arrive either way.
+    (tmp_path / "index.html").write_text("""
+      <canvas id="c" width="80" height="80"></canvas>
+      <script>
+        const ctx = document.getElementById('c').getContext('2d');
+        const down = {};
+        addEventListener('keydown', e => { down[e.code] = true; });
+        addEventListener('keyup', e => { down[e.code] = false; });
+        window.HELD = 0;
+        (function tick() {
+          if (down.ArrowLeft) window.HELD += 1;
+          ctx.fillStyle = down.ArrowLeft ? '#0f0' : '#008';
+          ctx.fillRect(0, 0, 80, 80);
+          requestAnimationFrame(tick);
+        })();
+      </script>
+    """, encoding="utf8")
+
+    served = preview.serve(tmp_path, host="127.0.0.1", port=0)
+    try:
+        with Browser() as browser:
+            browser.navigate(f"http://127.0.0.1:{served.port}/index.html", settle_frames=20)
+
+            browser.press("ArrowLeft")
+            seen = browser._eval("window.HELD")
+            assert seen >= 3, f"the game loop only saw the key on {seen} frames"
+
+            # And holding longer is what moves something a long way, rather than
+            # pressing many times.
+            browser._eval("window.HELD = 0")
+            browser.press("ArrowLeft", hold_frames=40)
+            assert browser._eval("window.HELD") > seen
+    finally:
+        served.stop()
+
+
+def test_the_hold_is_capped_and_reported(tmp_path, monkeypatch):
+    tools = AgentTools(tmp_path, _role(), step_id="st-h")
+    asked = {}
+
+    class _Session:
+        def press(self, key, times=1, hold_frames=None):
+            asked["hold"] = hold_frames
+            return {"key": key, "times": times, "frames": 60, "probe": {},
+                    "delivered": ["ArrowLeft"], "changed": True, "held_frames": hold_frames}
+
+    monkeypatch.setattr(type(tools), "visual", property(lambda self: _Session()))
+
+    out = tools.call("press_key", {"key": "ArrowLeft", "hold": 40})
+    assert asked["hold"] == 40
+    assert "held for 40 frames" in out.text
+    assert out.detail["held_frames"] == 40
+
+    # A silly number must not hang the step.
+    tools.call("press_key", {"key": "ArrowLeft", "hold": 10 ** 6})
+    assert asked["hold"] == 600
+
+    # Left alone, the browser's own default applies rather than zero.
+    tools.call("press_key", {"key": "ArrowLeft"})
+    assert asked["hold"] is None

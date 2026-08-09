@@ -492,7 +492,14 @@ class AgentTools:
                                              "ArrowLeft, ArrowRight, Tab, or a single "
                                              "character such as w or 1.")},
                      "times": {"type": "integer",
-                               "description": "How many times to press it. Default 1."}},
+                               "description": "How many times to press it. Default 1."},
+                     "hold": {"type": "integer",
+                              "description": (
+                                  "Animation frames to hold the key down for. Default 8, "
+                                  "which is enough for a game that checks the keyboard "
+                                  "each frame to notice. Raise it to move something a "
+                                  "long way in one press — 60 frames is about a second "
+                                  "of holding the key.")}},
                     ["key"]),
                 _fn("wait",
                     "Let the app run for a number of animation frames before you judge "
@@ -990,7 +997,7 @@ class AgentTools:
                                             if probe.get("canvas") else ""),
                                    "blank": probe.get("uniform")})
 
-    def press_key(self, key: str, times: int = 1) -> ToolOutcome:
+    def press_key(self, key: str, times: int = 1, hold: int = 0) -> ToolOutcome:
         from ..browser import BrowserUnavailable
 
         try:
@@ -998,13 +1005,19 @@ class AgentTools:
         except (TypeError, ValueError):
             times = 1
         try:
-            result = self.visual.press(str(key), times)
+            hold = max(0, min(int(hold or 0), 600))
+        except (TypeError, ValueError):
+            hold = 0
+        try:
+            result = self.visual.press(str(key), times, hold_frames=hold or None)
         except (BrowserUnavailable, ValueError) as exc:
             return ToolOutcome(f"Could not press {key!r}: {exc}", ok=False,
                                detail={"kind": "key_failed", "key": str(key), "error": str(exc)})
 
         delivered, changed = bool(result.get("delivered")), result.get("changed")
-        lines = [f"Pressed {key}" + (f" {times} times" if times > 1 else "") + "."]
+        held = result.get("held_frames")
+        lines = [f"Pressed {key}" + (f" {times} times" if times > 1 else "")
+                 + (f", held for {held} frames each" if held else "") + "."]
         # Said in full because the two halves have different fixes, and because
         # an agent told only "pressed" has no reason to believe anything
         # happened — which is exactly how a working keypress got reported as a
@@ -1034,6 +1047,7 @@ class AgentTools:
             " ".join(lines), ok=True,
             detail={"kind": "key", "key": str(key), "times": times,
                     "delivered": delivered, "changed": changed,
+                    "held_frames": held,
                     "frames": result.get("frames", 0), "diff": result.get("diff"),
                     "shot_before": result.get("shot_before", ""),
                     "shot_after": result.get("shot_after", "")})

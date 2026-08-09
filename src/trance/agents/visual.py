@@ -121,8 +121,10 @@ class VisualSession:
             "build_command": (build or {}).get("command", ""),
         }
 
-    def press(self, key: str, times: int = 1) -> dict:
-        return self._with_shots(self.browser.press(key, times=times))
+    def press(self, key: str, times: int = 1, hold_frames: int | None = None) -> dict:
+        return self._with_shots(self.browser.press(
+            key, times=times,
+            **({"hold_frames": hold_frames} if hold_frames else {})))
 
     def wait(self, frames: int = 120) -> dict:
         """Let the app run before judging it.
