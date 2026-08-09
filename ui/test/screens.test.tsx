@@ -363,7 +363,7 @@ describe("the run page's step actions", () => {
       .toBeInTheDocument();
   });
 
-  it("no longer offers skip", async () => {
+  it("offers start on the step, not rerun, and no skip", async () => {
     const user = userEvent.setup();
     fakeServer({
       "/api/sessions/s1": session(),
@@ -372,7 +372,10 @@ describe("the run page's step actions", () => {
 
     renderWithQuery(<RunScreen />);
     await user.click(await screen.findByText(/Build the maze renderer/));
-    await screen.findByRole("button", { name: "rerun" });
+    // "start" rather than "rerun": whether it has run before is not what you
+    // are thinking about when you press it.
+    await screen.findByRole("button", { name: "start" });
+    expect(screen.queryByRole("button", { name: "rerun" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "skip" })).not.toBeInTheDocument();
   });
 

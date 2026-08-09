@@ -9,11 +9,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEventTail, useSession, useStepEvents } from "@/api/queries";
-import { useStepActions, useSteer } from "@/api/mutations";
+import { useRunControl, useStartRun, useStepActions, useSteer } from "@/api/mutations";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { clip, timeOf } from "@/lib/format";
-import { currentRun, splitIntoRuns, type Run } from "@/lib/runs";
+import { currentRun, splitIntoBlocks, splitIntoRuns, type Block, type Run }
+  from "@/lib/runs";
 import { EventLine } from "@/components/EventLine";
 import { Badge, Button, Dot, Empty, Input, Panel, PanelHeader, Spinner, type Tone }
   from "@/components/ui/primitives";
@@ -40,7 +41,11 @@ export function RunScreen() {
   if (!sessionId) return <Empty title="No session selected." />;
 
   return (
-    <div className="grid h-full min-w-0 grid-cols-[20rem_minmax(0,1fr)] gap-3 p-3">
+    <div className="grid h-full min-w-0 grid-cols-[20rem_minmax(0,1fr)]
+                    grid-rows-[auto_minmax(0,1fr)] gap-3 p-3">
+      <div className="col-span-2 -mb-1 flex items-center gap-2">
+        <RunControls />
+      </div>
       <StepRail
         steps={steps} selected={openStep}
         onSelect={(id) => setOpenStep(id === openStep ? null : id)}
@@ -48,6 +53,50 @@ export function RunScreen() {
       />
       <Console stepId={openStep} pinnedRun={pinnedRun} onPickRun={setPinnedRun} />
     </div>
+  );
+}
+
+/** Start, pause and stop, on the page that runs things.
+ *
+ *  They used to sit in the top bar beside Settings and Agents, which put "run
+ *  the project" next to "edit an allowlist" and made it unclear which session
+ *  they applied to. */
+function RunControls() {
+  const sessionId = useUi((state) => state.sessionId);
+  const session = useSession(sessionId);
+  const start = useStartRun(sessionId ?? "");
+  const { pause, resume, stop } = useRunControl(sessionId ?? "");
+  const live = session.data;
+  if (!live) return null;
+
+  const running = live.status === "running";
+  const paused = Boolean(live.paused);
+  const act = (action: { mutateAsync: () => Promise<unknown> }, what: string) => () =>
+    action.mutateAsync().catch((error: unknown) => toast.err(`${what} failed — ${error}`));
+
+  return (
+    <>
+      {!running && (
+        <Button variant="primary" busy={start.isPending} onClick={act(start, "Start")}>
+          Start the run
+        </Button>
+      )}
+      {running && !paused && (
+        <Button busy={pause.isPending} onClick={act(pause, "Pause")}>Pause</Button>
+      )}
+      {running && paused && (
+        <Button variant="primary" busy={resume.isPending} onClick={act(resume, "Resume")}>
+          Resume
+        </Button>
+      )}
+      {running && (
+        <Button variant="danger" busy={stop.isPending} onClick={act(stop, "Stop")}>Stop</Button>
+      )}
+      <span className="text-xs text-muted">
+        {running ? (paused ? "paused" : "running") : "not running"}
+        {" · "}{live.progress.done}/{live.progress.total} steps done
+      </span>
+    </>
   );
 }
 
@@ -130,11 +179,12 @@ function StepRow(
         <div className="space-y-2 px-2 pb-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <Button
-              size="sm" busy={rerun.isPending}
+              size="sm" variant="primary" busy={rerun.isPending}
+              title="Run this step now"
               onClick={() => rerun.mutateAsync(step.id)
-                .then(() => { onPickRun(null); toast.ok("Running it again."); })
+                .then(() => { onPickRun(null); toast.ok(`Started ${step.loop || step.role}.`); })
                 .catch((error) => toast.err(String(error)))}
-            >rerun</Button>
+            >start</Button>
             <Button size="sm" variant={showRuns ? "default" : "ghost"}
                     onClick={() => setShowRuns(!showRuns)}
                     title="Every run of this step">
@@ -216,6 +266,7 @@ function Console(
   // what it always was, and what "show me the last execution" wants when you
   // arrive on the page rather than having clicked anything.
   const events = stepId ? (shown?.events ?? []) : (tail.data ?? []);
+  const blocks = useMemo(() => splitIntoBlocks(events), [events]);
   const loading = stepId ? stepEvents.isLoading : tail.isLoading;
 
   // Two different scrolls. Arriving at a run puts you at its end, because the
@@ -259,9 +310,22 @@ function Console(
       />
       <div className="min-h-0 flex-1 space-y-px overflow-y-auto p-2">
         {loading && <Spinner className="m-3 text-muted" />}
-        {events.map((event) => (
-          <EventLine key={event.id} event={event} sessionId={sessionId!} />
-        ))}
+
+        {stepId
+          ? blocks.map((block, index) => (
+              <AgentBlock
+                key={block.key} block={block} sessionId={sessionId!}
+                // The one still going is what you are watching; the finished
+                // ones fold to a line saying how they went. A run of eight
+                // blocks is otherwise a wall you have to scroll past to reach
+                // the part that is live.
+                openByDefault={block.running || index === blocks.length - 1}
+              />
+            ))
+          : events.map((event) => (
+              <EventLine key={event.id} event={event} sessionId={sessionId!} />
+            ))}
+
         {!loading && !events.length && (
           <Empty
             title={stepId ? "Nothing was recorded for this step." : "Nothing yet."}
@@ -273,5 +337,54 @@ function Console(
         <div ref={bottom} />
       </div>
     </Panel>
+  );
+}
+
+/** One agent's turn, folded once it is over.
+ *
+ *  Folded it says who ran, how it went and one line of why — which is what you
+ *  want from the seven blocks you are not currently reading. */
+function AgentBlock(
+  { block, sessionId, openByDefault }:
+  { block: Block; sessionId: string; openByDefault: boolean },
+) {
+  const [open, setOpen] = useState(openByDefault);
+  // A block that was folded stays folded when it finishes; one you are watching
+  // opens itself when it starts.
+  useEffect(() => { if (openByDefault) setOpen(true); }, [openByDefault]);
+
+  const good = /SUCCESS|PASS/.test(block.outcome);
+
+  return (
+    <div className={cn("rounded-[--radius] border",
+                       open ? "border-line" : "border-transparent",
+                       block.running && "border-accent/40")}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-panel-2"
+      >
+        <span className="w-3 shrink-0 text-xs text-muted">{open ? "▾" : "▸"}</span>
+        <span className="shrink-0 text-xs font-medium">{block.label}</span>
+        {block.running
+          ? <Badge tone="accent">running</Badge>
+          : block.outcome
+            ? <Badge tone={good ? "ok" : "err"}>{block.outcome}</Badge>
+            : <Badge>done</Badge>}
+        {!open && block.summary && (
+          <span className="min-w-0 flex-1 truncate text-xs text-muted">{block.summary}</span>
+        )}
+        <span className="ml-auto shrink-0 text-[11px] text-muted">
+          {timeOf(block.startedAt)}
+        </span>
+      </button>
+
+      {open && (
+        <div className="space-y-px px-1 pb-1">
+          {block.events.map((event) => (
+            <EventLine key={event.id} event={event} sessionId={sessionId} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

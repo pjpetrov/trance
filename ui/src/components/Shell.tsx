@@ -8,13 +8,11 @@
  */
 
 import { useConfig, useSession, useSessions } from "@/api/queries";
-import { useRunControl, useStartRun } from "@/api/mutations";
 import type { SocketState } from "@/hooks/useSessionSocket";
 import { useUi, type Screen } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { duration } from "@/lib/format";
 import { Badge, Button, Dot, Select, type Tone } from "@/components/ui/primitives";
-import { toast } from "@/components/Toaster";
 import { HomeScreen } from "@/screens/HomeScreen";
 import { PlanScreen } from "@/screens/PlanScreen";
 import { RunScreen } from "@/screens/RunScreen";
@@ -100,16 +98,8 @@ function TopBar({ socket }: { socket: SocketState }) {
   const { sessionId, selectSession, openModal } = useUi();
   const sessions = useSessions();
   const session = useSession(sessionId);
-  const start = useStartRun(sessionId ?? "");
-  const { pause, resume, stop } = useRunControl(sessionId ?? "");
 
   const live = session.data;
-  const running = live?.status === "running";
-  const paused = Boolean(live?.paused);
-
-  const run = (action: { mutateAsync: () => Promise<unknown> }, what: string) => () => {
-    action.mutateAsync().catch((error: unknown) => toast.err(`${what} failed — ${error}`));
-  };
 
   return (
     <header className="flex items-center gap-3 border-b border-line bg-panel px-3 py-2">
@@ -133,7 +123,7 @@ function TopBar({ socket }: { socket: SocketState }) {
 
       {live && (
         <div className="flex min-w-0 items-center gap-2">
-          <Dot tone={statusTone(live.status)} pulse={running} />
+          <Dot tone={statusTone(live.status)} pulse={live.status === "running"} />
           <span className="truncate text-xs text-muted">
             {live.progress.done}/{live.progress.total} steps
             {live.run_seconds > 0 && ` · ${duration(live.run_seconds)}`}
@@ -150,34 +140,6 @@ function TopBar({ socket }: { socket: SocketState }) {
         <Badge tone={socket === "connecting" ? "warn" : "err"}>
           {socket === "connecting" ? "reconnecting" : "offline"}
         </Badge>
-      )}
-
-      {live && (
-        <div className="flex items-center gap-1.5">
-          {!running && (
-            <Button variant="primary" size="sm" busy={start.isPending}
-                    onClick={run(start, "Start")}>
-              Start
-            </Button>
-          )}
-          {running && !paused && (
-            <Button size="sm" busy={pause.isPending} onClick={run(pause, "Pause")}>
-              Pause
-            </Button>
-          )}
-          {running && paused && (
-            <Button variant="primary" size="sm" busy={resume.isPending}
-                    onClick={run(resume, "Resume")}>
-              Resume
-            </Button>
-          )}
-          {running && (
-            <Button variant="danger" size="sm" busy={stop.isPending}
-                    onClick={run(stop, "Stop")}>
-              Stop
-            </Button>
-          )}
-        </div>
       )}
 
       <div className="ml-1 flex items-center gap-1">
