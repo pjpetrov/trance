@@ -11,6 +11,7 @@
  */
 
 import { useState, type ReactNode } from "react";
+import { useFullEvent } from "@/api/queries";
 import { cn } from "@/lib/cn";
 import { clip, shortModel, timeOf, tokens } from "@/lib/format";
 import { api } from "@/api/client";
@@ -94,21 +95,7 @@ function describe(event: TranceEvent, sessionId: string): Rendered {
         </span>
       ),
       dim: true,
-      body: (
-        <>
-          <Stat
-            items={[
-              ["round", payload.round],
-              ["in", payload.usage?.prompt_tokens],
-              ["out", payload.usage?.completion_tokens],
-              ["ms", payload.duration_ms],
-              ["finish", payload.finish_reason],
-            ]}
-          />
-          {payload.reasoning && <Code>{payload.reasoning}</Code>}
-          {payload.response_text && <Code>{payload.response_text}</Code>}
-        </>
-      ),
+      body: <ModelCallBody event={event} sessionId={sessionId} />,
     };
   }
 
@@ -356,6 +343,70 @@ function renderDetail(
       };
     }
   }
+}
+
+/** What a model call did, including the parts /events drops.
+ *
+ *  The reasoning and the prompt are stripped from the list — they are most of
+ *  its weight — so opening a line fetches the event in full. Which is the only
+ *  time anyone wants them, and why they were dropped rather than kept.
+ */
+function ModelCallBody({ event, sessionId }: { event: TranceEvent; sessionId: string }) {
+  const payload = event.payload ?? {};
+  const omitted = payload._omitted ?? {};
+  const wanted = Boolean(omitted.reasoning || omitted.messages);
+  const full = useFullEvent(sessionId, wanted ? event.id : null);
+  const complete = full.data?.payload ?? payload;
+
+  return (
+    <>
+      <Stat
+        items={[
+          ["round", payload.round],
+          ["in", payload.usage?.prompt_tokens],
+          ["out", payload.usage?.completion_tokens],
+          ["ms", payload.duration_ms],
+          ["finish", payload.finish_reason],
+        ]}
+      />
+
+      {full.isLoading && <p className="text-xs text-muted">fetching the full call…</p>}
+
+      {complete.reasoning ? (
+        <details open>
+          <summary className="cursor-pointer text-xs text-muted">
+            thinking ({complete.reasoning.length.toLocaleString()} chars)
+          </summary>
+          <Code className="mt-1">{complete.reasoning}</Code>
+        </details>
+      ) : payload.finish_reason === "length" && !payload.response_text ? (
+        <p className="text-xs text-warn">
+          This reply hit the output limit before it said anything. On a thinking model
+          that usually means the whole budget went to reasoning.
+        </p>
+      ) : null}
+
+      {complete.response_text && <Code>{complete.response_text}</Code>}
+
+      {(complete.messages?.length ?? 0) > 0 && (
+        <details>
+          <summary className="cursor-pointer text-xs text-muted">
+            the full context it was sent ({complete.messages!.length} messages)
+          </summary>
+          <div className="mt-1 space-y-1">
+            {complete.messages!.map((message, index) => (
+              <div key={index}>
+                <div className="text-[11px] uppercase tracking-wide text-muted">
+                  {message.role}
+                </div>
+                <Code>{message.content || "(no text — a tool call)"}</Code>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </>
+  );
 }
 
 // --------------------------------------------------------------- fragments

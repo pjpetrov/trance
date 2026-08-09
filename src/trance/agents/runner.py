@@ -561,6 +561,10 @@ def _run_agent(
         try:
             response = client.complete(messages, tools=specs or None,
                                        cancel_token=session_id)
+            response = _answer_or_retry_without_thinking(
+                response, client=client, messages=messages, specs=specs,
+                config=model_config, bus=bus, session_id=session_id,
+                role=role, step_id=step_id, round_n=round_n)
         except Cancelled:
             # Stop, mid-generation. Not an error, and not the agent's doing.
             turn.stop_reason = "cancelled"
@@ -862,6 +866,52 @@ def _run_agent(
 
     turn.usage = totals
     return turn
+
+
+#: Backends whose chat template takes `enable_thinking`. Only these can be
+#: asked to stop, and only these get the retry below.
+THINKING_TOGGLE_KINDS = ("llamacpp", "vllm")
+
+
+def _answer_or_retry_without_thinking(response, *, client, messages, specs, config,
+                                      bus, session_id, role, step_id, round_n):
+    """Recover a round the model spent entirely on thinking.
+
+    `max_tokens` caps *generated* tokens, and reasoning is generated tokens — so
+    on a thinking model a long think can consume the whole budget and the answer
+    never starts. Measured against the local Qwen at a 600-token cap: 1,878
+    characters of reasoning and an empty answer, where the same cap with
+    thinking off produced 1,879 characters of answer.
+
+    Raising the cap is not the fix. The input budget is the window less the cap,
+    so every token added to the reply is a token taken from what the agent can
+    read — and it only moves the wall rather than removing it. Asking again
+    without thinking spends the same budget on an answer instead, and costs
+    nothing on the rounds where this never happens.
+    """
+    thought = (getattr(response, "reasoning", "") or "").strip()
+    if response.finish_reason != "length" or (response.text or "").strip() or not thought:
+        return response
+    if response.tool_calls:
+        return response                        # it got far enough to act
+    if (getattr(config, "kind", "") or "") not in THINKING_TOGGLE_KINDS:
+        return response
+
+    bus.emit("thinking_overran", session_id, agent=role.name, step_id=step_id, payload={
+        "round": round_n, "limit": config.max_tokens,
+        "reasoning_chars": len(thought),
+        "message": (f"The model used its whole {config.max_tokens}-token reply budget "
+                    f"thinking and never began an answer. Asking again without "
+                    f"thinking."),
+    })
+    retried = client.complete(
+        messages, tools=specs or None, cancel_token=session_id,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+    # Keep the thinking that was paid for: it is the most useful record of why
+    # the round went the way it did, and it is what the console shows.
+    if not (retried.reasoning or "").strip():
+        retried.reasoning = thought
+    return retried
 
 
 def _drop_unfinished_call(messages: list[dict], cut_short: list) -> None:

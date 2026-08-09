@@ -8004,3 +8004,134 @@ def test_the_console_is_told_before_the_model_is_called(tmp_path, monkeypatch):
     # And the answer follows it.
     assert [e.type for e in seen].index("model_waiting") < \
            [e.type for e in seen].index("model_call")
+
+
+def test_a_round_spent_entirely_on_thinking_is_asked_again_without_it(tmp_path, monkeypatch):
+    """max_tokens caps generated tokens and reasoning is generated tokens, so a
+    long think can eat the whole budget and the answer never starts. Measured
+    against the local Qwen at a 600-token cap: 1,878 characters of reasoning and
+    an empty answer; the same cap with thinking off gave 1,879 of answer."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    calls = []
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _Thinker:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            calls.append(extra_body)
+            if len(calls) == 1:
+                return ChatResponse(text="", finish_reason="length",
+                                    reasoning="wondering at great length…")
+            return ChatResponse(text="Right, done.\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _Thinker())
+    turn = runner.run_agent(
+        role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+        config=ModelConfig(kind="llamacpp", max_tokens=600), bus=bus,
+        session_id="s", step_id="st")
+
+    assert calls[0] is None                                    # first try, as normal
+    assert calls[1] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert turn.outcome[0] == "SUCCESS"
+
+    told = next(e for e in seen if e.type == "thinking_overran")
+    assert "never began an answer" in told.payload["message"]
+    assert told.payload["limit"] == 600
+
+
+def test_the_thinking_that_was_paid_for_is_kept(tmp_path, monkeypatch):
+    """It is the most useful record of why the round went the way it did."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _Thinker:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            self.n += 1
+            if self.n == 1:
+                return ChatResponse(text="", finish_reason="length",
+                                    reasoning="the long think")
+            return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda _config: _Thinker())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(kind="llamacpp", max_tokens=600), bus=bus,
+                     session_id="s", step_id="st")
+
+    answered = [e for e in seen if e.type == "model_call"][-1]
+    assert answered.payload["reasoning"] == "the long think"
+
+
+def test_a_truncated_reply_that_said_something_is_left_alone(tmp_path, monkeypatch):
+    """Only a round with nothing but thinking is worth spending again."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    tries = []
+
+    class _Partial:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            tries.append(extra_body)
+            return ChatResponse(text="I got half way through", finish_reason="length",
+                                reasoning="some thinking")
+
+    monkeypatch.setattr(runner, "client_for", lambda _config: _Partial())
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(kind="llamacpp", max_tokens=600), bus=bus,
+                     session_id="s", step_id="st", max_rounds=1)
+
+    # A reply that said something is not worth spending the budget again on;
+    # the truncation notice handles it. (The runner does ask once more for an
+    # outcome, which is a different thing and not this retry.)
+    assert all(sent is None for sent in tries)
+    assert not any(e.type == "thinking_overran" for e in seen)
+
+
+def test_a_backend_that_cannot_be_told_to_stop_thinking_is_not_asked_twice(
+        tmp_path, monkeypatch):
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    tries = []
+
+    class _Anthropic:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            tries.append(extra_body)
+            return ChatResponse(text="", finish_reason="length", reasoning="thought")
+
+    monkeypatch.setattr(runner, "client_for", lambda _config: _Anthropic())
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(kind="anthropic", max_tokens=600), bus=bus,
+                     session_id="s", step_id="st", max_rounds=1)
+
+    # `chat_template_kwargs` is an OpenAI-compatible thing; sending it to
+    # Anthropic is a 400. Whatever else the runner does, it must never appear.
+    assert all(sent is None for sent in tries)
+    assert not any(e.type == "thinking_overran" for e in seen)

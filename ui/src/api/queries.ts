@@ -139,6 +139,21 @@ export function useStepEvents(sessionId: string | null, stepId: string | null) {
   });
 }
 
+/** One event in full, fetched only when something wants what /events drops.
+ *
+ *  The list endpoint strips the prompt, the reasoning and the raw reply — a
+ *  step of a long run is 13MB and three quarters of it is `messages`. So the
+ *  console shows the slim version and asks for the rest when a line is opened,
+ *  which is the only time anyone reads it. */
+export function useFullEvent(sessionId: string | null, eventId: string | null) {
+  return useQuery<TranceEvent>({
+    queryKey: ["event", sessionId ?? "", eventId ?? ""],
+    queryFn: () => api.event(sessionId!, eventId!),
+    enabled: Boolean(sessionId && eventId),
+    staleTime: Infinity,            // an event that has happened cannot change
+  });
+}
+
 export function useUsage(sessionId: string | null) {
   return useQuery<Usage>({
     queryKey: keys.usage(sessionId ?? ""),
