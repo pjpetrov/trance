@@ -153,11 +153,25 @@
   line-height: 1.5;
   white-space: normal;
 }
+/* A real hit target. At the widget's 12px it inherited a ✕ about six pixels
+   across, which is a thing you aim at rather than click. */
 .trance-note-remove {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-top: -2px;
+  border-radius: var(--radius-sm);
   color: var(--color-muted);
   cursor: pointer;
+  font-size: 15px;
   line-height: 1;
 }
-.trance-note-remove:hover { color: var(--color-err); }
+.trance-note-remove:hover {
+  color: var(--color-err);
+  background: var(--color-err-soft);
+}
 .trance-note-dot { color: var(--color-warn); font-size: 10px; line-height: 1; }

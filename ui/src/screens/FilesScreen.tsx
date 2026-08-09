@@ -191,8 +191,13 @@ export function FilesScreen() {
                    className="flex items-start gap-2 rounded-[--radius] bg-warn-soft
                               border-l-2 border-warn px-2 py-1 text-xs">
                 <span className="min-w-0 flex-1">{comment.note}</span>
-                <button onClick={() => remove(comment.id)} className="text-muted hover:text-err"
-                        title="Remove this comment">✕</button>
+                <button
+                  onClick={() => remove(comment.id)}
+                  title="Remove this comment"
+                  className="-my-0.5 grid size-6 shrink-0 place-items-center rounded-[--radius-sm]
+                             text-[15px] leading-none text-muted transition-colors
+                             hover:bg-err-soft hover:text-err"
+                >✕</button>
               </div>
             )))}
           </div>
