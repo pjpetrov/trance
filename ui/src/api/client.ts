@@ -8,8 +8,8 @@
  */
 
 import type {
-  AgentRole, AppConfig, CommandLists, Flow, Loop, ModelPreset, Planning,
-  Preview, Session, Spend, Step, TranceEvent,
+  AgentRole, AppConfig, CommandLists, FileListing, Flow, Loop, ModelPreset,
+  Planning, Preview, ReviewChanges, Session, Step, TranceEvent, Usage,
 } from "./types";
 
 export class ApiError extends Error {
@@ -177,9 +177,7 @@ export const api = {
   event: (sid: string, eventId: string) =>
     request<TranceEvent>(`/api/sessions/${id(sid)}/events/${id(eventId)}`),
 
-  usage: (sid: string) =>
-    request<{ run: Record<string, Spend>; lifetime: Record<string, Spend> }>(
-      `/api/sessions/${id(sid)}/usage`),
+  usage: (sid: string) => request<Usage>(`/api/sessions/${id(sid)}/usage`),
 
   // ------------------------------------------------------------- memory
   memory: (sid: string) =>
@@ -192,9 +190,7 @@ export const api = {
       `/api/sessions/${id(sid)}/memory/compact`, { method: "POST" }),
 
   // -------------------------------------------------------------- files
-  files: (sid: string) =>
-    request<{ tree: unknown; files: number; lines: number; bytes: number }>(
-      `/api/sessions/${id(sid)}/files`),
+  files: (sid: string) => request<FileListing>(`/api/sessions/${id(sid)}/files`),
   file: (sid: string, path: string) =>
     request<{ path: string; content: string; bytes: number; lines: number }>(
       `/api/sessions/${id(sid)}/file?path=${id(path)}`),
@@ -206,7 +202,7 @@ export const api = {
   startPreview: (sid: string, body: { path?: string }) =>
     request<Preview & { dev?: unknown; bare?: unknown[] }>(
       `/api/sessions/${id(sid)}/preview`, { method: "POST", body }),
-  preview: (sid: string) => request<Preview | null>(`/api/sessions/${id(sid)}/preview`),
+  preview: (sid: string) => request<Preview>(`/api/sessions/${id(sid)}/preview`),
   share: (sid: string, body: { stop?: boolean }) =>
     request<{ url?: string; stopped?: boolean }>(`/api/sessions/${id(sid)}/share`,
       { method: "POST", body }),
@@ -221,7 +217,7 @@ export const api = {
   reviews: (sid: string) =>
     request<{ reviews: ReviewRound[] }>(`/api/sessions/${id(sid)}/reviews`),
   reviewChanges: (sid: string) =>
-    request<{ stale: boolean; commits: Commit[] }>(`/api/sessions/${id(sid)}/review/changes`),
+    request<ReviewChanges>(`/api/sessions/${id(sid)}/review/changes`),
   commit: (sid: string, sha: string) =>
     request<{ sha: string; diff: string; message: string }>(
       `/api/sessions/${id(sid)}/commit/${id(sha)}`),

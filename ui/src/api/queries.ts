@@ -15,7 +15,7 @@
 import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
 import { api } from "./client";
 import type {
-  AgentRole, AppConfig, CommandLists, Loop, ModelPreset, Session, Spend, TranceEvent,
+  AgentRole, AppConfig, CommandLists, Loop, ModelPreset, Session, TranceEvent, Usage,
 } from "./types";
 
 /** Every key in one place. A key built inline at the call site is a cache miss
@@ -140,7 +140,7 @@ export function useStepEvents(sessionId: string | null, stepId: string | null) {
 }
 
 export function useUsage(sessionId: string | null) {
-  return useQuery<{ run: Record<string, Spend>; lifetime: Record<string, Spend> }>({
+  return useQuery<Usage>({
     queryKey: keys.usage(sessionId ?? ""),
     queryFn: () => api.usage(sessionId!),
     enabled: Boolean(sessionId),

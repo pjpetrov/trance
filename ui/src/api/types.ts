@@ -240,7 +240,7 @@ export type ToolDetail =
       shot_before?: string; shot_after?: string }
   | { kind: "screenshot"; shot: string; question: string; checks: string[];
       answer: string; prompt?: string; model?: string; preset?: string;
-      usage?: Usage; clipped?: boolean; page?: string; url?: string;
+      usage?: CallUsage; clipped?: boolean; page?: string; url?: string;
       region?: { x: number; y: number; width: number; height: number };
       error?: string }
   | { kind: "page_failed" | "canvas_failed" | "key_failed" | "look_failed"
@@ -273,7 +273,8 @@ export interface FileStat {
   error?: string;
 }
 
-export interface Usage {
+/** Token counts on a single model call, as the provider reported them. */
+export interface CallUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
@@ -299,7 +300,7 @@ export interface EventPayload {
   reasoning?: string;
   tool_calls?: { name: string; arguments: Record<string, unknown> }[];
   finish_reason?: string;
-  usage?: Usage;
+  usage?: CallUsage;
   summary?: { message_count?: number; est_tokens?: number };
   /** what /events drops to keep the payload small */
   _omitted?: Record<string, number>;
@@ -392,18 +393,62 @@ export interface CommandLists {
 
 // ----------------------------------------------------------------- files
 
-export interface FileNode {
+/** One file, as the server lists it. The list is FLAT — there is no tree from
+ *  the server, and the UI builds one from these paths. */
+export interface ProjectFile {
   path: string;
-  name: string;
-  is_dir: boolean;
-  size?: number;
-  children?: FileNode[];
+  bytes: number;
+  lines: number;
 }
 
+/** Per-extension rollup, which is where the file and line counts come from. */
+export interface ExtensionTotal {
+  ext: string;
+  files: number;
+  lines: number;
+  bytes: number;
+}
+
+export interface FileListing {
+  root: string;
+  files: ProjectFile[];
+  totals: ExtensionTotal[];
+}
+
+/** A folder in the tree the UI builds. Not a server shape. */
+export interface TreeNode {
+  name: string;
+  path: string;
+  file?: ProjectFile;
+  children: TreeNode[];
+}
+
+/** All fields present but empty when nothing is being served, rather than the
+ *  endpoint answering null. */
 export interface Preview {
   root: string;
   port: number;
   url: string;
-  local: string;
-  share?: string;
+  /** The public tunnel address, when one is running. */
+  public: string;
+}
+
+export interface ModelSpend {
+  model: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total: number;
+}
+
+export interface Usage {
+  models: ModelSpend[];
+  total: number;
+  calls: number;
+}
+
+export interface ReviewChanges {
+  review: unknown | null;
+  files: string[];
+  diff: string;
 }
