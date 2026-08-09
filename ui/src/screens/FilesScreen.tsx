@@ -10,9 +10,10 @@
  * costs a third of the screen to say nothing most of the time.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFile, useFiles, useLoops, usePreview, useSession } from "@/api/queries";
-import { usePreviewMutations, useReviewMutations } from "@/api/mutations";
+import { useFileMutations, usePreviewMutations, useReviewMutations }
+  from "@/api/mutations";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { Badge, Button, Empty, Input, Panel, PanelHeader, Select, Textarea }
@@ -216,6 +217,7 @@ export function FilesScreen() {
           onComment={(line, note) =>
             review.add.mutateAsync({ path: filePath!, line, note })}
           onRemove={remove}
+          onDeleted={() => openFile(null)}
         />
       </Panel>
 
@@ -340,24 +342,87 @@ function Branch(
 }
 
 function FileEditor(
-  { sessionId, path, comments, onComment, onRemove }:
+  { sessionId, path, comments, onComment, onRemove, onDeleted }:
   {
     sessionId: string; path: string | null;
     comments: ReviewComment[];
     onComment: (line: number, note: string) => Promise<unknown>;
     onRemove: (noteId: string) => void;
+    onDeleted: () => void;
   },
 ) {
   const file = useFile(sessionId, path);
+  const session = useSession(sessionId);
+  const { write, remove } = useFileMutations(sessionId);
+
   const [pending, setPending] = useState<number | null>(null);
   const [note, setNote] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+
+  // A new file is a new edit. Carrying a draft across files would save one
+  // file's contents over another's.
+  useEffect(() => { setEditing(false); setDraft(null); setPending(null); }, [path]);
+
+  const running = session.data?.status === "running";
+  const text = draft ?? file.data?.content ?? "";
+  const dirty = draft !== null && draft !== file.data?.content;
 
   const onThisFile: LineComment[] = comments
     .filter((comment) => comment.path === path && comment.line > 0)
     .map((comment) => ({ id: comment.id, line: comment.line, note: comment.note }));
 
+  const save = () => {
+    if (!path || draft === null) return;
+    write.mutateAsync({ path, content: draft })
+      .then(() => { setDraft(null); setEditing(false); toast.ok(`Saved ${path}.`); })
+      .catch((error) => toast.err(String(error)));
+  };
+
   return (
     <>
+      {path && file.data && (
+        <div className="flex items-center gap-2 border-b border-line px-2 py-1.5">
+          {editing ? (
+            <>
+              <Button size="sm" variant="primary" busy={write.isPending} disabled={!dirty}
+                      onClick={save}>Save</Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (dirty && !confirm("Discard your changes to this file?")) return;
+                  setDraft(null);
+                  setEditing(false);
+                }}
+              >Cancel</Button>
+              {dirty && <span className="text-xs text-warn">unsaved changes</span>}
+              {running && (
+                <span className="text-xs text-warn">
+                  a step is running — an agent may overwrite this
+                </span>
+              )}
+            </>
+          ) : (
+            <Button size="sm" onClick={() => { setDraft(file.data!.content); setEditing(true); }}>
+              Edit
+            </Button>
+          )}
+
+          <div className="flex-1" />
+
+          <Button
+            size="sm" variant="danger" busy={remove.isPending}
+            onClick={() => {
+              if (!confirm(`Delete ${path}? It is removed from disk and committed.`
+                           + (running ? " A step is running right now." : ""))) return;
+              remove.mutateAsync(path)
+                .then(() => { onDeleted(); toast.ok(`Deleted ${path}.`); })
+                .catch((error) => toast.err(String(error)));
+            }}
+          >Delete file</Button>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-hidden">
         {file.isError && (
           <Empty title="That file could not be opened." hint={String(file.error)} />
@@ -365,9 +430,11 @@ function FileEditor(
         {file.data && (
           <CodeView
             path={file.data.path}
-            content={file.data.content}
+            content={text}
             comments={onThisFile}
             activeLine={pending}
+            editing={editing}
+            onChange={setDraft}
             onPickLine={(line) => { setPending(line); setNote(""); }}
             onRemove={onRemove}
           />

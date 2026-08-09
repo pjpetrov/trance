@@ -20,7 +20,7 @@ export interface LineComment {
 }
 
 export function CodeView(
-  { path, content, comments, onPickLine, onRemove, activeLine }:
+  { path, content, comments, onPickLine, onRemove, activeLine, editing, onChange }:
   {
     path: string;
     content: string;
@@ -29,6 +29,11 @@ export function CodeView(
     onPickLine: (line: number) => void;
     onRemove: (noteId: string) => void;
     activeLine: number | null;
+    /** Read-only unless someone asked to edit. Reviewing is the common case,
+     *  and an accidental keystroke in a file an agent is about to read is a
+     *  change nobody meant to make. */
+    editing?: boolean;
+    onChange?: (text: string) => void;
   },
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -41,6 +46,8 @@ export function CodeView(
   // the current callback rather than the one from first render.
   const pick = useRef(onPickLine);
   pick.current = onPickLine;
+  const changed = useRef(onChange);
+  changed.current = onChange;
   const drop = useRef(onRemove);
   drop.current = onRemove;
   const widgets = useRef<{ clear(): void }[]>([]);
@@ -55,10 +62,7 @@ export function CodeView(
           mode: modeFor(path),
           theme: "material-darker",
           lineNumbers: true,
-          // Read-only: this view is for reviewing what the agents wrote. Editing
-          // belongs to them, and a half-saved edit racing a running step is a
-          // conflict nobody asked for.
-          readOnly: true,
+          readOnly: true,                          // until Edit says otherwise
           lineWrapping: true,
           styleActiveLine: true,
           matchBrackets: true,
@@ -66,6 +70,9 @@ export function CodeView(
         });
         instance.on("gutterClick", ((_cm: unknown, line: number) => {
           pick.current(line + 1);                 // CodeMirror counts from zero
+        }) as never);
+        instance.on("change", (() => {
+          changed.current?.(instance.getValue());
         }) as never);
         editor.current = instance;
         setReady(true);
@@ -90,10 +97,16 @@ export function CodeView(
   useEffect(() => {
     const instance = editor.current;
     if (!instance) return;
-    instance.setValue(content);
+    // Only when it differs: setValue during editing would move the cursor to
+    // the top on every keystroke, since each one calls back with the new text.
+    if (instance.getValue() !== content) instance.setValue(content);
     instance.setOption("mode", modeFor(path));
     instance.refresh();
   }, [content, path, ready]);
+
+  useEffect(() => {
+    editor.current?.setOption("readOnly", !editing);
+  }, [editing, ready]);
 
   // Comments live on the line they are about, not in a list somewhere else.
   // A gutter dot says one exists; the note itself has to be readable where the

@@ -220,15 +220,24 @@ export function useMemoryMutations(sessionId: string) {
   };
 }
 
-export function useWriteFile(sessionId: string) {
+export function useFileMutations(sessionId: string) {
   const client = useQueryClient();
-  return useMutation({
-    mutationFn: (body: { path: string; content: string }) => api.writeFile(sessionId, body),
-    onSuccess: (_result, body) => {
-      void client.invalidateQueries({ queryKey: keys.file(sessionId, body.path) });
-      void client.invalidateQueries({ queryKey: keys.files(sessionId) });
-    },
-  });
+  return {
+    write: useMutation({
+      mutationFn: (body: { path: string; content: string }) => api.writeFile(sessionId, body),
+      onSuccess: (_result, body) => {
+        void client.invalidateQueries({ queryKey: keys.file(sessionId, body.path) });
+        void client.invalidateQueries({ queryKey: keys.files(sessionId) });
+      },
+    }),
+    remove: useMutation({
+      mutationFn: (path: string) => api.deleteFile(sessionId, path),
+      onSuccess: (_result, path) => {
+        client.removeQueries({ queryKey: keys.file(sessionId, path) });
+        void client.invalidateQueries({ queryKey: keys.files(sessionId) });
+      },
+    }),
+  };
 }
 
 // ------------------------------------------------------- review + preview

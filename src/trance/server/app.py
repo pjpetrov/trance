@@ -849,6 +849,32 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"path": body["path"], "bytes": len(content),
                 "committed": bool(result and result.ok)}
 
+    @app.delete("/api/sessions/{session_id}/file")
+    def delete_project_file(session_id: str, path: str):
+        """Remove a file from the project. Committed, like an agent's change.
+
+        Only files: removing a directory from here would take everything under
+        it on one click, and nothing in this UI shows you what that would be.
+        """
+        session = _need(store, session_id)
+        root = _project_of(session)
+        target = _inside(root, path)
+        if target is None or not target.exists():
+            raise HTTPException(404, f"no such file: {path}")
+        if target.is_dir():
+            raise HTTPException(400, (
+                f"{path} is a directory. Delete the files in it, or remove it "
+                f"outside trance where you can see what goes with it."))
+        target.unlink()
+
+        result = vcs.commit_all(root, f"you: deleted {path}") \
+            if config.git_commits and vcs.is_repo(root) else None
+        bus.emit("file_deleted", session_id, agent="you", payload={
+            "path": path, "sha": result.sha if result and result.ok else "",
+            "message": f"You deleted {path}.",
+        })
+        return {"deleted": path, "committed": bool(result and result.ok)}
+
     #: The port a folder was last served on, so re-opening a page comes back at
     #: the same address. Anything pointed at the old one — a tunnel, a link you
     #: sent someone — survives the preview being restarted.

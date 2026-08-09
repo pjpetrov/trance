@@ -231,3 +231,60 @@ describe("removing a review comment", () => {
     });
   });
 });
+
+describe("editing and deleting a file", () => {
+  const open = (over: Record<string, unknown> = {}) => routes({
+    "/api/sessions/s1/file": { path: "index.html", content: "<html>\n</html>",
+                               bytes: 670, lines: 22 },
+    ...over,
+  });
+
+  const openIt = async (user: ReturnType<typeof userEvent.setup>) => {
+    renderWithQuery(<FilesScreen />);
+    await user.click(await screen.findByText("index.html"));
+  };
+
+  it("is read-only until Edit is pressed", async () => {
+    const user = userEvent.setup();
+    fakeServer(open());
+    await openIt(user);
+
+    // Reviewing is the common case, and a stray keystroke in a file an agent is
+    // about to read is a change nobody meant to make.
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(await screen.findByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  it("deletes the open file and closes it", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const server = fakeServer(open({
+      "/api/sessions/s1/file?path=index.html": { deleted: "index.html", committed: true },
+    }));
+
+    await openIt(user);
+    await user.click(await screen.findByRole("button", { name: "Delete file" }));
+
+    await waitFor(() => {
+      const gone = server.calls.find((call) => call.method === "DELETE");
+      expect(gone?.url).toContain("path=index.html");
+    });
+    // The pane cannot keep showing a file that is no longer there.
+    await waitFor(() => expect(useUi.getState().filePath).toBeNull());
+  });
+
+  it("does not delete when the confirmation is declined", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    const server = fakeServer(open());
+
+    await openIt(user);
+    await user.click(await screen.findByRole("button", { name: "Delete file" }));
+
+    expect(server.calls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+});

@@ -7774,3 +7774,57 @@ def test_attached_images_are_checked_before_they_are_stored(tmp_path):
     too_big = client.post(f"/api/sessions/{sid}/chat",
                           json={"message": "hi", "images": [huge]})
     assert too_big.status_code == 413
+
+
+def test_a_file_can_be_deleted_and_the_deletion_is_committed(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    project = tmp_path / "proj"
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.put(f"/api/sessions/{sid}/file",
+               json={"path": "junk.js", "content": "// nothing"})
+    assert (project / "junk.js").is_file()
+
+    gone = client.request("DELETE", f"/api/sessions/{sid}/file",
+                          params={"path": "junk.js"})
+    assert gone.status_code == 200 and gone.json()["deleted"] == "junk.js"
+    assert not (project / "junk.js").exists()
+
+    # Twice is a 404, not a silent success.
+    assert client.request("DELETE", f"/api/sessions/{sid}/file",
+                          params={"path": "junk.js"}).status_code == 404
+
+
+def test_deleting_refuses_a_directory_and_anything_outside_the_project(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    project = tmp_path / "proj"
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.put(f"/api/sessions/{sid}/file", json={"path": "src/a.js", "content": "x"})
+
+    # A directory would take everything under it on one click, and nothing in
+    # the UI shows you what that would be.
+    refused = client.request("DELETE", f"/api/sessions/{sid}/file", params={"path": "src"})
+    assert refused.status_code == 400 and "directory" in refused.json()["detail"]
+
+    outside = tmp_path / "secret.txt"
+    outside.write_text("not yours")
+    escape = client.request("DELETE", f"/api/sessions/{sid}/file",
+                            params={"path": "../secret.txt"})
+    assert escape.status_code == 404
+    assert outside.exists()
