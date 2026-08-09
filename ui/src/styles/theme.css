@@ -135,3 +135,29 @@
 .cm-host .CodeMirror-linenumber:hover {
   color: var(--color-accent);
 }
+
+/* A review comment, on the line it is about.
+   NOT named cm-*: CodeMirror uses `cm-comment` for comment *syntax*, so a
+   class by that name styles every // in the file. */
+.trance-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 2px 0 4px 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--color-warn);
+  background: var(--color-warn-soft);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+}
+.trance-note-remove {
+  margin-left: auto;
+  color: var(--color-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.trance-note-remove:hover { color: var(--color-err); }
+.trance-note-dot { color: var(--color-warn); font-size: 10px; line-height: 1; }

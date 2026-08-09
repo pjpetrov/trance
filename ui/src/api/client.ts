@@ -9,7 +9,7 @@
 
 import type {
   AgentRole, AppConfig, CommandLists, FileListing, Flow, Loop, ModelPreset,
-  Planning, Preview, ReviewChanges, Session, Step, TranceEvent, Usage,
+  Planning, Preview, ReviewChanges, ReviewComment, Session, Step, TranceEvent, Usage,
 } from "./types";
 
 export class ApiError extends Error {
@@ -209,11 +209,13 @@ export const api = {
 
   // ------------------------------------------------------------- review
   review: (sid: string, body: ReviewBody) =>
-    request<Session>(`/api/sessions/${id(sid)}/review`, { method: "POST", body }),
-  dropReview: (sid: string, index: number) =>
-    request<Session>(`/api/sessions/${id(sid)}/review/${index}`, { method: "DELETE" }),
-  finishReview: (sid: string) =>
-    request<Session>(`/api/sessions/${id(sid)}/review/finish`, { method: "POST" }),
+    request<ReviewComment>(`/api/sessions/${id(sid)}/review`, { method: "POST", body }),
+  dropReview: (sid: string, noteId: string) =>
+    request<{ deleted: string; left: number }>(
+      `/api/sessions/${id(sid)}/review/${id(noteId)}`, { method: "DELETE" }),
+  finishReview: (sid: string, loop?: string) =>
+    request<FinishedReview>(`/api/sessions/${id(sid)}/review/finish`,
+      { method: "POST", body: { loop: loop || undefined } }),
   reviews: (sid: string) =>
     request<{ reviews: ReviewRound[] }>(`/api/sessions/${id(sid)}/reviews`),
   reviewChanges: (sid: string) =>
@@ -238,6 +240,19 @@ export interface Commit {
   subject: string;
   when: string;
   who: string;
+}
+
+/** What POST /review/finish answers with: the record it made, plus the step it
+ *  put on the flow. Not a session — sending it through the session cache is how
+ *  the flow ended up replaced by an object that was never one. */
+export interface FinishedReview {
+  id: string;
+  step_id: string;
+  notes: { path?: string; line?: number | null; note: string }[];
+  before: string;
+  at: string;
+  started: boolean;
+  flow: { steps: unknown[]; cursor: number };
 }
 
 export interface ReviewRound {

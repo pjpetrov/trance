@@ -97,6 +97,62 @@ describe("the files screen", () => {
     expect(screen.getByText(/click a line number to comment/)).toBeInTheDocument();
   });
 
+  it("keeps review out of the way until there is something to review", async () => {
+    const user = userEvent.setup();
+    fakeServer(routes());
+    renderWithQuery(<FilesScreen />);
+
+    // No panel sitting at the bottom of every visit: a general comment is a
+    // button, and Finish appears only once there is something to finish.
+    await screen.findByText("index.html");
+    expect(screen.queryByRole("button", { name: /Review finished/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "General comment" }));
+    expect(await screen.findByPlaceholderText(/about the project as a whole/))
+      .toBeInTheDocument();
+  });
+
+  it("offers Finish once a comment exists, and shows a general one", async () => {
+    fakeServer(routes({
+      "/api/sessions/s1": session({
+        review: [{ id: "rv_1", path: "", line: 0, code: "",
+                   note: "the whole thing feels sluggish" }],
+      }),
+    }));
+    renderWithQuery(<FilesScreen />);
+
+    expect(await screen.findByText(/the whole thing feels sluggish/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Review finished \(1\)/ })).toBeInTheDocument();
+  });
+
+  it("asks how a review should be answered before sending it", async () => {
+    const user = userEvent.setup();
+    const server = fakeServer(routes({
+      "/api/sessions/s1": session({ review: [{ id: "rv_1", path: "", line: 0, code: "", note: "too slow" }] }),
+      "/api/loops": { loops: [{ name: "test-and-fix", description: "", prompt: "",
+                                nodes: [], start: "", max_steps: 8 }] },
+      "/api/sessions/s1/review/finish": {
+        id: "rev_1", step_id: "st_new", notes: [], before: "", at: "",
+        started: true, flow: { steps: [], cursor: 0 },
+      },
+    }));
+
+    renderWithQuery(<FilesScreen />);
+    await user.click(await screen.findByRole("button", { name: /Review finished/ }));
+
+    await user.selectOptions(await screen.findByRole("combobox"), "test-and-fix");
+    await user.click(screen.getByRole("button", { name: "Send it" }));
+
+    await waitFor(() => {
+      const sent = server.to("/api/sessions/s1/review/finish").at(-1);
+      expect(sent?.body).toMatchObject({ loop: "test-and-fix" });
+    });
+    // Straight to where it runs, with the new step open.
+    await waitFor(() => expect(useUi.getState().screen).toBe("run"));
+    expect(useUi.getState().openStep).toBe("st_new");
+  });
+
   it("cannot share when nothing is being served", async () => {
     fakeServer(routes());
     renderWithQuery(<FilesScreen />);
@@ -115,7 +171,7 @@ describe("the files screen", () => {
       },
     }));
     renderWithQuery(<FilesScreen />);
-    expect(await screen.findByText("preview :36001")).toBeInTheDocument();
+    expect(await screen.findByText(":36001")).toBeInTheDocument();
     expect(screen.getByText("public link").closest("a"))
       .toHaveAttribute("href", "https://abc.ngrok.app");
   });
@@ -131,5 +187,31 @@ describe("the files screen", () => {
     // The fake server throws, which surfaces as a failed query.
     await waitFor(() =>
       expect(screen.getByText(/could not be opened/)).toBeInTheDocument());
+  });
+});
+
+describe("removing a review comment", () => {
+  it("addresses the note by its id, not its position", async () => {
+    const user = userEvent.setup();
+    const server = fakeServer(routes({
+      "/api/sessions/s1": session({
+        review: [
+          { id: "rv_aaa", path: "", line: 0, code: "", note: "first note" },
+          { id: "rv_bbb", path: "", line: 0, code: "", note: "second note" },
+        ],
+      }),
+      "/api/sessions/s1/review/rv_bbb": { deleted: "rv_bbb", left: 1 },
+    }));
+
+    renderWithQuery(<FilesScreen />);
+    const second = await screen.findByText("second note");
+    await user.click(second.parentElement!.querySelector("button")!);
+
+    // The endpoint takes a note id. Sending an index deleted nothing and
+    // answered 404, so the ✕ silently did not work.
+    await waitFor(() => {
+      const dropped = server.calls.find((call) => call.method === "DELETE");
+      expect(dropped?.url).toContain("/review/rv_bbb");
+    });
   });
 });

@@ -234,20 +234,26 @@ export function useWriteFile(sessionId: string) {
 
 export function useReviewMutations(sessionId: string) {
   const client = useQueryClient();
-  const settle = (session: Session) => putSession(client, session);
+  const reload = () => {
+    void client.invalidateQueries({ queryKey: keys.session(sessionId) });
+  };
   return {
+    // Both answer with the note, not the session, so the session is refetched
+    // rather than replaced by a shape that was never one.
     add: useMutation({
       mutationFn: (body: ReviewBody) => api.review(sessionId, body),
-      onSuccess: settle,
+      onSuccess: reload,
     }),
     drop: useMutation({
-      mutationFn: (index: number) => api.dropReview(sessionId, index),
-      onSuccess: settle,
+      mutationFn: (noteId: string) => api.dropReview(sessionId, noteId),
+      onSuccess: reload,
     }),
     finish: useMutation({
-      mutationFn: () => api.finishReview(sessionId),
-      onSuccess: (session) => {
-        settle(session);
+      mutationFn: (loop?: string) => api.finishReview(sessionId, loop),
+      onSuccess: () => {
+        // It answers with the review record and the new flow, not a session, so
+        // the session is refetched rather than replaced with the wrong shape.
+        void client.invalidateQueries({ queryKey: keys.session(sessionId) });
         void client.invalidateQueries({ queryKey: keys.reviews(sessionId) });
       },
     }),

@@ -32,6 +32,8 @@ export interface CodeMirrorEditor {
   on(event: string, handler: (...args: never[]) => void): void;
   refresh(): void;
   setGutterMarker(line: number, gutter: string, marker: HTMLElement | null): void;
+  addLineWidget(line: number, node: HTMLElement,
+                options?: Record<string, unknown>): { clear(): void };
   clearGutter(gutter: string): void;
   addLineClass(line: number, where: string, cls: string): void;
   removeLineClass(line: number, where: string, cls: string): void;

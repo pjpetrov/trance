@@ -12,14 +12,22 @@ import { Spinner } from "@/components/ui/primitives";
 
 const GUTTER = "trance-comments";
 
+export interface LineComment {
+  /** The server addresses a note by its id, not its position. */
+  id: string;
+  line: number;
+  note: string;
+}
+
 export function CodeView(
-  { path, content, commentedLines, onPickLine, activeLine }:
+  { path, content, comments, onPickLine, onRemove, activeLine }:
   {
     path: string;
     content: string;
-    /** 1-based line numbers that already have a comment. */
-    commentedLines: number[];
+    /** Comments on this file, with the line each one is about. */
+    comments: LineComment[];
     onPickLine: (line: number) => void;
+    onRemove: (noteId: string) => void;
     activeLine: number | null;
   },
 ) {
@@ -33,6 +41,9 @@ export function CodeView(
   // the current callback rather than the one from first render.
   const pick = useRef(onPickLine);
   pick.current = onPickLine;
+  const drop = useRef(onRemove);
+  drop.current = onRemove;
+  const widgets = useRef<{ clear(): void }[]>([]);
 
   useEffect(() => {
     let live = true;
@@ -71,6 +82,8 @@ export function CodeView(
     return () => {
       live = false;
       observer.current?.disconnect();
+      widgets.current.forEach((widget) => widget.clear());
+      widgets.current = [];
     };
   }, []);                                          // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -82,21 +95,44 @@ export function CodeView(
     instance.refresh();
   }, [content, path, ready]);
 
-  // Repaint the markers whenever the comments change. Cheap: a file has a
-  // handful of comments, not thousands.
+  // Comments live on the line they are about, not in a list somewhere else.
+  // A gutter dot says one exists; the note itself has to be readable where the
+  // code is, or a review is two things you have to hold in your head at once.
   useEffect(() => {
     const instance = editor.current;
     if (!instance) return;
+
+    widgets.current.forEach((widget) => widget.clear());
+    widgets.current = [];
     instance.clearGutter(GUTTER);
-    for (const line of commentedLines) {
-      if (line < 1 || line > instance.lineCount()) continue;
+
+    for (const comment of comments) {
+      if (comment.line < 1 || comment.line > instance.lineCount()) continue;
+
       const dot = document.createElement("span");
       dot.textContent = "●";
-      dot.title = "has a review comment";
-      dot.className = "text-warn text-[10px] leading-none";
-      instance.setGutterMarker(line - 1, GUTTER, dot);
+      dot.title = comment.note;
+      dot.className = "trance-note-dot";
+      instance.setGutterMarker(comment.line - 1, GUTTER, dot);
+
+      const widget = document.createElement("div");
+      widget.className = "trance-note";
+      const text = document.createElement("span");
+      text.textContent = comment.note;
+      const remove = document.createElement("button");
+      remove.textContent = "✕";
+      remove.title = "Remove this comment";
+      remove.className = "trance-note-remove";
+      remove.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        drop.current(comment.id);
+      };
+      widget.append(text, remove);
+      widgets.current.push(
+        instance.addLineWidget(comment.line - 1, widget, { coverGutter: false }));
     }
-  }, [commentedLines, content, ready]);
+  }, [comments, content, ready]);
 
   useEffect(() => {
     const instance = editor.current;

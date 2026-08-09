@@ -176,10 +176,14 @@ export interface ChatMessage {
 }
 
 export interface ReviewComment {
+  /** The server addresses a note by this, not by its position in the list —
+   *  dropping one by index deletes nothing and answers 404. */
+  id: string;
   path: string;
-  line?: number | null;
+  /** 0 when the note is about the project rather than a line. */
+  line: number;
+  code: string;
   note: string;
-  ts?: string;
 }
 
 export interface Session {
