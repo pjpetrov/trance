@@ -7630,3 +7630,38 @@ def test_the_orchestrator_agent_still_supplies_the_prompt(tmp_path):
     # No tools at all — it assigns work rather than doing any.
     assert orchestrator.toolsets == [] and orchestrator.paths == []
     assert BUILTIN_ROLES["orchestrator"].verifier is False
+
+
+def test_each_execution_of_a_step_is_marked_as_one_run(tmp_path, monkeypatch):
+    """A run is one press of Start or Rerun: every retry and, for a loop step,
+    every block of every agent in it. Nothing in the stream said where one ended
+    and the next began — step_started fires per attempt, loop_node per block."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Step
+    from trance.session import Session
+
+    session = Session(name="s", project_dir=str(tmp_path))
+    session.team = [BUILTIN_ROLES["backend"]]
+    step = Step(role="backend", task="do it")
+    session.flow.steps = [step]
+
+    bus = EventBus()
+    seen = []
+    bus.subscribe_sync(lambda event: seen.append(event))
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)
+
+    # Stand in for the work: what matters here is the boundary, not the agent.
+    monkeypatch.setattr(engine, "_execute_agent", lambda step: None)
+
+    engine._execute(step)
+    engine._execute(step)
+
+    marks = [e for e in seen if e.type == "step_run_started"]
+    assert [m.payload["run"] for m in marks] == [1, 2]
+    assert step.runs == 2
+    assert all(m.step_id == step.id for m in marks)
+    # It names what ran, so the run list reads without opening anything.
+    assert "backend" in marks[0].payload["message"]

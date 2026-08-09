@@ -171,6 +171,16 @@ class FlowEngine:
     # ---------------------------------------------------------------- step
 
     def _execute(self, step: Step) -> None:
+        # One marker per execution, so a step's events can be cut into runs.
+        # Nothing else in the stream does this: step_started fires once per
+        # attempt and loop_node once per block, so neither says where one press
+        # of Start or Rerun ends and the next begins — and "show me the last
+        # run of this step" has to key on something.
+        step.runs += 1
+        self._emit("step_run_started", agent=step.role or step.loop, step_id=step.id,
+                   payload={"run": step.runs, "task": step.task,
+                            "role": step.role, "loop": step.loop,
+                            "message": f"run {step.runs} — {step.loop or step.role}"})
         if step.runs_a_loop:
             return self._execute_loop(step)
         return self._execute_agent(step)

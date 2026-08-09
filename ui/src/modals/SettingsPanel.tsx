@@ -1,13 +1,11 @@
 import { useConfig } from "@/api/queries";
 import { useSettingsMutations } from "@/api/mutations";
-import { useUi } from "@/store/ui";
-import { Button, Checkbox, Empty } from "@/components/ui/primitives";
+import { Checkbox, Empty } from "@/components/ui/primitives";
 import { toast } from "@/components/Toaster";
 
 export function SettingsPanel() {
   const config = useConfig();
   const { planning } = useSettingsMutations();
-  const openModal = useUi((state) => state.openModal);
   const data = config.data;
   if (!data) return <Empty title="Loading…" />;
 
@@ -16,21 +14,6 @@ export function SettingsPanel() {
 
   return (
     <div className="space-y-5 p-5">
-      <section className="space-y-2">
-        <h3 className="text-sm font-medium">Orchestrator</h3>
-        <p className="text-xs leading-relaxed text-muted">
-          The agent you talk to. It designs the team and the order of work, and writes no
-          code itself. Its prompt and its model are both on its agent card — this used to
-          offer a second model picker that disagreed with the one there.
-        </p>
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => openModal("agents")}>Open the orchestrator</Button>
-          <span className="text-xs text-muted">
-            currently {data.orchestrator.model || "unset"}
-          </span>
-        </div>
-      </section>
-
       <section className="space-y-1">
         <h3 className="text-sm font-medium">Git</h3>
         <p className="text-xs leading-relaxed text-muted">

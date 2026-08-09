@@ -147,6 +147,9 @@ export interface Step {
   entry: string;
   status: StepStatus;
   attempts: Attempt[];
+  /** Executions, not attempts: one press of Start or Rerun, holding every
+   *  retry and every loop block inside it. */
+  runs: number;
   steering: string[];
   summary: string;
   runs_a_loop: boolean;

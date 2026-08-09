@@ -192,7 +192,8 @@ function blankStep(): Step {
     id: "", role: "", task: "", loop: "", check: "", checks: [], checker: "", fixer: "",
     on_fail: null, verify_with: null, max_loops: 2, loop_limit: 0, max_attempts: 2,
     overrides_tries: false, start_on_backup: false, revert_on_fail: false, escalated: false,
-    points: 0, gates: [], entry: "", status: "pending", attempts: [], steering: [],
+    points: 0, gates: [], entry: "", status: "pending", attempts: [], runs: 0,
+    steering: [],
     summary: "", runs_a_loop: false,
   };
 }

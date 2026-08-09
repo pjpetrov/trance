@@ -121,6 +121,11 @@ class Step:
     entry: str = ""
     status: StepStatus = "pending"
     attempts: list[Attempt] = field(default_factory=list)
+    #: How many times this step has been *executed*, which is not how many
+    #: attempts it has made. One run holds every retry and, for a loop step,
+    #: every block of every agent in it — it is one press of the button, and it
+    #: is the unit anybody actually means by "what happened last time".
+    runs: int = 0
     #: User steering notes waiting to reach this step's agent.
     steering: list[str] = field(default_factory=list)
 

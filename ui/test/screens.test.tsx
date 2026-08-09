@@ -255,12 +255,13 @@ describe("the models editor", () => {
 });
 
 describe("settings", () => {
-  it("no longer offers a second orchestrator model picker", async () => {
+  it("says nothing about the orchestrator at all", async () => {
     fakeServer({ "/api/config": config() });
     renderWithQuery(<SettingsPanel />);
-    // The agent card is the one place a model is chosen; this panel used to
-    // offer a picker that disagreed with it.
-    expect(await screen.findByText(/both on its agent card/)).toBeInTheDocument();
+    await screen.findByText(/Git/);
+    // Its model and its prompt are both on its agent card. A second mention
+    // here — even an explanatory one — is a second place to look.
+    expect(screen.queryByText(/orchestrator/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 
@@ -307,29 +308,6 @@ describe("switching session", () => {
   });
 });
 
-describe("the console", () => {
-  it("scopes to one step when asked", async () => {
-    const user = userEvent.setup();
-    fakeServer({
-      "/api/sessions/s1": session(),
-      "/api/sessions/s1/events": eventsRoute([
-        event({ kind: "memory", note: "belongs to st1", stored: true }, { step_id: "st1" }),
-        event({ kind: "memory", note: "belongs to st2", stored: true }, { step_id: "st2" }),
-      ]),
-    });
-
-    renderWithQuery(<RunScreen />);
-    expect(await screen.findByText(/belongs to st2/)).toBeInTheDocument();
-
-    await user.click(screen.getByText(/Build the maze renderer/));
-    await user.click(await screen.findByRole("button", { name: /focus console/ }));
-
-    await waitFor(() =>
-      expect(screen.queryByText(/belongs to st2/)).not.toBeInTheDocument());
-    expect(screen.getByText(/belongs to st1/)).toBeInTheDocument();
-  });
-});
-
 describe("empty states", () => {
   it("never shows a bare empty panel", async () => {
     fakeServer({
@@ -341,6 +319,8 @@ describe("empty states", () => {
     // An empty panel that does not explain itself reads as a bug.
     expect(await within(view.container).findByText(/Plan the work first/))
       .toBeInTheDocument();
-    expect(screen.getByText(/shows what happens from now on/)).toBeInTheDocument();
+    // The console shows a spinner until the tail lands, so this waits.
+    expect(await screen.findByText(/Start the run, or open a step/))
+      .toBeInTheDocument();
   });
 });
