@@ -344,15 +344,17 @@ trance stats      samples/sample-app
 ## Tests
 
 ```bash
-pytest                  # 470 tests
-node tools/check_ui.js  # loads app.js in a DOM-less harness and drives it
+pytest                       # the Python side
+cd ui && npm test            # the interface, in jsdom
+cd ui && npx tsc --noEmit    # types
 ```
 
-The UI harness exists because parsing JavaScript proves nothing: it renders every
-step status, every console entry kind, both file views and every modal, and
-fails on a renderer that throws or an element that never appears. Several real
-bugs in this repo were caught by making it see what a user sees rather than by
-adding another `try`.
+The UI tests fake only `fetch`, so they assert what the server was actually
+asked for rather than that a render did not throw: that editing a step really
+saves the flow, that saving an agent sends the whole role rather than a partial
+that would blank its prompt, that a step's history is fetched only when opened.
+The hand-rolled DOM stub they replaced could prove none of that, and its
+route matching was loose enough to answer one endpoint from another.
 
 ## Layout
 
@@ -363,12 +365,28 @@ src/trance/
   curator/     N-hop walk → minimal bundle under a token budget
   agents/      roles, tools, runner, memory, approvals, handoff
   providers/   model clients and the registry
-  server/      FastAPI + websocket, and the whole UI in static/
+  server/      FastAPI + websocket; ui/ is the built interface, committed
   engine.py    the flow engine: steps, loops, checks, escalation
   loops.py     the loop state machine
   vcs.py       git checkpoints
-tools/check_ui.js   the DOM-less UI harness
+ui/                 the interface: React, TypeScript, TanStack Query, Tailwind
+  src/api/          typed client, queries and mutations, one key per resource
+  src/screens/      chat, plan, run, files, reviews
+  src/components/   the event renderer, the shell, the primitives
+  test/             component tests over real jsdom
 ```
+
+The interface is built from `ui/` into `src/trance/server/ui/`, **and the build
+is committed**. That is what keeps `pip install` enough: anyone cloning trance
+runs it with Python alone and never installs node. The cost is ours — rebuild
+before committing a UI change:
+
+```bash
+cd ui && npm install && npm run build
+```
+
+Assets are named by their contents, so they are cached forever and only
+`index.html` revalidates.
 
 ## Not done
 
@@ -394,6 +412,6 @@ One known sharp edge: remit globs use `fnmatch`, whose `*` crosses `/`, so
 
 MIT — see [LICENSE](LICENSE).
 
-Bundles [CodeMirror 5](https://codemirror.net/5/) (MIT) in
-`src/trance/server/static/vendor/`, vendored rather than loaded from a CDN so
-the UI works offline.
+Bundles [CodeMirror 5](https://codemirror.net/5/) (MIT) in `ui/public/vendor/`,
+vendored rather than loaded from a CDN so the file editor works offline. It is
+injected by the screen that needs it, so no other screen pays for it.

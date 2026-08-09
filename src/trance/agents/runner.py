@@ -201,7 +201,11 @@ def context_usage(messages: list[dict], response, config: ModelConfig) -> dict:
     return no usage. Which one it is travels with the number, because a user
     deciding whether to raise `context_window` should know if it is a guess.
     """
-    reported = int((response.usage or {}).get("prompt_tokens") or 0)
+    # Called before the call as well as after, to size the gauge while the
+    # model is still thinking. With no response there is no reported count,
+    # so the estimate stands in and says so.
+    reported = int(((getattr(response, "usage", None) or {}) if response else {})
+                   .get("prompt_tokens") or 0)
     tokens = reported or _tokens(messages)
     window = max(1, config.context_window)
     return {
@@ -543,6 +547,17 @@ def _run_agent(
 
         started = time.time()
         sent_chars = _chars(messages)
+        # Said before the call, not after. A local 27B can spend two minutes on
+        # one generation and emits nothing while it does, so the console went
+        # quiet and there was no way to tell working from stuck. The matching
+        # model_call arrives when it answers.
+        bus.emit("model_waiting", session_id, agent=role.name, step_id=step_id, payload={
+            "round": round_n,
+            "model": model_config.model,
+            "preset": model_config.preset,
+            "context": turn.context or context_usage(messages, None, model_config),
+            "message": f"waiting for {model_config.preset or model_config.model}",
+        })
         try:
             response = client.complete(messages, tools=specs or None,
                                        cancel_token=session_id)
@@ -581,8 +596,10 @@ def _run_agent(
                 ],
                 "finish_reason": response.finish_reason,
                 "usage": response.usage,
-                "summary": summarize_messages(messages),
+                # The same gauge the waiting event carried, now with the count
+                # the model reported rather than an estimate of it.
                 "context": turn.context,
+                "summary": summarize_messages(messages),
             },
         )
         turn.model_event_ids.append(event.id)

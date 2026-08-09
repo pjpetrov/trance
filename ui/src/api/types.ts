@@ -311,6 +311,8 @@ export interface EventPayload {
   finish_reason?: string;
   usage?: CallUsage;
   summary?: { message_count?: number; est_tokens?: number };
+  /** model_waiting: the gauge, sized before the answer exists */
+  context?: ContextUsage;
   /** what /events drops to keep the payload small */
   _omitted?: Record<string, number>;
 }

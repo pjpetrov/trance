@@ -16,10 +16,11 @@ import { clip, timeOf } from "@/lib/format";
 import { currentRun, splitIntoBlocks, splitIntoRuns, type Block, type Run }
   from "@/lib/runs";
 import { EventLine } from "@/components/EventLine";
+import { ContextGauge } from "@/components/ContextGauge";
 import { Badge, Button, Dot, Empty, Input, Panel, PanelHeader, Spinner, type Tone }
   from "@/components/ui/primitives";
 import { toast } from "@/components/Toaster";
-import type { Step, StepStatus } from "@/api/types";
+import type { Step, StepStatus, TranceEvent } from "@/api/types";
 
 const STEP_TONE: Record<StepStatus, Tone> = {
   pending: "neutral", running: "accent", done: "ok",
@@ -308,6 +309,7 @@ function Console(
           : "everything the agents have done"}
         actions={
           <>
+            <ModelState events={events} />
             {(tail.isFetching || stepEvents.isFetching) && <Spinner className="text-muted" />}
             {stepId && pinnedRun !== null && (
               <Button size="sm" onClick={() => onPickRun(null)}>latest run</Button>
@@ -347,6 +349,56 @@ function Console(
         <div ref={bottom} />
       </div>
     </Panel>
+  );
+}
+
+/** What the model is doing, and how full its window is.
+ *
+ *  A local 27B can spend two minutes on one generation and says nothing while
+ *  it does, so the console goes quiet and there is no way to tell working from
+ *  stuck. The runner now announces the call before making it; this turns that
+ *  into a line that counts, and clears itself when the answer lands.
+ */
+function ModelState({ events }: { events: TranceEvent[] }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  // The last thing that said anything about a model call, either way round.
+  const last = useMemo(() => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!;
+      if (event.type === "model_waiting" || event.type === "model_call") return event;
+    }
+    return null;
+  }, [events]);
+
+  const waiting = last?.type === "model_waiting";
+  // Both events carry the gauge: the waiting one sizes it from an estimate so
+  // it moves while the model thinks, the finished one replaces it with what the
+  // model actually reported.
+  const context = last?.payload?.context;
+
+  useEffect(() => {
+    if (!waiting) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [waiting]);
+
+  if (!last) return null;
+  const since = waiting
+    ? Math.max(0, Math.round((now - new Date(last.ts).getTime()) / 1000))
+    : 0;
+
+  return (
+    <span className="flex items-center gap-3">
+      {waiting && (
+        <span className="flex items-center gap-1.5 text-[11px] text-accent">
+          <Spinner className="size-2.5" />
+          waiting for {String(last.payload?.preset || last.payload?.model || "the model")}
+          {since > 2 && <span className="tabular-nums text-muted">{since}s</span>}
+        </span>
+      )}
+      {context && <ContextGauge context={context} />}
+    </span>
   );
 }
 

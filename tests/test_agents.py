@@ -7965,3 +7965,42 @@ def test_the_workspace_itself_and_home_are_refused(tmp_path, monkeypatch):
     stopped = client.request("DELETE", f"/api/sessions/{hid}", params={"files": "true"})
     assert stopped.status_code == 400 and "home directory" in stopped.json()["detail"]
     assert home.exists()
+
+
+def test_the_console_is_told_before_the_model_is_called(tmp_path, monkeypatch):
+    """A local 27B can spend two minutes on one generation and emits nothing
+    while it does, so the console went quiet with no way to tell working from
+    stuck."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _Slow:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            # By now the waiting event must already have been sent — that is
+            # the whole point of emitting before rather than after.
+            assert any(e.type == "model_waiting" for e in seen)
+            return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _Slow())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(preset="Qwen"), bus=bus,
+                     session_id="s", step_id="st")
+
+    waiting = next(e for e in seen if e.type == "model_waiting")
+    assert waiting.payload["preset"] == "Qwen"
+    assert waiting.step_id == "st"
+    # It carries the gauge too, so the context reading does not wait for the
+    # answer to appear.
+    assert waiting.payload["context"]["window"] > 0
+    assert waiting.payload["context"]["estimated"] is True
+
+    # And the answer follows it.
+    assert [e.type for e in seen].index("model_waiting") < \
+           [e.type for e in seen].index("model_call")
