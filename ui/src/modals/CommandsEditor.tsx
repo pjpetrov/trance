@@ -5,120 +5,164 @@
  * everyone shared the union of everything anyone ever needed.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useCommands } from "@/api/queries";
 import { useCommandMutations } from "@/api/mutations";
-import { cn } from "@/lib/cn";
-import { Badge, Button, Checkbox, Empty, Field, Textarea } from "@/components/ui/primitives";
+import { useDraftLibrary } from "@/lib/useDraftLibrary";
+import { Badge, Button, Checkbox, Empty, Field, Input, Textarea }
+  from "@/components/ui/primitives";
+import { LibraryFooter, LibraryList } from "@/components/ui/Library";
 import { toast } from "@/components/Toaster";
+
+/** A list as the editor holds it: the API keys lists by name, which a draft
+ *  library cannot address, so the name rides along. */
+interface NamedList {
+  name: string;
+  allowed: string[];
+  shell: boolean;
+}
 
 export function CommandsEditor() {
   const commands = useCommands();
   const { save, remove, reset } = useCommandMutations();
-  const [selected, setSelected] = useState("default");
-  const [allowed, setAllowed] = useState("");
-  const [shell, setShell] = useState(true);
+  const [applying, setApplying] = useState(false);
 
-  const list = commands.data?.lists[selected];
+  const lists: NamedList[] = Object.entries(commands.data?.lists ?? {})
+    .map(([name, policy]) => ({ name, allowed: policy.allowed, shell: policy.shell }));
 
-  useEffect(() => {
-    if (!list) return;
-    setAllowed(list.allowed.join(" "));
-    setShell(list.shell);
-  }, [list, selected]);
+  const library = useDraftLibrary<NamedList>(
+    commands.data ? lists : undefined, (list) => list.name);
+  const draft = library.selected;
 
-  if (!commands.data) return <Empty title="Loading…" />;
+  const apply = async () => {
+    setApplying(true);
+    try {
+      for (const name of library.removed) await remove.mutateAsync(name);
+      for (const list of library.changed) {
+        await save.mutateAsync({
+          name: list.name, body: { allowed: list.allowed, shell: list.shell },
+        });
+      }
+      library.settle();
+      toast.ok(`Applied ${library.changeCount} change(s).`);
+    } catch (error) {
+      toast.err(`${error}. Nothing else was applied.`);
+    } finally {
+      setApplying(false);
+    }
+  };
 
-  const names = commands.data.names ?? Object.keys(commands.data.lists);
-  const shipped = new Set(commands.data.defaults ?? []);
-  const programs = allowed.split(/\s+/).filter(Boolean);
-  const added = programs.filter((program) => !shipped.has(program));
+  if (commands.isLoading) return <Empty title="Loading…" />;
+
+  const shipped = new Set(commands.data?.defaults ?? []);
+  const added = (draft?.allowed ?? []).filter((program) => !shipped.has(program));
+  const isNew = draft ? library.isNew(draft.name) : false;
 
   return (
-    <div className="grid h-[60vh] grid-cols-[12rem_1fr]">
-      <aside className="min-h-0 space-y-0.5 overflow-y-auto border-r border-line p-2">
-        {names.map((name) => (
-          <button
-            key={name}
-            onClick={() => setSelected(name)}
-            className={cn(
-              "block w-full truncate rounded-[--radius] px-2 py-1.5 text-left text-sm",
-              "transition-colors hover:bg-panel-2",
-              name === selected && "bg-panel-2 ring-1 ring-accent/40",
-            )}
-          >
-            {name}
-            {commands.data!.lists[name] && (
-              <span className="ml-1 text-[10px] text-muted">
-                {commands.data!.lists[name]!.allowed.length}
-              </span>
-            )}
-          </button>
-        ))}
-      </aside>
-
-      <div className="min-h-0 space-y-4 overflow-y-auto p-4">
-        <Field
-          label={`Programs in "${selected}"`}
-          hint="Space separated, program names only — no paths and no arguments. Every program in a piped line is checked against this list."
-        >
-          <Textarea rows={8} className="font-code" value={allowed}
-                    onChange={(event) => setAllowed(event.target.value)} />
-        </Field>
-
-        {added.length > 0 && (
-          <p className="text-xs text-muted">
-            Beyond what trance ships with:{" "}
-            <span className="text-accent">{added.join(", ")}</span>
-          </p>
-        )}
-
-        <Checkbox
-          label="Allow pipes, redirects and &&"
-          hint="Off means one plain command per call. Every program in the line is checked either way."
-          checked={shell}
-          onChange={(event) => setShell(event.target.checked)}
+    <div className="flex h-[60vh] flex-col">
+      <div className="grid min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)]">
+        <LibraryList
+          items={library.items}
+          nameOf={(list) => list.name}
+          selected={library.selectedName}
+          onSelect={library.select}
+          isNew={library.isNew}
+          removed={library.removed}
+          addLabel="New list"
+          onAdd={() => {
+            const taken = new Set(library.items.map((list) => list.name));
+            let name = "new-list";
+            for (let n = 2; taken.has(name); n += 1) name = `new-list-${n}`;
+            // Seeded from the default rather than empty: an agent pointed at an
+            // empty list can run nothing at all, which reads as a broken agent.
+            library.add({
+              name,
+              allowed: [...(commands.data?.lists.default?.allowed ?? [])],
+              shell: commands.data?.lists.default?.shell ?? true,
+            });
+          }}
+          meta={(list) => (
+            <span className="shrink-0 text-[10px] text-muted">{list.allowed.length}</span>
+          )}
         />
 
-        {commands.data.overrides && Object.keys(commands.data.overrides).length > 0 && (
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-muted">Agents using their own list</div>
-            <div className="flex flex-wrap gap-1.5">
-              {Object.entries(commands.data.overrides).map(([agent, name]) => (
-                <Badge key={agent} tone={name === selected ? "accent" : "neutral"}>
-                  {agent} → {name || "default"}
-                </Badge>
-              ))}
+        {draft && (
+          <div className="min-h-0 space-y-4 overflow-y-auto p-4">
+            <Field
+              label="Name"
+              hint={isNew ? "Agents point at a list by name."
+                          : "Fixed — agents point at this list by name."}
+            >
+              <Input value={draft.name} disabled={!isNew || draft.name === "default"}
+                     onChange={(e) => library.replace({ ...draft, name: e.target.value })} />
+            </Field>
+
+            <Field
+              label="Programs"
+              hint="Space separated, program names only — no paths and no arguments. Every program in a piped line is checked against this list."
+            >
+              <Textarea
+                rows={8} className="font-code" value={draft.allowed.join(" ")}
+                onChange={(event) => library.edit({
+                  allowed: event.target.value.split(/\s+/).filter(Boolean),
+                })}
+              />
+            </Field>
+
+            {added.length > 0 && (
+              <p className="text-xs text-muted">
+                Beyond what trance ships with:{" "}
+                <span className="text-accent">{added.join(", ")}</span>
+              </p>
+            )}
+
+            <Checkbox
+              label="Allow pipes, redirects and &&"
+              hint="Off means one plain command per call. Every program in the line is checked either way."
+              checked={draft.shell}
+              onChange={(event) => library.edit({ shell: event.target.checked })}
+            />
+
+            {commands.data?.overrides && Object.keys(commands.data.overrides).length > 0 && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-muted">Agents using their own list</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {Object.entries(commands.data.overrides).map(([agent, name]) => (
+                    <Badge key={agent} tone={name === draft.name ? "accent" : "neutral"}>
+                      {agent} → {name || "default"}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              {draft.name !== "default" && (
+                <Button size="sm" variant="danger" onClick={() => library.remove(draft.name)}>
+                  Delete this list
+                </Button>
+              )}
+              <Button
+                size="sm" busy={reset.isPending}
+                onClick={() => { if (confirm("Restore the shipped allowlists? Pending changes are discarded.")) {
+                  library.discard();
+                  reset.mutateAsync().then(() => toast.ok("Restored."))
+                    .catch((error) => toast.err(String(error)));
+                } }}
+              >Reset to shipped</Button>
             </div>
           </div>
         )}
-
-        <div className="flex items-center gap-2 border-t border-line pt-3">
-          <Button
-            variant="primary" busy={save.isPending}
-            onClick={() => save.mutateAsync({ name: selected, body: { allowed: programs, shell } })
-              .then(() => toast.ok(`Saved "${selected}".`))
-              .catch((error) => toast.err(String(error)))}
-          >Save</Button>
-          <Button
-            busy={reset.isPending}
-            onClick={() => { if (confirm("Restore the shipped allowlists?")) {
-              reset.mutateAsync().then(() => toast.ok("Restored."))
-                .catch((error) => toast.err(String(error)));
-            } }}
-          >Reset to shipped</Button>
-          {selected !== "default" && (
-            <Button
-              variant="danger" busy={remove.isPending}
-              onClick={() => { if (confirm(`Delete the list "${selected}"?`)) {
-                remove.mutateAsync(selected)
-                  .then(() => { setSelected("default"); toast.ok("Deleted."); })
-                  .catch((error) => toast.err(String(error)));
-              } }}
-            >Delete</Button>
-          )}
-        </div>
       </div>
+
+      <footer className="flex items-center gap-2 border-t border-line px-4 py-3">
+        <LibraryFooter
+          changeCount={library.changeCount}
+          onApply={apply}
+          onDiscard={library.discard}
+          busy={applying}
+        />
+      </footer>
     </div>
   );
 }

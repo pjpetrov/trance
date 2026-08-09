@@ -153,7 +153,7 @@ describe("the agents editor", () => {
     expect(await screen.findByText(/read-only, which is a choice/)).toBeInTheDocument();
   });
 
-  it("sends the whole agent when saving, not just what changed", async () => {
+  it("stages edits and applies them all at once", async () => {
     const user = userEvent.setup();
     const server = fakeServer({
       "/api/agents": { agents: [role({ name: "frontend" })], verifiers: [], toolsets: [] },
@@ -163,14 +163,63 @@ describe("the agents editor", () => {
     });
 
     renderWithQuery(<AgentsEditor />);
-    await user.click(await screen.findByRole("button", { name: "Save" }));
+    // Nothing pending, nothing to apply.
+    const apply = await screen.findByRole("button", { name: /^Apply/ });
+    expect(apply).toBeDisabled();
+    expect(screen.getByText("No changes")).toBeInTheDocument();
 
+    await user.type(await screen.findByDisplayValue("Frontend engineer"), "!");
+    expect(await screen.findByText("1 unsaved change")).toBeInTheDocument();
+    // Still nothing sent: an edit is a draft until it is applied.
+    expect(server.to("/api/agents/frontend")).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: /^Apply/ }));
     await waitFor(() => {
       const saved = server.to("/api/agents/frontend").at(-1);
       expect(saved?.method).toBe("PUT");
       // A partial update would blank the prompt and the remit by omission.
-      expect(saved?.body).toMatchObject({ name: "frontend", system_prompt: expect.any(String) });
+      expect(saved?.body).toMatchObject({
+        name: "frontend", system_prompt: expect.any(String),
+        title: "Frontend engineer!",
+      });
     });
+  });
+
+  it("discards every pending change, including an added agent", async () => {
+    const user = userEvent.setup();
+    const server = fakeServer({
+      "/api/agents": { agents: [role({ name: "frontend" })], verifiers: [], toolsets: [] },
+      "/api/presets": { presets: [] },
+      "/api/config": config(),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await user.click(await screen.findByRole("button", { name: "New agent" }));
+    expect(await screen.findByText("new-agent")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(screen.queryByText("new-agent")).not.toBeInTheDocument());
+    // Backing out must not have touched the server on the way.
+    expect(server.calls.filter((call) => call.method !== "GET")).toHaveLength(0);
+  });
+
+  it("adds a new agent with an editable name", async () => {
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/agents": { agents: [role({ name: "frontend" })], verifiers: [], toolsets: [] },
+      "/api/presets": { presets: [] },
+      "/api/config": config(),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    // The old UI had no way to add one from here at all.
+    await user.click(await screen.findByRole("button", { name: "New agent" }));
+
+    const name = await screen.findByDisplayValue("new-agent");
+    expect(name).toBeEnabled();                    // editable only while new
+    await user.clear(name);
+    await user.type(name, "dba");
+    expect(await screen.findByText("1 unsaved change")).toBeInTheDocument();
   });
 });
 

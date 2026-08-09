@@ -6,12 +6,13 @@
  * it as a single edge silently drops every fallback after the first.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useAgents, useLoops } from "@/api/queries";
 import { useLoopMutations } from "@/api/mutations";
-import { cn } from "@/lib/cn";
+import { useDraftLibrary } from "@/lib/useDraftLibrary";
 import { Badge, Button, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
+import { LibraryFooter, LibraryList } from "@/components/ui/Library";
 import { toast } from "@/components/Toaster";
 import type { Loop, LoopNode } from "@/api/types";
 
@@ -24,31 +25,84 @@ const EXITS: Record<string, string> = {
 
 const STOPS = new Set(["exit", "fail"]);
 
+function blankLoop(taken: Set<string>): Loop {
+  let name = "new-loop";
+  for (let n = 2; taken.has(name); n += 1) name = `new-loop-${n}`;
+  const first = `n_${Math.random().toString(36).slice(2, 8)}`;
+  const second = `n_${Math.random().toString(36).slice(2, 8)}`;
+  // Seeded with the shape people build by hand every time: someone checks, and
+  // on a failure someone else fixes and it is checked again. An empty loop is a
+  // blank state nobody knows what to do with.
+  return {
+    name,
+    description: "",
+    prompt: "This block is finished when the work is right — the verdict decides, "
+      + "not a declaration of success.",
+    start: first,
+    max_steps: 8,
+    nodes: [
+      { id: first, role: "tester", focus: "Check the work and report what actually happened.",
+        check: null, revert_on_fail: false,
+        on: { SUCCESS: [{ target: "exit", max_visits: 3 }],
+              FAILED: [{ target: second, max_visits: 3 }] } },
+      { id: second, role: "backend",
+        focus: "Fix what the check objected to. It runs again straight after you.",
+        check: null, revert_on_fail: false,
+        on: { SUCCESS: [{ target: first, max_visits: 3 }],
+              FAILED: [{ target: "fail", max_visits: 3 }] } },
+    ],
+  };
+}
+
 export function LoopsEditor() {
   const loops = useLoops();
   const agents = useAgents();
   const { save, remove } = useLoopMutations();
-  const [selected, setSelected] = useState("");
-  const [draft, setDraft] = useState<Loop | null>(null);
+  const [applying, setApplying] = useState(false);
 
-  useEffect(() => {
-    const list = loops.data ?? [];
-    if (!list.length) return;
-    const found = list.find((loop) => loop.name === selected) ?? list[0]!;
-    if (found.name !== selected) setSelected(found.name);
-    setDraft(structuredClone(found));
-  }, [loops.data, selected]);
+  const library = useDraftLibrary<Loop>(loops.data, (loop) => loop.name);
+  const draft = library.selected;
 
-  if (!loops.data?.length) return <Empty title="No loops defined." />;
+  const apply = async () => {
+    setApplying(true);
+    try {
+      for (const name of library.removed) await remove.mutateAsync(name);
+      for (const loop of library.changed) {
+        await save.mutateAsync({ name: loop.name, body: loop });
+      }
+      library.settle();
+      toast.ok(`Applied ${library.changeCount} change(s).`);
+    } catch (error) {
+      // A loop a step still names cannot be deleted; the server says so.
+      toast.err(`${error}. Nothing else was applied.`);
+    } finally {
+      setApplying(false);
+    }
+  };
 
-  const edit = (patch: Partial<Loop>) =>
-    setDraft((current) => (current ? { ...current, ...patch } : current));
+  if (loops.isLoading) return <Empty title="Loading loops…" />;
 
-  const editNode = (id: string, patch: Partial<LoopNode>) =>
-    setDraft((current) => current && {
-      ...current,
-      nodes: current.nodes.map((node) => (node.id === id ? { ...node, ...patch } : node)),
+  const editNode = (id: string, patch: Partial<LoopNode>) => {
+    if (!draft) return;
+    library.replace({
+      ...draft,
+      nodes: draft.nodes.map((node) => (node.id === id ? { ...node, ...patch } : node)),
     });
+  };
+
+  const addBlock = () => {
+    if (!draft) return;
+    const id = `n_${Math.random().toString(36).slice(2, 8)}`;
+    library.replace({
+      ...draft,
+      nodes: [...draft.nodes, {
+        id, role: agents.data?.agents[0]?.name ?? "backend", focus: "", check: null,
+        revert_on_fail: false,
+        on: { SUCCESS: [{ target: "exit", max_visits: 3 }],
+              FAILED: [{ target: "fail", max_visits: 3 }] },
+      }],
+    });
+  };
 
   const targets = (loop: Loop) => [
     ...loop.nodes.map((node) => ({ value: node.id, label: node.role || node.id })),
@@ -56,141 +110,155 @@ export function LoopsEditor() {
     { value: "fail", label: "leave the loop — the step failed" },
   ];
 
+  const isNew = draft ? library.isNew(draft.name) : false;
+
   return (
-    <div className="grid h-[70vh] grid-cols-[14rem_1fr]">
-      <aside className="min-h-0 space-y-0.5 overflow-y-auto border-r border-line p-2">
-        {loops.data.map((loop) => (
-          <button
-            key={loop.name}
-            onClick={() => setSelected(loop.name)}
-            className={cn(
-              "block w-full truncate rounded-[--radius] px-2 py-1.5 text-left text-sm",
-              "transition-colors hover:bg-panel-2",
-              loop.name === selected && "bg-panel-2 ring-1 ring-accent/40",
-            )}
-          >
-            {loop.name}
-          </button>
-        ))}
-      </aside>
+    <div className="flex h-[70vh] flex-col">
+      <div className="grid min-h-0 flex-1 grid-cols-[14rem_minmax(0,1fr)]">
+        <LibraryList
+          items={library.items}
+          nameOf={(loop) => loop.name}
+          selected={library.selectedName}
+          onSelect={library.select}
+          isNew={library.isNew}
+          removed={library.removed}
+          addLabel="New loop"
+          onAdd={() => library.add(
+            blankLoop(new Set(library.items.map((loop) => loop.name))))}
+          meta={(loop) => (
+            <span className="shrink-0 text-[10px] text-muted">{loop.nodes.length}</span>
+          )}
+        />
 
-      {draft && (
-        <div className="min-h-0 space-y-4 overflow-y-auto p-4">
-          <Field label="Description" hint="The orchestrator reads this when choosing a loop.">
-            <Input value={draft.description}
-                   onChange={(event) => edit({ description: event.target.value })} />
-          </Field>
+        {draft && (
+          <div className="min-h-0 space-y-4 overflow-y-auto p-4">
+            <Field
+              label="Name"
+              hint={isNew ? "Steps reference loops by name; it cannot change later."
+                          : "Fixed — steps reference this loop by name."}
+            >
+              <Input value={draft.name} disabled={!isNew}
+                     onChange={(e) => library.replace({ ...draft, name: e.target.value })} />
+            </Field>
 
-          <Field label="What finishes this block"
-                 hint="Given to every agent in the loop, so none of them thinks declaring success is what ends it.">
-            <Textarea rows={2} value={draft.prompt}
-                      onChange={(event) => edit({ prompt: event.target.value })} />
-          </Field>
+            <Field label="Description" hint="The orchestrator reads this when choosing a loop.">
+              <Input value={draft.description}
+                     onChange={(e) => library.edit({ description: e.target.value })} />
+            </Field>
 
-          <Field label="Most blocks"
-                 hint="A hard ceiling on how many times agents run before the step gives up.">
-            <Input type="number" min={1} className="w-24" value={draft.max_steps}
-                   onChange={(event) => edit({ max_steps: Number(event.target.value) || 1 })} />
-          </Field>
+            <Field
+              label="What finishes this block"
+              hint="Given to every agent in the loop, so none of them thinks declaring success is what ends it."
+            >
+              <Textarea rows={2} value={draft.prompt}
+                        onChange={(e) => library.edit({ prompt: e.target.value })} />
+            </Field>
 
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-muted">Blocks</div>
-            {draft.nodes.map((node) => (
-              <div key={node.id}
-                   className="space-y-2 rounded-[--radius] border border-line bg-panel-2 p-3">
-                <div className="flex items-center gap-2">
-                  <Select
-                    className="h-8 w-40"
-                    value={node.role}
-                    onChange={(event) => editNode(node.id, { role: event.target.value })}
-                  >
-                    {Object.values(agents.data?.byName ?? {})
-                      .filter((role) => role.name !== "orchestrator")
-                      .map((role) => (
-                        <option key={role.name} value={role.name}>{role.name}</option>
-                      ))}
-                  </Select>
-                  {draft.start === node.id
-                    ? <Badge tone="accent">starts here</Badge>
-                    : (
-                      <Button size="sm" variant="ghost"
-                              onClick={() => edit({ start: node.id })}>
-                        start here
-                      </Button>
-                    )}
-                </div>
+            <Field label="Most blocks"
+                   hint="A hard ceiling on how many times agents run before the step gives up.">
+              <Input type="number" min={1} className="w-24" value={draft.max_steps}
+                     onChange={(e) => library.edit({ max_steps: Number(e.target.value) || 1 })} />
+            </Field>
 
-                <Textarea
-                  rows={2} className="text-xs"
-                  placeholder="what this agent is here to do"
-                  value={node.focus}
-                  onChange={(event) => editNode(node.id, { focus: event.target.value })}
-                />
-
-                <div className="space-y-1">
-                  {Object.entries(node.on).map(([exit, routes]) => (
-                    <div key={exit} className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className="w-32 shrink-0 text-muted" title={EXITS[exit]}>
-                        {exit.toLowerCase().replace("_", " ")}
-                      </span>
-                      {routes.map((route, index) => (
-                        <span key={index} className="flex items-center gap-1">
-                          <span className="text-muted">→</span>
-                          <Select
-                            className="h-7 w-56 text-xs"
-                            value={route.target}
-                            onChange={(event) => editNode(node.id, {
-                              on: {
-                                ...node.on,
-                                [exit]: routes.map((held, at) => at === index
-                                  ? { ...held, target: event.target.value } : held),
-                              },
-                            })}
-                          >
-                            {targets(draft).map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </Select>
-                          {!STOPS.has(route.target) && (
-                            <span className="text-muted">
-                              at most {route.max_visits ?? 3}×
-                            </span>
-                          )}
-                        </span>
-                      ))}
-                    </div>
-                  ))}
-                </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-muted">Blocks</span>
+                <Button size="sm" variant="ghost" onClick={addBlock}>add a block</Button>
               </div>
-            ))}
-          </div>
 
-          <div className="flex items-center gap-2 border-t border-line pt-3">
-            <Button
-              variant="primary" busy={save.isPending}
-              onClick={() => save.mutateAsync({ name: draft.name, body: draft })
-                .then(() => toast.ok(`Saved ${draft.name}.`))
-                .catch((error) => toast.err(String(error)))}
-            >Save</Button>
-            <Button
-              variant="danger" busy={remove.isPending}
-              onClick={() => { if (confirm(`Delete the loop "${draft.name}"?`)) {
-                remove.mutateAsync(draft.name)
-                  .then(() => toast.ok("Deleted."))
-                  // A loop a step still names cannot go; the server says so.
-                  .catch((error) => toast.err(String(error)));
-              } }}
-            >Delete</Button>
-            <div className="flex-1" />
-            <span className="text-xs text-muted">
-              {draft.nodes.length} block(s) · starts at{" "}
-              {draft.nodes.find((node) => node.id === draft.start)?.role ?? "?"}
-            </span>
+              {draft.nodes.map((node) => (
+                <div key={node.id}
+                     className="space-y-2 rounded-[--radius] border border-line bg-panel-2 p-3">
+                  <div className="flex items-center gap-2">
+                    <Select
+                      className="h-8 w-40" value={node.role}
+                      onChange={(event) => editNode(node.id, { role: event.target.value })}
+                    >
+                      {(agents.data?.agents ?? [])
+                        .filter((role) => role.name !== "orchestrator")
+                        .map((role) => (
+                          <option key={role.name} value={role.name}>{role.name}</option>
+                        ))}
+                    </Select>
+                    {draft.start === node.id
+                      ? <Badge tone="accent">starts here</Badge>
+                      : (
+                        <Button size="sm" variant="ghost"
+                                onClick={() => library.edit({ start: node.id })}>
+                          start here
+                        </Button>
+                      )}
+                    <div className="flex-1" />
+                    {draft.nodes.length > 1 && (
+                      <Button
+                        size="sm" variant="ghost"
+                        onClick={() => library.replace({
+                          ...draft,
+                          nodes: draft.nodes.filter((held) => held.id !== node.id),
+                        })}
+                      >✕</Button>
+                    )}
+                  </div>
+
+                  <Textarea
+                    rows={2} className="text-xs"
+                    placeholder="what this agent is here to do"
+                    value={node.focus}
+                    onChange={(event) => editNode(node.id, { focus: event.target.value })}
+                  />
+
+                  <div className="space-y-1">
+                    {Object.entries(node.on).map(([exit, routes]) => (
+                      <div key={exit} className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="w-32 shrink-0 text-muted" title={EXITS[exit]}>
+                          {exit.toLowerCase().replace("_", " ")}
+                        </span>
+                        {routes.map((route, index) => (
+                          <span key={index} className="flex items-center gap-1">
+                            <span className="text-muted">→</span>
+                            <Select
+                              className="h-7 w-56 text-xs" value={route.target}
+                              onChange={(event) => editNode(node.id, {
+                                on: {
+                                  ...node.on,
+                                  [exit]: routes.map((held, at) => at === index
+                                    ? { ...held, target: event.target.value } : held),
+                                },
+                              })}
+                            >
+                              {targets(draft).map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </Select>
+                            {!STOPS.has(route.target) && (
+                              <span className="text-muted">at most {route.max_visits ?? 3}×</span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <Button size="sm" variant="danger" onClick={() => library.remove(draft.name)}>
+              Delete this loop
+            </Button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
+
+      <footer className="flex items-center gap-2 border-t border-line px-4 py-3">
+        <LibraryFooter
+          changeCount={library.changeCount}
+          onApply={apply}
+          onDiscard={library.discard}
+          busy={applying}
+        />
+      </footer>
     </div>
   );
 }
