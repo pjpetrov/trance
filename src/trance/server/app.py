@@ -42,7 +42,9 @@ from .. import paths, preview, vcs
 from ..usage import UsageLedger
 from ..worker.client import BackendError
 
-STATIC = Path(__file__).parent / "static"
+#: The built UI. Source lives in ui/ and the build is committed here, so a
+#: clone runs with Python alone and never installs node.
+STATIC = Path(__file__).parent / "ui"
 
 
 #: How much history the console asks for when it opens a session. Enough to
@@ -250,19 +252,38 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.get("/")
     def index():
-        return FileResponse(STATIC / "index.html")
+        if not (STATIC / "index.html").is_file():
+            # The UI is built from ui/ into this directory and the build is
+            # committed, so a missing one means a source checkout that has not
+            # been built rather than a broken install. Say which.
+            raise HTTPException(503, (
+                "the UI has not been built. From the repository root: "
+                "cd ui && npm install && npm run build"))
+        return FileResponse(STATIC / "index.html",
+                            headers={"Cache-Control": "no-cache, must-revalidate"})
 
-    class FreshStatic(StaticFiles):
-        """Always revalidate. The UI changes under the user constantly, and a
-        cached app.js showing behaviour that was removed is indistinguishable
-        from a bug in the software."""
+    class BuiltUI(StaticFiles):
+        """Cache the hashed assets hard, and never cache the page.
 
-        def file_response(self, *args, **kwargs):
-            response = super().file_response(*args, **kwargs)
-            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        The bundler names every asset by the hash of its contents, so a given
+        URL can only ever mean one file — those are safe to keep forever, and a
+        run leaves the browser fetching nothing but data. index.html is the one
+        file whose URL is stable, and it is what points at the current hashes;
+        serving a cached copy of it after a rebuild loads assets that no longer
+        exist. The old UI had neither property — one unhashed app.js, which had
+        to revalidate on every load or show behaviour that had been removed.
+        """
+
+        IMMUTABLE = "public, max-age=31536000, immutable"
+
+        def file_response(self, full_path, *args, **kwargs):
+            response = super().file_response(full_path, *args, **kwargs)
+            hashed = "/assets/" in str(full_path).replace("\\", "/")
+            response.headers["Cache-Control"] = (
+                self.IMMUTABLE if hashed else "no-cache, must-revalidate")
             return response
 
-    app.mount("/static", FreshStatic(directory=STATIC), name="static")
+    app.mount("/static", BuiltUI(directory=STATIC), name="static")
 
     # ------------------------------------------------------------- config
 

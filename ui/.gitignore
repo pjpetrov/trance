@@ -1,0 +1,3 @@
+node_modules/
+# The build output is committed — it lives in the Python package so that
+# anyone cloning trance runs it with Python alone and never installs node.

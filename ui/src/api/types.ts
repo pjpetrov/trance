@@ -1,0 +1,409 @@
+/** The shapes the FastAPI side actually returns.
+ *
+ * Taken from live responses rather than from reading the Python, because the
+ * two have disagreed before — `resolved_models` is keyed by role name, `paths`
+ * on a role is a glob list and not a path list, and an event's `detail` is a
+ * discriminated union that the old UI decoded with a chain of `if`s and no way
+ * to know when it had missed a case.
+ *
+ * Anything optional here is optional because the server genuinely omits it,
+ * usually because the payload was slimmed for the history panel.
+ */
+
+export type SessionStatus =
+  | "ready" | "running" | "paused" | "finished" | "error" | "halted";
+
+export type StepStatus =
+  | "pending" | "running" | "done" | "failed" | "skipped" | "halted";
+
+export type Outcome = "SUCCESS" | "FAILED" | "UNCLEAR" | "UNSTATED";
+export type Verdict = "PASS" | "FAIL";
+
+// ----------------------------------------------------------------- agents
+
+export type Toolset = "files" | "graph" | "commands" | "inspect" | "browser";
+
+export interface AgentRole {
+  name: string;
+  title: string;
+  description: string;
+  system_prompt: string;
+  /** Globs this role may write to. Empty means read-only, which is a choice. */
+  paths: string[];
+  toolsets: Toolset[];
+  commands: string[];
+  command_list: string;
+  workdir: string;
+  shell: boolean | null;
+  verifier: boolean;
+  preset: string | null;
+  backup_preset: string | null;
+  tries: number;
+  backup_tries: number;
+  tool_rounds: number;
+  color: string;
+  protected?: boolean;
+  resolved?: ResolvedModel;
+}
+
+export interface ResolvedModel {
+  preset?: string;
+  provider: string;
+  model: string;
+  base_url?: string;
+  context_window?: number;
+}
+
+// ----------------------------------------------------------------- models
+
+export interface Spend {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total: number;
+}
+
+export interface ModelPreset {
+  name: string;
+  kind: string;
+  model: string;
+  base_url: string;
+  api_key?: string | null;
+  context_window: number;
+  max_tokens: number;
+  description?: string;
+  has_key: boolean;
+  self_contained: boolean;
+  spend?: Spend | null;
+}
+
+export interface KindDefault {
+  label: string;
+  base_url: string;
+  context_window: number;
+  needs_key: boolean;
+  models?: string[];
+}
+
+// ------------------------------------------------------------------ flow
+
+export interface ContextUsage {
+  tokens: number;
+  window: number;
+  budget: number;
+  reserved: number;
+  percent: number;
+  estimated: boolean;
+}
+
+export interface GateResult {
+  gate: string;
+  verdict: Verdict | string;
+  feedback: string;
+  event_id: string | null;
+}
+
+export interface Attempt {
+  n: number;
+  worker_event_id: string | null;
+  verifier_event_id: string | null;
+  verdict: string;
+  feedback: string;
+  files_written: string[];
+  gate_results: GateResult[];
+  fix_event_id: string | null;
+  fix_summary: string;
+  refused_paths: string[];
+  context?: ContextUsage;
+  on_backup: boolean;
+  checkpoint: string;
+  commit: string;
+  reverted: boolean;
+  outcome: string;
+  outcome_reason: string;
+}
+
+export interface Step {
+  id: string;
+  role: string;
+  task: string;
+  /** Set when the step runs a loop instead of a single agent. */
+  loop: string;
+  check: string;
+  checks: string[];
+  checker: string;
+  fixer: string;
+  on_fail: string | null;
+  verify_with: string | null;
+  max_loops: number;
+  loop_limit: number;
+  max_attempts: number;
+  overrides_tries: boolean;
+  start_on_backup: boolean;
+  revert_on_fail: boolean;
+  escalated: boolean;
+  points: number;
+  gates: string[];
+  entry: string;
+  status: StepStatus;
+  attempts: Attempt[];
+  steering: string[];
+  summary: string;
+  runs_a_loop: boolean;
+}
+
+export interface Flow {
+  steps: Step[];
+  cursor: number;
+}
+
+export interface Progress {
+  total: number;
+  done: number;
+  failed: number;
+  running: number;
+}
+
+// --------------------------------------------------------------- session
+
+export interface ChatMessage {
+  role: "user" | "assistant" | string;
+  content: string;
+  ts?: string;
+}
+
+export interface ReviewComment {
+  path: string;
+  line?: number | null;
+  note: string;
+  ts?: string;
+}
+
+export interface Session {
+  id: string;
+  name: string;
+  project_dir: string;
+  status: SessionStatus;
+  goal: string;
+  paused: boolean;
+  working: boolean;
+  run_seconds: number;
+  created_at: string;
+  error: string | null;
+  chat: ChatMessage[];
+  team: AgentRole[];
+  history: unknown[];
+  review: ReviewComment[];
+  reviews: unknown[];
+  flow: Flow;
+  progress: Progress;
+  /** Keyed by role name. */
+  resolved_models: Record<string, ResolvedModel>;
+}
+
+// ---------------------------------------------------------------- events
+
+/** The structured half of a tool_call, which is what the console renders.
+ *  A union rather than a bag, so a new kind is a compile error at every
+ *  place that has to decide how to draw it. */
+export type ToolDetail =
+  | { kind: "write"; path: string; created?: boolean; appended?: boolean;
+      added: number; removed: number; diff: string; truncated?: boolean }
+  | { kind: "read"; path: string; bytes?: number; lines?: number;
+      start_line?: number; last_line?: number; outline?: boolean;
+      symbols?: number; deduped?: boolean }
+  | { kind: "graph"; tool: string; hit: boolean; query: string; deduped?: boolean }
+  | { kind: "command"; command: string; exit_code: number; output: string;
+      seconds: number; timed_out?: boolean; cancelled?: boolean }
+  | { kind: "background"; command: string; command_id: string }
+  | { kind: "command_stopped"; command_id: string }
+  | { kind: "memory"; note: string; stored: boolean }
+  | { kind: "check"; files: FileStat[] }
+  | { kind: "truncated"; limit: number }
+  | { kind: "malformed"; raw: string }
+  | { kind: "edit_miss"; path?: string; symbol?: string; count?: number }
+  | { kind: "edit_ambiguous"; path?: string; symbol?: string; count?: number }
+  | { kind: "refused_program"; programs: string[]; command: string; agent: string;
+      agent_has_own_list?: boolean }
+  // The browser toolset.
+  | { kind: "page"; page: string; url: string; frames: number; asked_frames: number;
+      needs_build: boolean; errors: PageErrors; canvas: boolean; size: string;
+      blank: boolean | null }
+  | { kind: "canvas"; canvas: boolean; canvases: number; size: string;
+      blank: boolean | null; moving: boolean | null; frames: number;
+      note: string | null; errors: PageErrors }
+  | { kind: "key"; key: string; times: number; delivered: boolean;
+      changed: boolean | null; frames: number; diff?: ImageDiff | null;
+      shot_before?: string; shot_after?: string }
+  | { kind: "wait"; frames: number; asked_frames: number; changed: boolean | null;
+      stalled: boolean; errors: PageErrors; diff?: ImageDiff | null;
+      shot_before?: string; shot_after?: string }
+  | { kind: "screenshot"; shot: string; question: string; checks: string[];
+      answer: string; prompt?: string; model?: string; preset?: string;
+      usage?: Usage; clipped?: boolean; page?: string; url?: string;
+      region?: { x: number; y: number; width: number; height: number };
+      error?: string }
+  | { kind: "page_failed" | "canvas_failed" | "key_failed" | "look_failed"
+        | "wait_failed"; error: string };
+
+export interface ImageDiff {
+  identical: boolean;
+  differing: number | null;
+  total: number | null;
+  fraction: number;
+  how: "pixels" | "bytes";
+  note: string;
+  described: string;
+}
+
+export interface PageErrors {
+  console: string[];
+  exceptions: string[];
+  failed_requests: string[];
+  total: number;
+}
+
+export interface FileStat {
+  path: string;
+  exists?: boolean;
+  is_dir?: boolean;
+  blank?: boolean;
+  size_bytes?: number;
+  lines?: number;
+  error?: string;
+}
+
+export interface Usage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface EventPayload {
+  [key: string]: unknown;
+  name?: string;
+  arguments?: Record<string, unknown>;
+  ok?: boolean;
+  result?: string;
+  result_tokens?: number;
+  remit_violation?: string | null;
+  detail?: ToolDetail;
+  /** model_call */
+  round?: number;
+  model?: string;
+  preset?: string;
+  base_url?: string;
+  duration_ms?: number;
+  messages?: ChatMessage[];
+  response_text?: string;
+  reasoning?: string;
+  tool_calls?: { name: string; arguments: Record<string, unknown> }[];
+  finish_reason?: string;
+  usage?: Usage;
+  summary?: { message_count?: number; est_tokens?: number };
+  /** what /events drops to keep the payload small */
+  _omitted?: Record<string, number>;
+}
+
+export interface TranceEvent {
+  id: string;
+  type: string;
+  session_id: string;
+  ts: string;
+  agent?: string;
+  step_id?: string;
+  payload: EventPayload;
+}
+
+// ---------------------------------------------------------------- config
+
+export interface Planning {
+  max_step_points: number;
+  scale: number[];
+  escalation_preset: string;
+  escalation_role: string;
+  git_commits: boolean;
+  git_auto_init: boolean;
+}
+
+export interface VisualSupport {
+  browser: boolean;
+}
+
+export interface AppConfig {
+  config: Record<string, unknown>;
+  roles: Record<string, AgentRole>;
+  presets: ModelPreset[];
+  kinds: Record<string, KindDefault>;
+  planning: Planning;
+  visual: VisualSupport;
+  orchestrator: ResolvedModel & { preset?: string };
+  /** True when the source on disk is newer than the running process. */
+  stale: boolean;
+}
+
+// ----------------------------------------------------------------- loops
+
+export interface LoopEdge {
+  target: string;
+  max_visits?: number;
+  /** Take this route on the agent's backup model rather than its usual one. */
+  backup?: boolean;
+}
+
+export interface LoopNode {
+  id: string;
+  role: string;
+  focus: string;
+  check: string | null;
+  revert_on_fail?: boolean;
+  on: Record<string, LoopEdge[]>;
+}
+
+export interface Loop {
+  name: string;
+  description: string;
+  prompt: string;
+  nodes: LoopNode[];
+  start: string;
+  max_steps: number;
+  roles?: string[];
+}
+
+// -------------------------------------------------------------- commands
+
+export interface CommandPolicy {
+  allowed: string[];
+  shell: boolean;
+}
+
+export interface CommandLists {
+  /** The effective allowlist — the default list, flattened. */
+  allowed: string[];
+  shell: boolean;
+  names: string[];
+  lists: Record<string, CommandPolicy>;
+  /** Programs trance ships with, so the UI can show what is an addition. */
+  defaults?: string[];
+  /** Which agents name their own list rather than using the default. */
+  overrides?: Record<string, string>;
+  agents_with_commands?: string[];
+}
+
+// ----------------------------------------------------------------- files
+
+export interface FileNode {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  size?: number;
+  children?: FileNode[];
+}
+
+export interface Preview {
+  root: string;
+  port: number;
+  url: string;
+  local: string;
+  share?: string;
+}

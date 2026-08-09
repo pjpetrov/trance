@@ -5,6 +5,7 @@ OpenAI-compatible one in four ways, and a silent mistranslation shows up as a
 confusing 400 mid-run rather than a clean failure here.
 """
 
+import re
 import json
 
 import pytest
@@ -644,9 +645,10 @@ def test_a_model_can_be_tested_from_its_own_card(tmp_path, monkeypatch):
     assert client.post("/api/presets/nope/check").status_code == 404
 
 
-def test_static_assets_are_always_revalidated(tmp_path):
-    """A cached app.js showing behaviour that was removed is indistinguishable
-    from a bug in the software."""
+def test_the_page_revalidates_but_hashed_assets_do_not(tmp_path):
+    """The page is what points at the current asset hashes, so a cached copy of
+    it after a rebuild loads files that no longer exist. The assets themselves
+    are named by their contents, so a URL can only ever mean one file."""
     from fastapi.testclient import TestClient
 
     from trance.config import Config
@@ -656,9 +658,15 @@ def test_static_assets_are_always_revalidated(tmp_path):
     config.runs_dir = str(tmp_path / "runs")
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
 
-    response = client.get("/static/app.js")
-    assert response.status_code == 200
-    assert "no-cache" in response.headers.get("cache-control", "")
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "no-cache" in page.headers.get("cache-control", "")
+
+    asset = re.search(r'/static/(assets/[^"\']+\.js)', page.text)
+    assert asset, "the built page names no hashed asset"
+    served = client.get(f"/static/{asset.group(1)}")
+    assert served.status_code == 200
+    assert "immutable" in served.headers.get("cache-control", "")
 
 
 def test_the_editor_is_served_from_here_not_a_cdn(tmp_path):
@@ -674,8 +682,7 @@ def test_the_editor_is_served_from_here_not_a_cdn(tmp_path):
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
 
     page = client.get("/").text
-    assert "cdn." not in page and "https://" not in page.split("<body")[0].replace(
-        "https://codemirror.net", "")          # the licence comment is fine
+    assert "cdn." not in page and "https://" not in page
     for asset in ("codemirror.js", "codemirror.css", "javascript.js", "python.js",
                   "material-darker.css"):
         response = client.get(f"/static/vendor/{asset}")
