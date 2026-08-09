@@ -437,15 +437,17 @@ def test_deleting_a_list_moves_its_agents_to_the_default(tmp_path):
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
 
-    client.put("/api/commands", json={"name": "build-tools", "allowed": ["npm", "npx"]})
-    client.put("/api/agents/tester", json={"command_list": "build-tools"})
-    assert client.get("/api/commands").json()["usage"]["tester"] == "build-tools"
+    client.put("/api/commands", json={"name": "build-tools", "allowed": ["npm", "npx"]}, params={"session": sid})
+    client.put("/api/agents/tester", json={"command_list": "build-tools"}, params={"session": sid})
+    assert client.get("/api/commands", params={"session": sid}).json()["usage"]["tester"] == "build-tools"
 
-    body = client.delete("/api/commands/build-tools").json()
+    body = client.delete("/api/commands/build-tools", params={"session": sid}).json()
     assert body["moved_to_default"] == ["tester"]
-    assert client.get("/api/commands").json()["usage"]["tester"] == "default"
-    assert client.delete("/api/commands/default").status_code == 400
+    assert client.get("/api/commands", params={"session": sid}).json()["usage"]["tester"] == "default"
+    assert client.delete("/api/commands/default", params={"session": sid}).status_code == 400
 
 
 def test_a_partial_agent_update_keeps_everything_else(tmp_path):
@@ -458,11 +460,13 @@ def test_a_partial_agent_update_keeps_everything_else(tmp_path):
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
 
-    before = next(a for a in client.get("/api/agents").json()["agents"]
+    before = next(a for a in client.get("/api/agents", params={"session": sid}).json()["agents"]
                   if a["name"] == "backend")
-    client.put("/api/agents/backend", json={"command_list": "build-tools"})
-    after = next(a for a in client.get("/api/agents").json()["agents"]
+    client.put("/api/agents/backend", json={"command_list": "build-tools"}, params={"session": sid})
+    after = next(a for a in client.get("/api/agents", params={"session": sid}).json()["agents"]
                  if a["name"] == "backend")
 
     assert after["command_list"] == "build-tools"
@@ -927,10 +931,12 @@ def test_an_agents_backup_model_is_saved(tmp_path):
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put("/api/presets/clever", json={"kind": "anthropic", "model": "claude-opus-5"})
 
-    client.put("/api/agents/backend", json={"backup_preset": "clever", "backup_after": 2})
-    saved = next(a for a in client.get("/api/agents").json()["agents"]
+    client.put("/api/agents/backend", json={"backup_preset": "clever", "backup_after": 2}, params={"session": sid})
+    saved = next(a for a in client.get("/api/agents", params={"session": sid}).json()["agents"]
                  if a["name"] == "backend")
 
     assert saved["backup_preset"] == "clever" and saved["backup_after"] == 2

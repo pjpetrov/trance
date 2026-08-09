@@ -10,6 +10,7 @@ import { useState } from "react";
 import { useAgents, useLoops } from "@/api/queries";
 import { useLoopMutations } from "@/api/mutations";
 import { useDraftLibrary } from "@/lib/useDraftLibrary";
+import { useUi } from "@/store/ui";
 import { Badge, Button, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
 import { LibraryFooter, LibraryList } from "@/components/ui/Library";
@@ -55,9 +56,10 @@ function blankLoop(taken: Set<string>): Loop {
 }
 
 export function LoopsEditor() {
-  const loops = useLoops();
-  const agents = useAgents();
-  const { save, remove } = useLoopMutations();
+  const sessionId = useUi((state) => state.sessionId) ?? "";
+  const loops = useLoops(sessionId);
+  const agents = useAgents(sessionId);
+  const { save, remove } = useLoopMutations(sessionId);
   const [applying, setApplying] = useState(false);
 
   const library = useDraftLibrary<Loop>(loops.data, (loop) => loop.name);

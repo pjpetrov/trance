@@ -2516,14 +2516,16 @@ def test_the_split_threshold_is_configurable_and_can_be_turned_off(tmp_path):
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
 
-    assert client.get("/api/config").json()["planning"]["max_step_points"] == 5
+    assert client.get(f"/api/sessions/{sid}/settings").json()["max_step_points"] == 5
 
     assert client.put("/api/config/planning",
-                      json={"max_step_points": 3}).json()["max_step_points"] == 3
+                      json={"max_step_points": 3}, params={"session": sid}).json()["max_step_points"] == 3
     assert client.put("/api/config/planning",
-                      json={"max_step_points": 0}).json()["max_step_points"] == 0
-    assert client.put("/api/config/planning", json={"max_step_points": 99}).status_code == 400
+                      json={"max_step_points": 0}, params={"session": sid}).json()["max_step_points"] == 0
+    assert client.put("/api/config/planning", json={"max_step_points": 99}, params={"session": sid}).status_code == 400
 
 
 def test_a_step_can_be_split_from_the_flow_editor(tmp_path, monkeypatch):
@@ -3055,7 +3057,7 @@ def test_always_writes_the_answer_into_the_policy(tmp_path):
     assert body["widened"] is True
     assert answers["request"].allowed is True
     # The exact path, not a widened glob: the user allowed this file.
-    tester = next(r for r in client.get("/api/agents").json()["agents"]
+    tester = next(r for r in client.get("/api/agents", params={"session": sid}).json()["agents"]
                   if r["name"] == "tester")
     assert "jest.config.js" in tester["paths"]
 
@@ -3847,7 +3849,7 @@ def test_a_loop_in_use_cannot_be_deleted(tmp_path):
     client.put(f"/api/sessions/{sid}/flow",
                json={"steps": [{"role": "", "loop": "test-and-fix", "task": "t"}]})
 
-    blocked = client.delete("/api/loops/test-and-fix")
+    blocked = client.delete("/api/loops/test-and-fix", params={"session": sid})
     assert blocked.status_code == 409 and "used by" in blocked.json()["detail"]
 
 
@@ -3860,9 +3862,12 @@ def test_an_invalid_loop_is_refused_by_the_api(tmp_path):
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
 
     response = client.put("/api/loops/broken", json={"nodes": [
-        {"id": "a", "role": "tester", "on": {"SUCCESS": {"target": "a"}}}]})
+        {"id": "a", "role": "tester", "on": {"SUCCESS": {"target": "a"}}}]},
+        params={"session": sid})
     assert response.status_code == 400
     assert "exits successfully" in response.json()["detail"]
 
@@ -5407,9 +5412,10 @@ def test_the_rerun_endpoint_takes_the_backup_flag(tmp_path, monkeypatch):
     client = TestClient(app)
 
     client.put("/api/presets/clever", json={"kind": "anthropic", "model": "claude-opus-5"})
-    client.put("/api/agents/backend", json={"backup_preset": "clever"})
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put("/api/agents/backend", json={"backup_preset": "clever"},
+               params={"session": sid})
     client.put(f"/api/sessions/{sid}/flow", json={"steps": [{"role": "backend", "task": "t"}]})
     session = app.state.store.get(sid)
     step_id = session.flow.steps[0].id
@@ -7603,14 +7609,16 @@ def test_the_orchestrator_takes_its_model_from_its_agent_card(tmp_path):
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions", json={
+        "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
 
     client.put("/api/presets/fast", json={"kind": "llamacpp", "model": "small"})
     client.put("/api/presets/deep", json={"kind": "llamacpp", "model": "large"})
 
-    client.put("/api/agents/orchestrator", json={"preset": "deep"})
+    client.put("/api/agents/orchestrator", json={"preset": "deep"}, params={"session": sid})
     assert config.for_orchestrator().model == "large"
 
-    client.put("/api/agents/orchestrator", json={"preset": "fast"})
+    client.put("/api/agents/orchestrator", json={"preset": "fast"}, params={"session": sid})
     assert config.for_orchestrator().model == "small"
 
     # And what the UI reads back agrees with what the engine would use.
@@ -7734,9 +7742,9 @@ def test_a_model_that_cannot_see_is_told_rather_than_left_blind(tmp_path, monkey
     config.runs_dir = str(tmp_path / "runs")
     client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
     client.put("/api/presets/cli", json={"kind": "claudecode", "model": "opus"})
-    client.put("/api/agents/orchestrator", json={"preset": "cli"})
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put("/api/agents/orchestrator", json={"preset": "cli"}, params={"session": sid})
 
     seen = {}
     monkeypatch.setattr(app_module.orchestrator_agent, "chat",

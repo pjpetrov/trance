@@ -250,7 +250,8 @@ function FinishReview(
     onClose: () => void; onFinish: (loop: string) => void;
   },
 ) {
-  const loops = useLoops();
+  const sessionId = useUi((state) => state.sessionId);
+  const loops = useLoops(sessionId);
   const [loop, setLoop] = useState("");
 
   return (

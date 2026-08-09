@@ -16,7 +16,8 @@ import { ModelsEditor } from "@/modals/ModelsEditor";
 import { SettingsPanel } from "@/modals/SettingsPanel";
 import { useUi } from "@/store/ui";
 import { fakeServer, renderWithQuery, stubWebSocket } from "./render";
-import { config, event, eventsRoute, preset, role, session, step } from "./fixtures";
+import { config, event, eventsRoute, preset, role, session, settings, step }
+  from "./fixtures";
 
 beforeEach(() => {
   stubWebSocket();
@@ -256,9 +257,11 @@ describe("the models editor", () => {
 
 describe("settings", () => {
   it("says nothing about the orchestrator at all", async () => {
-    fakeServer({ "/api/config": config() });
+    fakeServer({ "/api/config": config(),
+                 "/api/sessions/s1/settings": settings() });
+    useUi.setState({ sessionId: "s1" });
     renderWithQuery(<SettingsPanel />);
-    await screen.findByText(/Git/);
+    await screen.findByText("Git");
     // Its model and its prompt are both on its agent card. A second mention
     // here — even an explanatory one — is a second place to look.
     expect(screen.queryByText(/orchestrator/i)).not.toBeInTheDocument();
@@ -266,7 +269,9 @@ describe("settings", () => {
   });
 
   it("reports what visual testing can do on this machine", async () => {
-    fakeServer({ "/api/config": config({ visual: { browser: false } }) });
+    fakeServer({ "/api/config": config({ visual: { browser: false } }),
+                 "/api/sessions/s1/settings": settings() });
+    useUi.setState({ sessionId: "s1" });
     renderWithQuery(<SettingsPanel />);
     expect(await screen.findByText(/No Chrome or Chromium on this machine/))
       .toBeInTheDocument();
@@ -279,8 +284,10 @@ describe("settings", () => {
     const user = userEvent.setup();
     const server = fakeServer({
       "/api/config": config(),
-      "/api/config/planning": config().planning,
+      "/api/sessions/s1/settings": settings(),
+      "/api/config/planning": settings(),
     });
+    useUi.setState({ sessionId: "s1" });
 
     renderWithQuery(<SettingsPanel />);
     const box = await screen.findByLabelText(/Commit the project after every step/);

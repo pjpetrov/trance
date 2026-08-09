@@ -34,8 +34,8 @@ const GENERATE =
 export function PlanScreen() {
   const { sessionId, go, setOpenStep } = useUi();
   const session = useSession(sessionId);
-  const agents = useAgents();
-  const loops = useLoops();
+  const agents = useAgents(sessionId ?? "");
+  const loops = useLoops(sessionId ?? "");
   const save = useSaveFlow(sessionId ?? "");
   const start = useStartRun(sessionId ?? "");
   const chat = useChat(sessionId ?? "");

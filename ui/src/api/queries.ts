@@ -33,6 +33,7 @@ export const keys = {
   events: (id: string) => ["events", id] as const,
   stepEvents: (id: string, stepId: string) => ["events", id, "step", stepId] as const,
   usage: (id: string) => ["usage", id] as const,
+  settings: (id: string) => ["settings", id] as const,
   memory: (id: string) => ["memory", id] as const,
   files: (id: string) => ["files", id] as const,
   file: (id: string, path: string) => ["file", id, path] as const,
@@ -55,10 +56,11 @@ export function useConfig(options?: Partial<UseQueryOptions<AppConfig>>) {
   });
 }
 
-export function useAgents() {
+export function useAgents(sessionId: string | null) {
   return useQuery({
-    queryKey: keys.agents,
-    queryFn: async () => (await api.agents()),
+    queryKey: [...keys.agents, sessionId ?? ""],
+    queryFn: async () => (await api.agents(sessionId!)),
+    enabled: Boolean(sessionId),
     staleTime: CONFIG_STALE,
     select: (data) => ({
       ...data,
@@ -76,18 +78,20 @@ export function usePresets() {
   });
 }
 
-export function useLoops() {
+export function useLoops(sessionId: string | null) {
   return useQuery({
-    queryKey: keys.loops,
-    queryFn: async () => (await api.loops()).loops,
+    queryKey: [...keys.loops, sessionId ?? ""],
+    queryFn: async () => (await api.loops(sessionId!)).loops,
+    enabled: Boolean(sessionId),
     staleTime: CONFIG_STALE,
   });
 }
 
-export function useCommands() {
+export function useCommands(sessionId: string | null) {
   return useQuery<CommandLists>({
-    queryKey: keys.commands,
-    queryFn: api.commands,
+    queryKey: [...keys.commands, sessionId ?? ""],
+    queryFn: () => api.commands(sessionId!),
+    enabled: Boolean(sessionId),
     staleTime: CONFIG_STALE,
   });
 }
@@ -151,6 +155,16 @@ export function useFullEvent(sessionId: string | null, eventId: string | null) {
     queryFn: () => api.event(sessionId!, eventId!),
     enabled: Boolean(sessionId && eventId),
     staleTime: Infinity,            // an event that has happened cannot change
+  });
+}
+
+/** This project's run settings. They live in its .trance/ and survive a
+ *  restart, which they never used to. */
+export function useSettings(sessionId: string | null) {
+  return useQuery({
+    queryKey: keys.settings(sessionId ?? ""),
+    queryFn: () => api.settings(sessionId!),
+    enabled: Boolean(sessionId),
   });
 }
 

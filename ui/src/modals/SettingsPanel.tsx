@@ -1,19 +1,36 @@
-import { useConfig } from "@/api/queries";
+import { useConfig, useSettings } from "@/api/queries";
 import { useSettingsMutations } from "@/api/mutations";
 import { Checkbox, Empty } from "@/components/ui/primitives";
+import { useUi } from "@/store/ui";
 import { toast } from "@/components/Toaster";
 
 export function SettingsPanel() {
+  const sessionId = useUi((state) => state.sessionId) ?? "";
   const config = useConfig();
-  const { planning } = useSettingsMutations();
+  const settings = useSettings(sessionId);
+  const { planning } = useSettingsMutations(sessionId);
   const data = config.data;
-  if (!data) return <Empty title="Loading…" />;
+  if (!data || !settings.data) return <Empty title="Loading…" />;
 
   const save = (body: Record<string, unknown>) =>
     planning.mutateAsync(body).catch((error) => toast.err(String(error)));
 
   return (
     <div className="space-y-5 p-5">
+      <section className="space-y-1">
+        <h3 className="text-sm font-medium">This project</h3>
+        <p className="text-xs leading-relaxed text-muted">
+          Its agents, loops, allowlists and these settings live in the project's own
+          <code> .trance/</code>, so copying that folder copies the way it is built.
+          Models stay on this machine: they carry API keys, and a folder you share is
+          the last place for one.
+          {settings.data.migrated && (
+            <> This project has just taken a copy of your workspace setup; changing it
+            here changes it for this project only.</>
+          )}
+        </p>
+      </section>
+
       <section className="space-y-1">
         <h3 className="text-sm font-medium">Git</h3>
         <p className="text-xs leading-relaxed text-muted">
@@ -22,12 +39,12 @@ export function SettingsPanel() {
         </p>
         <Checkbox
           label="Commit the project after every step"
-          checked={data.planning.git_commits}
+          checked={settings.data.git_commits}
           onChange={(event) => save({ git_commits: event.target.checked })}
         />
         <Checkbox
           label="Create a repository when the project is not one"
-          checked={data.planning.git_auto_init}
+          checked={settings.data.git_auto_init}
           onChange={(event) => save({ git_auto_init: event.target.checked })}
         />
       </section>

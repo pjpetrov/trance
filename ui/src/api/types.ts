@@ -344,10 +344,11 @@ export interface VisualSupport {
 
 export interface AppConfig {
   config: Record<string, unknown>;
-  roles: Record<string, AgentRole>;
   presets: ModelPreset[];
   kinds: Record<string, KindDefault>;
-  planning: Planning;
+  /** The point scale the orchestrator estimates against. Run settings are not
+   *  here: they belong to a project, and this endpoint does not know which. */
+  scale: number[];
   visual: VisualSupport;
   orchestrator: ResolvedModel & { preset?: string };
   /** True when the source on disk is newer than the running process. */

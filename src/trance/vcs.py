@@ -99,7 +99,15 @@ IGNORED = (".trance/graph.db", ".trance/graph.db-shm", ".trance/graph.db-wal",
            # step history and served from disk — but PNGs, and committing them
            # puts "Binary files differ" through the history of a repo whose
            # whole point is being readable afterwards.
-           ".trance/shots/")
+           ".trance/shots/",
+           # The project's own agents, loops, allowlists and settings. They are
+           # trance's bookkeeping rather than the project's source, and every
+           # step commits everything — so tracked, they would appear inside an
+           # agent's commit and in the review's list of what it changed. They
+           # still travel with the directory, which is how a project is handed
+           # over; git is not the channel.
+           ".trance/agents.json", ".trance/loops.json",
+           ".trance/commands.json", ".trance/settings.json")
 _IGNORE_HEADER = "# trance's index — regenerated, not source"
 
 

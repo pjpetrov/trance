@@ -53,13 +53,9 @@ export function preset(over: Partial<ModelPreset> = {}): ModelPreset {
 export function config(over: Partial<AppConfig> = {}): AppConfig {
   return {
     config: {},
-    roles: { frontend: role() },
     presets: [preset()],
     kinds: {},
-    planning: {
-      max_step_points: 5, scale: [1, 2, 3, 5, 8, 13], escalation_preset: "",
-      escalation_role: "", git_commits: true, git_auto_init: true,
-    },
+    scale: [1, 2, 3, 5, 8, 13],
     visual: { browser: true },
     orchestrator: { preset: "Qwen", provider: "p", model: "qwen3.6" },
     stale: false,
@@ -86,4 +82,13 @@ export function event(detail: ToolDetail, over: Partial<TranceEvent> = {}): Tran
 export function eventsRoute(tail: TranceEvent[], perStep: TranceEvent[] = []) {
   return ({ url }: { url: string }) =>
     (url.includes("step=") ? perStep : { events: tail, total: tail.length, shown: tail.length });
+}
+
+/** GET /api/sessions/{id}/settings — a project's own run settings. */
+export function settings(over: Partial<Record<string, unknown>> = {}) {
+  return {
+    max_step_points: 5, escalation_preset: "", escalation_role: "",
+    git_commits: true, git_auto_init: true,
+    scale: [1, 2, 3, 5, 8, 13], migrated: false, ...over,
+  };
 }

@@ -64,6 +64,12 @@ async function request<T>(path: string, options: Options = {}): Promise<T> {
 
 const id = encodeURIComponent;
 
+/** Agents, loops, allowlists and settings belong to a project now, so the calls
+ *  that read or change them have to say which. Required rather than defaulted:
+ *  guessing would silently edit another project's agents. */
+const forProject = (sid: string, extra = "") =>
+  `?session=${id(sid)}${extra ? `&${extra}` : ""}`;
+
 export const api = {
   config: () => request<AppConfig>("/api/config"),
   workspace: () => request<{ root: string; state_dir: string; entries?: string[] }>(
@@ -72,21 +78,27 @@ export const api = {
     request<{ ok: boolean; error?: string; path: string }>("/api/check-path",
       { method: "POST", body: { path } }),
 
-  setPlanning: (body: Partial<Planning>) =>
-    request<Planning>("/api/config/planning", { method: "PUT", body }),
+  settings: (sid: string) =>
+    request<Planning & { scale: number[]; migrated: boolean }>(
+      `/api/sessions/${id(sid)}/settings`),
+  setPlanning: (sid: string, body: Partial<Planning>) =>
+    request<Planning>(`/api/config/planning${forProject(sid)}`, { method: "PUT", body }),
   setOrchestrator: (body: { preset?: string }) =>
     request<{ preset: string; provider: string; model: string; base_url: string }>(
       "/api/config/orchestrator", { method: "PUT", body }),
 
   // ------------------------------------------------------------- agents
-  agents: () => request<{ agents: AgentRole[]; verifiers: string[]; toolsets: string[] }>(
-    "/api/agents"),
-  saveAgent: (name: string, body: Partial<AgentRole>) =>
-    request<AgentRole>(`/api/agents/${id(name)}`, { method: "PUT", body }),
-  deleteAgent: (name: string) =>
-    request<void>(`/api/agents/${id(name)}`, { method: "DELETE" }),
-  resetAgent: (name: string) =>
-    request<AgentRole>(`/api/agents/${id(name)}/reset`, { method: "POST" }),
+  agents: (sid: string) =>
+    request<{ agents: AgentRole[]; verifiers: string[]; toolsets: string[] }>(
+      `/api/agents${forProject(sid)}`),
+  saveAgent: (sid: string, name: string, body: Partial<AgentRole>) =>
+    request<AgentRole>(`/api/agents/${id(name)}${forProject(sid)}`,
+      { method: "PUT", body }),
+  deleteAgent: (sid: string, name: string) =>
+    request<void>(`/api/agents/${id(name)}${forProject(sid)}`, { method: "DELETE" }),
+  resetAgent: (sid: string, name: string) =>
+    request<AgentRole>(`/api/agents/${id(name)}/reset${forProject(sid)}`,
+      { method: "POST" }),
   draftPrompt: (body: { name: string; title?: string; description?: string }) =>
     request<{ prompt: string; description?: string }>("/api/agents/draft-prompt",
       { method: "POST", body }),
@@ -107,21 +119,26 @@ export const api = {
       { method: "POST", body }),
 
   // -------------------------------------------------------------- loops
-  loops: () => request<{ loops: Loop[] }>("/api/loops"),
-  saveLoop: (name: string, body: Partial<Loop>) =>
-    request<Loop>(`/api/loops/${id(name)}`, { method: "PUT", body }),
-  deleteLoop: (name: string) =>
-    request<void>(`/api/loops/${id(name)}`, { method: "DELETE" }),
+  loops: (sid: string) => request<{ loops: Loop[] }>(`/api/loops${forProject(sid)}`),
+  saveLoop: (sid: string, name: string, body: Partial<Loop>) =>
+    request<Loop>(`/api/loops/${id(name)}${forProject(sid)}`, { method: "PUT", body }),
+  deleteLoop: (sid: string, name: string) =>
+    request<void>(`/api/loops/${id(name)}${forProject(sid)}`, { method: "DELETE" }),
 
   // ----------------------------------------------------------- commands
-  commands: () => request<CommandLists>("/api/commands"),
-  saveCommandList: (name: string, body: { allowed?: string[]; shell?: boolean }) =>
-    request<CommandLists>(`/api/commands/${id(name)}`, { method: "PUT", body }),
-  deleteCommandList: (name: string) =>
-    request<CommandLists>(`/api/commands/${id(name)}`, { method: "DELETE" }),
-  allowProgram: (body: { programs: string[]; agent?: string }) =>
-    request<CommandLists>("/api/commands/allow", { method: "POST", body }),
-  resetCommands: () => request<CommandLists>("/api/commands/reset", { method: "POST" }),
+  commands: (sid: string) => request<CommandLists>(`/api/commands${forProject(sid)}`),
+  saveCommandList: (sid: string, name: string,
+                    body: { allowed?: string[]; shell?: boolean }) =>
+    request<CommandLists>(`/api/commands${forProject(sid)}`,
+      { method: "PUT", body: { ...body, name } }),
+  deleteCommandList: (sid: string, name: string) =>
+    request<CommandLists>(`/api/commands/${id(name)}${forProject(sid)}`,
+      { method: "DELETE" }),
+  allowProgram: (sid: string, body: { programs: string[]; agent?: string }) =>
+    request<CommandLists>(`/api/commands/allow${forProject(sid)}`,
+      { method: "POST", body }),
+  resetCommands: (sid: string) =>
+    request<CommandLists>(`/api/commands/reset${forProject(sid)}`, { method: "POST" }),
   cancelCommand: (commandId: string) =>
     request<{ cancelled: boolean }>(`/api/commands/cancel/${id(commandId)}`,
       { method: "POST" }),

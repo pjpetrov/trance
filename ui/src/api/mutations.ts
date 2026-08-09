@@ -110,7 +110,7 @@ export function useSessionLifecycle() {
 
 // ------------------------------------------------------------------ agents
 
-export function useAgentMutations() {
+export function useAgentMutations(sessionId: string) {
   const client = useQueryClient();
   // An agent's remit and model show up on the plan screen and inside every
   // session's team, so both go stale together.
@@ -122,11 +122,13 @@ export function useAgentMutations() {
   return {
     save: useMutation({
       mutationFn: ({ name, body }: { name: string; body: Partial<AgentRole> }) =>
-        api.saveAgent(name, body),
+        api.saveAgent(sessionId, name, body),
       onSuccess: settle,
     }),
-    remove: useMutation({ mutationFn: api.deleteAgent, onSuccess: settle }),
-    reset: useMutation({ mutationFn: api.resetAgent, onSuccess: settle }),
+    remove: useMutation({ mutationFn: (name: string) => api.deleteAgent(sessionId, name),
+                          onSuccess: settle }),
+    reset: useMutation({ mutationFn: (name: string) => api.resetAgent(sessionId, name),
+                         onSuccess: settle }),
     draftPrompt: useMutation({ mutationFn: api.draftPrompt }),
   };
 }
@@ -160,45 +162,53 @@ export function usePresetMutations() {
 
 // ------------------------------------------------------------------- loops
 
-export function useLoopMutations() {
+export function useLoopMutations(sessionId: string) {
   const client = useQueryClient();
   const settle = () => void client.invalidateQueries({ queryKey: keys.loops });
   return {
     save: useMutation({
       mutationFn: ({ name, body }: { name: string; body: Partial<Loop> }) =>
-        api.saveLoop(name, body),
+        api.saveLoop(sessionId, name, body),
       onSuccess: settle,
     }),
-    remove: useMutation({ mutationFn: api.deleteLoop, onSuccess: settle }),
+    remove: useMutation({ mutationFn: (name: string) => api.deleteLoop(sessionId, name),
+                          onSuccess: settle }),
   };
 }
 
 // ---------------------------------------------------------------- commands
 
-export function useCommandMutations() {
+export function useCommandMutations(sessionId: string) {
   const client = useQueryClient();
   const settle = () => void client.invalidateQueries({ queryKey: keys.commands });
   return {
     save: useMutation({
-      mutationFn: ({ name, body }: { name: string; body: { allowed?: string[]; shell?: boolean } }) =>
-        api.saveCommandList(name, body),
+      mutationFn: ({ name, body }: { name: string;
+                                     body: { allowed?: string[]; shell?: boolean } }) =>
+        api.saveCommandList(sessionId, name, body),
       onSuccess: settle,
     }),
-    remove: useMutation({ mutationFn: api.deleteCommandList, onSuccess: settle }),
-    allow: useMutation({ mutationFn: api.allowProgram, onSuccess: settle }),
-    reset: useMutation({ mutationFn: api.resetCommands, onSuccess: settle }),
+    remove: useMutation({
+      mutationFn: (name: string) => api.deleteCommandList(sessionId, name),
+      onSuccess: settle }),
+    allow: useMutation({
+      mutationFn: (body: { programs: string[]; agent?: string }) =>
+        api.allowProgram(sessionId, body),
+      onSuccess: settle }),
+    reset: useMutation({ mutationFn: () => api.resetCommands(sessionId),
+                         onSuccess: settle }),
     cancel: useMutation({ mutationFn: api.cancelCommand }),
   };
 }
 
 // -------------------------------------------------------------- settings
 
-export function useSettingsMutations() {
+export function useSettingsMutations(sessionId: string) {
   const client = useQueryClient();
   return {
     planning: useMutation({
-      mutationFn: (body: Partial<Planning>) => api.setPlanning(body),
-      onSuccess: () => client.invalidateQueries({ queryKey: keys.config }),
+      mutationFn: (body: Partial<Planning>) => api.setPlanning(sessionId, body),
+      onSuccess: () => client.invalidateQueries({ queryKey: keys.settings(sessionId) }),
     }),
     orchestrator: useMutation({
       mutationFn: (body: { preset?: string }) => api.setOrchestrator(body),

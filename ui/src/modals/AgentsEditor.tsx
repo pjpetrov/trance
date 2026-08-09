@@ -10,6 +10,7 @@ import { useState } from "react";
 import { useAgents, useConfig, usePresets } from "@/api/queries";
 import { useAgentMutations } from "@/api/mutations";
 import { useDraftLibrary } from "@/lib/useDraftLibrary";
+import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { Badge, Button, Checkbox, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
@@ -40,10 +41,11 @@ function blankAgent(taken: Set<string>): AgentRole {
 }
 
 export function AgentsEditor() {
-  const agents = useAgents();
+  const sessionId = useUi((state) => state.sessionId) ?? "";
+  const agents = useAgents(sessionId);
   const presets = usePresets();
   const config = useConfig();
-  const { save, remove, draftPrompt } = useAgentMutations();
+  const { save, remove, draftPrompt } = useAgentMutations(sessionId);
   const [applying, setApplying] = useState(false);
 
   const library = useDraftLibrary<AgentRole>(agents.data?.agents, (role) => role.name);

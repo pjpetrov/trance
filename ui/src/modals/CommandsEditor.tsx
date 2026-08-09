@@ -9,6 +9,7 @@ import { useState } from "react";
 import { useCommands } from "@/api/queries";
 import { useCommandMutations } from "@/api/mutations";
 import { useDraftLibrary } from "@/lib/useDraftLibrary";
+import { useUi } from "@/store/ui";
 import { Badge, Button, Checkbox, Empty, Field, Input, Textarea }
   from "@/components/ui/primitives";
 import { LibraryFooter, LibraryList } from "@/components/ui/Library";
@@ -23,8 +24,9 @@ interface NamedList {
 }
 
 export function CommandsEditor() {
-  const commands = useCommands();
-  const { save, remove, reset } = useCommandMutations();
+  const sessionId = useUi((state) => state.sessionId) ?? "";
+  const commands = useCommands(sessionId);
+  const { save, remove, reset } = useCommandMutations(sessionId);
   const [applying, setApplying] = useState(false);
 
   const lists: NamedList[] = Object.entries(commands.data?.lists ?? {})

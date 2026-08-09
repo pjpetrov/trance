@@ -32,6 +32,7 @@ from ..agents.tools import ALLOWED_COMMANDS, set_command_lists, set_command_poli
 from ..agents.visual import SHOTS_DIR, available as browser_available
 from ..vision import VISION_KINDS, image_block
 from ..config import Config
+from dataclasses import replace
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
 from ..flow import Flow, Step
@@ -44,6 +45,7 @@ from ..providers import (
 from ..session import ChatMessage, SessionStore
 from .. import paths, preview, vcs
 from ..usage import UsageLedger
+from ..workspace import Workspace
 from ..worker.client import BackendError
 
 #: The built UI. Source lives in ui/ and the build is committed here, so a
@@ -63,11 +65,53 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     # source of truth so provider edits made in the UI survive a restart.
     providers = ProviderStore(Path(config.runs_dir) / "providers.json", seed=config.providers)
     providers.seed_presets_from_providers()  # never show an empty model picker
+    # The workspace-wide files. They are no longer what a run reads — each
+    # project keeps its own under .trance/ — but they are what a project with
+    # none yet is seeded from, so the setup you already have carries forward.
     roles = RoleStore(Path(config.runs_dir) / "agents.json")
     commands = CommandStore(Path(config.runs_dir) / "commands.json")
     loops = LoopStore(Path(config.runs_dir) / "loops.json")
+    workspace = Workspace(defaults=Path(config.runs_dir))
     set_command_policy(commands.policy)
     set_command_lists(commands.lists)
+
+    def stores_q(session: str = ""):
+        """The stores named by a `?session=` query parameter.
+
+        Required rather than defaulted. Agents and loops belong to a project
+        now, so a request that does not say which project is a request nobody
+        can answer correctly — and guessing "the first one" would silently edit
+        the wrong project's agents.
+        """
+        if not session:
+            raise HTTPException(400, (
+                "this configuration belongs to a project, so the request has to "
+                "say which: add ?session=<id>."))
+        return stores_of(_need(store, session))
+
+    def stores_of(session):
+        """The project's own agents, loops, allowlists and settings."""
+        return workspace.stores_for(_project_of(session))
+
+    def config_for(session) -> Config:
+        """`config`, with this project's settings applied.
+
+        The engine reads git_commits and the rest off a Config, and those are
+        now per project — so it gets one that says what this project decided
+        rather than what the machine last had in memory.
+        """
+        return replace(config, **stores_of(session).settings.settings.to_dict())
+
+    def publish_commands_of(session) -> None:
+        """Point the tool layer at this project's allowlists.
+
+        AgentTools reads them through module-level state, so whichever project
+        is about to run has to put its own there first. One run at a time makes
+        that safe; two would not, and the engine is sequential by design.
+        """
+        held = stores_of(session).commands
+        set_command_policy(held.policy)
+        set_command_lists(held.lists)
     config.providers = {p.name: p for p in providers.all()}
     config.presets = {m.name: m for m in providers.all_presets()}
     bus = EventBus()
@@ -167,7 +211,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 f"allowlist.")
 
     def _widen_policy(session, request) -> None:
-        """Make "always" mean it — the same ask must not come back next step."""
+        """Make "always" mean it — the same ask must not come back next step.
+
+        Widened for this project only. Allowing an agent one more path because
+        of what it is building here should not quietly widen its remit in every
+        other project too.
+        """
+        held = stores_of(session)
+        roles, commands = held.roles, held.commands
         if request.kind == "write":
             role = roles.get(request.agent)
             if role is not None and request.subject not in role.paths:
@@ -192,7 +243,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         target = getattr(role, "command_list", "") or DEFAULT_LIST
         policy = commands.upsert(
             target, allowed=sorted(set(commands.get(target).allowed) | set(programs)))
-        _publish_commands()
+        _publish_commands(commands)
         bus.emit("commands_updated", session.id, payload={"name": target, **policy.to_dict()})
 
     def engine_alive(session) -> bool:
@@ -222,8 +273,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             return False
         session.error = None
         session.clear_stop()
-        FlowEngine(session, config, bus, on_change=lambda: touch(session),
-                   approve=broker_for(session).ask, loops=loops).start()
+        publish_commands_of(session)
+        FlowEngine(session, config_for(session), bus, on_change=lambda: touch(session),
+                   approve=broker_for(session).ask, loops=stores_of(session).loops).start()
         return True
 
     def _start_when_free(session) -> None:
@@ -240,16 +292,19 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 session.error = None
                 bus.emit("run_started", session.id, payload={
                     "reason": "the previous run finished unwinding", "steps": 1})
-                FlowEngine(session, config, bus, on_change=lambda: touch(session),
-                           approve=broker_for(session).ask, loops=loops).start()
+                publish_commands_of(session)
+                FlowEngine(session, config_for(session), bus,
+                           on_change=lambda: touch(session),
+                           approve=broker_for(session).ask,
+                           loops=stores_of(session).loops).start()
 
         session._handover = threading.Thread(
             target=wait_and_start, name=f"handover-{session.id}", daemon=True)
         session._handover.start()
 
     def refresh_team(session):
-        """Re-bind a session's team to the current library definitions."""
-        session.team = roles.resolve_team(session.team)
+        """Re-bind a session's team to its project's agent definitions."""
+        session.team = stores_of(session).roles.resolve_team(session.team)
         return session
 
     # ------------------------------------------------------------- static
@@ -343,7 +398,6 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         lifetime = ledger.lifetime()
         return {
             "config": config.to_dict(),
-            "roles": {r.name: r.to_dict() for r in roles.all()},
             # all_presets, not presets: the latter hides anything whose
             # *provider* is disabled, and providers no longer exist — so it
             # returns nothing, and the UI that reads this emptied its model
@@ -351,11 +405,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "presets": [{**m.to_dict(), "spend": lifetime.get(m.name)}
                         for m in providers.all_presets()],
             "kinds": KIND_DEFAULTS,
-            "planning": {"max_step_points": config.max_step_points, "scale": list(POINTS),
-                         "escalation_preset": config.escalation_preset,
-                         "escalation_role": config.escalation_role,
-                         "git_commits": config.git_commits,
-                         "git_auto_init": config.git_auto_init},
+            # Run settings are not here any more: they belong to a project, and
+            # this endpoint does not know which one. GET a session's /settings.
+            "scale": list(POINTS),
             # Reported, never required. Without a browser the visual toolset is
             # simply unavailable and every other toolset works as before. There
             # is no vision model setting: screenshots go to the model the agent
@@ -372,7 +424,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     # ----------------------------------------------------------- commands
 
-    def _publish_commands():
+    def _publish_commands(commands):
+        """Point the tool layer at these lists.
+
+        Editing an allowlist for the project that is running should take effect
+        without waiting for the next run; editing another project's must not
+        touch what is running. The caller has the right store either way.
+        """
         set_command_policy(commands.policy)
         set_command_lists(commands.lists)
 
@@ -387,8 +445,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 f"program names only, no paths or arguments: {', '.join(map(str, bad[:4]))}"))
 
     @app.get("/api/commands")
-    def get_commands():
+    def get_commands(session: str = ""):
         """Every named allowlist, plus which agents use which."""
+        held = stores_q(session)
+        commands, roles = held.commands, held.roles
         return {
             **commands.policy.to_dict(),              # the default, for older callers
             "lists": {n: p.to_dict() for n, p in commands.lists.items()},
@@ -406,8 +466,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         }
 
     @app.put("/api/commands")
-    def set_commands(body: dict):
+    def set_commands(body: dict, session: str = ""):
         """Edit one list. Without a name, the default one."""
+        held = stores_q(session)
+        commands, roles = held.commands, held.roles
         name = (body.get("name") or DEFAULT_LIST).strip()
         if " " in name:
             raise HTTPException(400, "a list name cannot contain spaces")
@@ -416,13 +478,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if name not in commands.lists and not allowed:
             raise HTTPException(400, "a new list needs at least one program")
         policy = commands.upsert(name, allowed=allowed, shell=body.get("shell"))
-        _publish_commands()
+        _publish_commands(commands)
         bus.emit("commands_updated", "system", payload={"name": name, **policy.to_dict()})
         return {"name": name, **policy.to_dict()}
 
     @app.delete("/api/commands/{name}")
-    def delete_command_list(name: str):
+    def delete_command_list(name: str, session: str = ""):
         """Delete a list. Agents pointing at it fall back to the default."""
+        held = stores_q(session)
+        commands, roles = held.commands, held.roles
         if not commands.delete(name):
             raise HTTPException(400, "the default list cannot be deleted")
         moved = []
@@ -434,7 +498,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         for session in store.all():
             refresh_team(session)
             touch(session)
-        _publish_commands()
+        _publish_commands(commands)
         return {"deleted": name, "moved_to_default": moved}
 
     @app.post("/api/commands/cancel/{command_id}")
@@ -446,8 +510,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"cancelled": killed, "still_running": running_commands()}
 
     @app.post("/api/commands/allow")
-    def allow_programs(body: dict):
-        """Add programs to an allowlist — the global one, or an agent's own."""
+    def allow_programs(body: dict, session: str = ""):
+        """Add programs to an allowlist — the project's, or an agent's own."""
+        held = stores_q(session)
+        commands, roles = held.commands, held.roles
         programs = [str(p).strip() for p in (body.get("programs") or []) if str(p).strip()]
         if not programs:
             raise HTTPException(400, "programs is required")
@@ -469,20 +535,22 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         target = getattr(agent, "command_list", "") or DEFAULT_LIST
         policy = commands.upsert(
             target, allowed=sorted(set(commands.get(target).allowed) | set(programs)))
-        _publish_commands()
+        _publish_commands(commands)
         bus.emit("commands_updated", "system", payload={"name": target, **policy.to_dict()})
         return {"scope": "list", "list": target, "allowed": policy.allowed}
 
     @app.post("/api/commands/reset")
-    def reset_commands(body: dict | None = None):
+    def reset_commands(body: dict | None = None, session: str = ""):
+        commands = stores_q(session).commands
         policy = commands.reset((body or {}).get("name") or DEFAULT_LIST)
-        _publish_commands()
+        _publish_commands(commands)
         return policy.to_dict()
 
     # ------------------------------------------------------------- agents
 
     @app.get("/api/agents")
-    def list_agents():
+    def list_agents(session: str = ""):
+        roles = stores_q(session).roles
         return {
             "verifiers": [r.name for r in roles.all() if r.verifier],
             "agents": [
@@ -498,7 +566,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"model": m.model, "provider": m.provider, "context_window": m.context_window}
 
     @app.put("/api/agents/{name}")
-    def upsert_agent(name: str, body: dict):
+    def upsert_agent(name: str, body: dict, session: str = ""):
+        roles = stores_q(session).roles
         # Merge onto what is stored: a partial update ("just change the command
         # list") must not blank the prompt and the remit by omission.
         existing = roles.get(name.strip())
@@ -519,8 +588,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "resolved": _resolved_for(saved)}
 
     @app.post("/api/agents/{name}/reset")
-    def reset_agent(name: str):
+    def reset_agent(name: str, session: str = ""):
         """Restore a built-in agent type to its shipped prompt and permissions."""
+        roles = stores_q(session).roles
         role = roles.reset(name)
         if role is None:
             raise HTTPException(404, f"{name!r} is not a built-in agent type")
@@ -530,7 +600,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {**role.to_dict(), "protected": True, "resolved": _resolved_for(role)}
 
     @app.delete("/api/agents/{name}")
-    def delete_agent(name: str):
+    def delete_agent(name: str, session: str = ""):
+        roles = stores_q(session).roles
         if name in PROTECTED:
             raise HTTPException(409, f"{name!r} is a built-in agent type and cannot be deleted")
         used_by = [s.name for s in store.all() if any(r.name == name for r in s.team)]
@@ -691,9 +762,26 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"preset": config.orchestrator.preset, "provider": resolved.provider,
                 "model": resolved.model, "base_url": resolved.base_url}
 
+    @app.get("/api/sessions/{session_id}/settings")
+    def get_settings(session_id: str):
+        """This project's run settings, and whether it inherited them."""
+        held = stores_of(_need(store, session_id))
+        return {**held.settings.settings.to_dict(), "scale": list(POINTS),
+                # True the first time a project is opened after this shipped:
+                # its configuration was just carried in from the workspace.
+                "migrated": held.migrated}
+
     @app.put("/api/config/planning")
-    def set_planning(body: dict):
-        """The size a step may reach before the orchestrator breaks it up."""
+    def set_planning(body: dict, session: str = ""):
+        """Run settings for one project, written down so they survive a restart.
+
+        They never were before: they lived in memory, so turning commits off
+        lasted until the next restart — and this is a thing people restart.
+        """
+        held = stores_q(session)
+        roles = held.roles
+        changes: dict = {}
+
         if "max_step_points" in body:
             try:
                 value = int(body["max_step_points"] or 0)
@@ -702,25 +790,23 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             if value < 0 or value > 13:
                 raise HTTPException(400, "max_step_points must be between 0 and 13 "
                                          "(0 turns splitting off)")
-            config.max_step_points = value
+            changes["max_step_points"] = value
         if "escalation_preset" in body:
             name = (body.get("escalation_preset") or "").strip()
             if name and providers.preset(name) is None:
                 raise HTTPException(400, f"unknown model {name!r}")
-            config.escalation_preset = name
+            changes["escalation_preset"] = name
         if "escalation_role" in body:
             name = (body.get("escalation_role") or "").strip()
             if name and roles.get(name) is None:
                 raise HTTPException(400, f"unknown agent {name!r}")
-            config.escalation_role = name
+            changes["escalation_role"] = name
         for flag in ("git_commits", "git_auto_init"):
             if flag in body:
-                setattr(config, flag, bool(body[flag]))
-        return {"max_step_points": config.max_step_points, "scale": list(POINTS),
-                "escalation_preset": config.escalation_preset,
-                "escalation_role": config.escalation_role,
-                "git_commits": config.git_commits,
-                "git_auto_init": config.git_auto_init}
+                changes[flag] = bool(body[flag])
+
+        settings = held.settings.update(**changes)
+        return {**settings.to_dict(), "scale": list(POINTS)}
 
     # -------------------------------------------------------------- files
 
@@ -1080,6 +1166,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                              + f": {note['note']}")
             rendered.append("\n".join(lines))
 
+        held = stores_of(session)
+        roles, loops = held.roles, held.loops
         loop_name = (body or {}).get("loop") or ""
         if loop_name and loops.get(loop_name) is None:
             raise HTTPException(400, f"unknown loop {loop_name!r}")
@@ -1183,6 +1271,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "calls": sum(r["calls"] for r in rows)}
 
     def _loop_for_review(session) -> str:
+        held = stores_of(session)
+        roles, loops = held.roles, held.loops
         """Which loop should answer a review.
 
         It used to be whichever loop sorted first, which is how a review ended
@@ -1249,21 +1339,25 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     # -------------------------------------------------------------- loops
 
-    def _loop_context():
+    def _loop_context(roles):
         known = {r.name for r in roles.all()}
         return known, {r.name for r in roles.all() if r.verifier}
 
     @app.get("/api/loops")
-    def list_loops():
+    def list_loops(session: str = ""):
+        held = stores_q(session)
+        loops, roles = held.loops, held.roles
         return {"loops": [l.to_dict() for l in loops.all()],
                 "outcomes": list(EXITS), "stops": list(STOP),
                 "agents": [r.name for r in roles.all() if r.name != "orchestrator"],
                 "verifiers": [r.name for r in roles.all() if r.verifier]}
 
     @app.put("/api/loops/{name}")
-    def upsert_loop(name: str, body: dict):
+    def upsert_loop(name: str, body: dict, session: str = ""):
+        held = stores_q(session)
+        loops, roles = held.loops, held.roles
         loop = Loop.from_dict({**body, "name": name.strip()})
-        known, verifiers = _loop_context()
+        known, verifiers = _loop_context(roles)
         error = validate_loop(loop, known, verifiers)
         if error:
             raise HTTPException(400, error)
@@ -1272,7 +1366,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return saved.to_dict()
 
     @app.delete("/api/loops/{name}")
-    def delete_loop(name: str):
+    def delete_loop(name: str, session: str = ""):
+        loops = stores_q(session).loops
         used = [s.name for s in store.all()
                 if any(step.loop == name for step in s.flow.steps)]
         if used:
@@ -1597,8 +1692,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 config=config.for_orchestrator(),
                 bus=bus,
                 session_id=session_id,
-                roles=roles.all(),
-                loops=loops,
+                roles=stores_of(session).roles.all(),
+                loops=stores_of(session).loops,
             )
         except BackendError as exc:
             bus.emit("error", session_id, payload={"message": str(exc)})
@@ -1626,7 +1721,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             for wanted in proposal.get("requirements") or []:
                 if wanted not in session.requirements:
                     session.requirements.append(wanted)
-            session.team = roles.resolve_team(proposal["team"])
+            session.team = stores_of(session).roles.resolve_team(proposal["team"])
             # Added to, not replaced. A new plan proposed halfway through used
             # to delete every finished step and its history with it — the
             # orchestrator is proposing what to do next, not editing what
@@ -1685,6 +1780,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     @app.put("/api/sessions/{session_id}/flow")
     def update_flow(session_id: str, body: dict):
         session = _need(store, session_id)
+        held = stores_of(session)
+        roles, loops = held.roles, held.loops
         steps = [Step.from_dict(s) for s in body.get("steps", [])]
         for step in steps:
             if step.loop:
@@ -1735,6 +1832,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.put("/api/sessions/{session_id}/team")
     def update_team(session_id: str, body: dict):
+        roles = stores_of(_need(store, session_id)).roles
         """Set which agent types are on this project's team.
 
         Accepts names or full objects; either way the definitions come from the
@@ -1891,7 +1989,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         try:
             result = await asyncio.to_thread(
                 orchestrator_agent.split_oversized, {"steps": [target], "team": []},
-                roles=roles.all(), config=config.for_orchestrator(), bus=bus,
+                roles=stores_of(session).roles.all(), config=config.for_orchestrator(), bus=bus,
                 session_id=session_id, threshold=threshold,
                 project_dir=Path(session.project_dir),
             )
