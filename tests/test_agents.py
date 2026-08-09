@@ -8135,3 +8135,44 @@ def test_a_backend_that_cannot_be_told_to_stop_thinking_is_not_asked_twice(
     # Anthropic is a 400. Whatever else the runner does, it must never appear.
     assert all(sent is None for sent in tries)
     assert not any(e.type == "thinking_overran" for e in seen)
+
+
+def test_thinking_stays_off_for_the_rest_of_a_turn_once_it_has_overrun(
+        tmp_path, monkeypatch):
+    """A model that spiralled on one round spirals on the next. Measured on one
+    real session: thirty replies in a row each burned the whole 8,000-token
+    budget on reasoning and answered nothing. Paying that a second time per
+    round to learn the same thing again is the expensive way to be right."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    sent = []
+
+    class _Spiraller:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            self.n += 1
+            sent.append(extra_body)
+            if self.n == 1:                     # all budget spent thinking
+                return ChatResponse(text="", finish_reason="length",
+                                    reasoning="round and round")
+            if self.n == 2:                     # the retry answers, with a tool call
+                return ChatResponse(text="", tool_calls=[
+                    ToolCall(id="c1", name="remember", arguments={"note": "a decision"})])
+            return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda _config: _Spiraller())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(kind="llamacpp", max_tokens=8000), bus=EventBus(),
+                     session_id="s", step_id="st")
+
+    off = {"chat_template_kwargs": {"enable_thinking": False}}
+    assert sent[0] is None            # the first try is normal
+    assert sent[1] == off             # the retry that recovers it
+    # And every round after it, without spending the budget to find out again.
+    assert all(later == off for later in sent[2:]), sent

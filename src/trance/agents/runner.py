@@ -519,6 +519,10 @@ def _run_agent(
     # Trimming against a guess is how a "55k" prompt arrived as 61k and filled
     # the window it was supposed to stay inside.
     chars_per_token = DEFAULT_CHARS_PER_TOKEN
+    #: Set once a reply has come back as nothing but reasoning. From then on the
+    #: turn asks with thinking off, rather than paying the whole budget to
+    #: rediscover the same thing every round.
+    stopped_thinking = False
 
     for round_n in range(1, max_rounds + 1):
         if should_stop and should_stop():
@@ -559,12 +563,16 @@ def _run_agent(
             "message": f"waiting for {model_config.preset or model_config.model}",
         })
         try:
-            response = client.complete(messages, tools=specs or None,
-                                       cancel_token=session_id)
-            response = _answer_or_retry_without_thinking(
+            response = client.complete(
+                messages, tools=specs or None, cancel_token=session_id,
+                **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+                   if stopped_thinking else {}))
+            response, overran = _answer_or_retry_without_thinking(
                 response, client=client, messages=messages, specs=specs,
                 config=model_config, bus=bus, session_id=session_id,
-                role=role, step_id=step_id, round_n=round_n)
+                role=role, step_id=step_id, round_n=round_n,
+                already_overran=stopped_thinking)
+            stopped_thinking = stopped_thinking or overran
         except Cancelled:
             # Stop, mid-generation. Not an error, and not the agent's doing.
             turn.stop_reason = "cancelled"
@@ -874,7 +882,8 @@ THINKING_TOGGLE_KINDS = ("llamacpp", "vllm")
 
 
 def _answer_or_retry_without_thinking(response, *, client, messages, specs, config,
-                                      bus, session_id, role, step_id, round_n):
+                                      bus, session_id, role, step_id, round_n,
+                                      already_overran=False):
     """Recover a round the model spent entirely on thinking.
 
     `max_tokens` caps *generated* tokens, and reasoning is generated tokens — so
@@ -888,14 +897,27 @@ def _answer_or_retry_without_thinking(response, *, client, messages, specs, conf
     read — and it only moves the wall rather than removing it. Asking again
     without thinking spends the same budget on an answer instead, and costs
     nothing on the rounds where this never happens.
+
+    Once it has happened in a turn it is assumed to keep happening, and the rest
+    of the turn goes out with thinking already off. A model that spiralled on
+    one round spirals on the next: measured on one real session, thirty replies
+    in a row each burned the whole 8,000-token budget on reasoning and answered
+    nothing. Paying that a second time per round, to learn the same thing again,
+    is the expensive way to be right.
+
+    Returns (response, overran) — the flag is what turns thinking off for the
+    remainder of the turn.
     """
+    if already_overran:
+        # Thinking is already off for this turn; nothing to recover.
+        return response, True
     thought = (getattr(response, "reasoning", "") or "").strip()
     if response.finish_reason != "length" or (response.text or "").strip() or not thought:
-        return response
+        return response, False
     if response.tool_calls:
-        return response                        # it got far enough to act
+        return response, False                 # it got far enough to act
     if (getattr(config, "kind", "") or "") not in THINKING_TOGGLE_KINDS:
-        return response
+        return response, False
 
     bus.emit("thinking_overran", session_id, agent=role.name, step_id=step_id, payload={
         "round": round_n, "limit": config.max_tokens,
@@ -911,7 +933,7 @@ def _answer_or_retry_without_thinking(response, *, client, messages, specs, conf
     # the round went the way it did, and it is what the console shows.
     if not (retried.reasoning or "").strip():
         retried.reasoning = thought
-    return retried
+    return retried, True
 
 
 def _drop_unfinished_call(messages: list[dict], cut_short: list) -> None:
