@@ -944,3 +944,47 @@ def test_the_hold_is_capped_and_reported(tmp_path, monkeypatch):
     # Left alone, the browser's own default applies rather than zero.
     tools.call("press_key", {"key": "ArrowLeft"})
     assert asked["hold"] is None
+
+
+def test_nothing_inspects_a_browser_that_was_never_sent_anywhere(tmp_path):
+    """Regression: every tool starts the browser lazily, so calling one before
+    open_page left it on about:blank — and about:blank is a white page that
+    never changes. `wait` reported "the screen did not change at all", ok=True,
+    beside two blank screenshots it called byte-for-byte identical. All true,
+    all useless, and it cost a whole block of a loop."""
+    # With a model configured, so `look` reaches the page check rather than
+    # stopping earlier on having nothing to look with.
+    tools = AgentTools(tmp_path, _role(), session_id="s", step_id="st",
+                       vision_config=_vision_config())
+    try:
+        for name, args in (("wait", {"frames": 30}),
+                           ("check_canvas", {}),
+                           ("press_key", {"key": "Space"}),
+                           ("look", {"question": "anything?"})):
+            out = tools.call(name, args)
+            assert out.ok is False, f"{name} answered about a blank page"
+            assert "open_page first" in out.text, name
+    finally:
+        tools.close()
+
+
+@needs_chrome
+def test_the_tools_work_once_a_page_is_open(tmp_path):
+    """And the guard must not be in the way of the normal case."""
+    from trance.agents.visual import VisualSession
+
+    (tmp_path / "index.html").write_text(
+        "<canvas id=c width=40 height=40></canvas><script>"
+        "const x=document.getElementById('c').getContext('2d');"
+        "(function d(){x.fillStyle='#'+((Date.now()/16|0)%2?'0a0':'00a');"
+        "x.fillRect(0,0,40,40);requestAnimationFrame(d)})();</script>",
+        encoding="utf8")
+
+    session = VisualSession(tmp_path, session_id="s", step_id="st")
+    try:
+        session.open("index.html", settle_frames=10)
+        assert session.wait(20)["frames"] > 0
+        assert session.check(10)["canvas"] is True
+        assert session.press("Space")["delivered"] == ["Space"]
+    finally:
+        session.close()

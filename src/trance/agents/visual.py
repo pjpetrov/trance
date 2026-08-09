@@ -121,7 +121,22 @@ class VisualSession:
             "build_command": (build or {}).get("command", ""),
         }
 
+    def _needs_a_page(self) -> None:
+        """Refuse to inspect a browser that was never sent anywhere.
+
+        Every tool here starts the browser lazily, so calling one before
+        open_page leaves it on about:blank — and about:blank is a white page
+        that never changes. Which is exactly what it reported: "the screen did
+        not change at all", true and useless, next to two blank screenshots. A
+        confident wrong answer is worse than a refusal that says what to do.
+        """
+        if not self.page:
+            raise BrowserUnavailable(
+                "no page is open. Call open_page first — everything here looks at "
+                "the page the browser is on, and until then that is a blank one.")
+
     def press(self, key: str, times: int = 1, hold_frames: int | None = None) -> dict:
+        self._needs_a_page()
         return self._with_shots(self.browser.press(
             key, times=times,
             **({"hold_frames": hold_frames} if hold_frames else {})))
@@ -135,6 +150,7 @@ class VisualSession:
         and reads as a bug. Counted in animation frames rather than seconds so
         it means the same thing on a slow machine.
         """
+        self._needs_a_page()
         found = self._with_shots(self.browser.run_for(frames))
         found["errors"] = self.browser.errors.to_dict()
         return found
@@ -166,6 +182,7 @@ class VisualSession:
 
     def check(self, frames: int = 30) -> dict:
         """The free checks: did it paint, is it still painting, did it complain."""
+        self._needs_a_page()
         self.browser.drain()
         live = self.browser.liveness(frames)
         probe = live["after"]
@@ -183,6 +200,7 @@ class VisualSession:
 
     def capture(self, whole_page: bool = False, max_edge: int = MAX_SHOT_EDGE) -> tuple[bytes, dict]:
         """A PNG plus what it is a picture of."""
+        self._needs_a_page()
         probe = self.browser.probe()
         clip = None if whole_page else self.browser.canvas_clip(probe)
         png = self.browser.screenshot(clip, max_edge=max_edge)
