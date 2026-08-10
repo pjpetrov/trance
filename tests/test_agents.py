@@ -8163,6 +8163,116 @@ def test_the_last_word_of_a_turn_still_carries_the_context_gauge(tmp_path, monke
     assert all(call.payload.get("context") for call in calls)
 
 
+def test_reading_is_closed_when_it_stops_turning_into_work(tmp_path, monkeypatch):
+    """Measured on a repair loop that could not finish: 24 rounds bought 79-94
+    lookups and no edits; 36 bought 102, then 133, and still no edits — "I have
+    read and analyzed every file in the project thoroughly across 36 rounds, but
+    I have not written any fixes yet". A bigger budget funded more reading."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    seen, offered = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _OnlyReads:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            offered.append({spec["function"]["name"] for spec in (tools or [])})
+            if "read_file" in offered[-1]:
+                return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                    ToolCall(id=f"c{len(offered)}", name="read_file",
+                             arguments={"path": "README.md"})])
+            return ChatResponse(text="Fixed it.\n\nOUTCOME: SUCCESS")
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf8")
+    monkeypatch.setattr(runner, "client_for", lambda config: _OnlyReads())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=10,
+                     session_id="s", step_id="st")
+
+    told = next(e for e in seen if e.type == "reading_closed")
+    assert told.payload["round"] == 7                  # 60% of ten, then the next
+    assert "read_file" in told.payload["withdrawn"]
+
+    # Withdrawn, not merely discouraged — and only the lookups.
+    assert "read_file" in offered[0] and "write_file" in offered[0]
+    assert "write_file" in offered[-1]
+    assert not (offered[-1] & runner._LOOKUP_TOOLS), offered[-1]
+
+
+def test_an_agent_that_is_writing_is_left_alone(tmp_path, monkeypatch):
+    """The gate is about an attempt spent entirely preparing to work. An agent
+    that has already written is working, and taking its tools away mid-edit
+    would be the opposite of the point."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    seen, rounds = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _WritesThenReads:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            rounds.append({spec["function"]["name"] for spec in (tools or [])})
+            if len(rounds) == 1:
+                return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                    ToolCall(id="w", name="write_file",
+                             arguments={"path": "src/app.js", "content": "ok"})])
+            if len(rounds) < 9:
+                return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                    ToolCall(id=f"r{len(rounds)}", name="read_file",
+                             arguments={"path": "src/app.js"})])
+            return ChatResponse(text="Done.\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _WritesThenReads())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=10,
+                     session_id="s", step_id="st")
+
+    assert not any(e.type == "reading_closed" for e in seen)
+    assert "read_file" in rounds[-1]
+
+
+def test_a_read_only_agent_keeps_its_lookups(tmp_path, monkeypatch):
+    """A reviewer with no remit has nothing to write; withdrawing the only tools
+    it has would leave it with none at all."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    seen, offered = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    reviewer = BUILTIN_ROLES["reviewer"]
+    assert not reviewer.paths, "this test is about the role that cannot write"
+
+    class _Reads:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            offered.append({spec["function"]["name"] for spec in (tools or [])})
+            if len(offered) < 9:
+                return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                    ToolCall(id=f"r{len(offered)}", name="read_file",
+                             arguments={"path": "README.md"})])
+            return ChatResponse(text="Looks fine.\n\nOUTCOME: SUCCESS")
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf8")
+    monkeypatch.setattr(runner, "client_for", lambda config: _Reads())
+    runner.run_agent(role=reviewer, task="t", project=tmp_path,
+                     config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=10,
+                     session_id="s", step_id="st")
+
+    assert not any(e.type == "reading_closed" for e in seen)
+    assert "read_file" in offered[-1]
+
+
 def test_the_history_says_which_calls_had_thinking_on(tmp_path, monkeypatch):
     """Reading an empty reply and working out whether thinking was even on meant
     finding a thinking_overran event some rounds earlier and assuming it still

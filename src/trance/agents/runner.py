@@ -57,11 +57,31 @@ _FAILURE_WORDS = frozenset({
 TRIMMED = ("[dropped to fit the context window. Work from what you have already "
            "learned; only fetch this again if you cannot proceed without it]")
 
+#: The share of an attempt an agent may spend purely on reading. Past this, if
+#: it has still written nothing, the lookup tools are withdrawn for the rest of
+#: the attempt.
+#:
+#: Measured on a repair loop that could not finish: with 24 rounds it made 79-94
+#: lookups and no edits; raised to 36 it made 102, then 133 — and still no
+#: edits, ending "I have read and analyzed every file in the project thoroughly
+#: across 36 rounds, but I have not written any fixes yet." A bigger budget did
+#: not buy a decision, it funded more reading. Nothing here forces a good edit,
+#: but it does stop the attempt being spent entirely on preparing for one.
+LOOKUP_SHARE = 0.6
+
 #: Lookups whose answer depends only on their arguments. Repeating one is always
 #: waste; repeating run_command or write_file is not.
 _CACHEABLE = frozenset({
     "read_file", "get_definition", "get_callers", "get_callees", "search_symbols",
     "list_files", "check_file", "check_files",
+})
+
+#: The tools withdrawn when reading is closed. Everything here answers "what is
+#: already there"; check_file and check_files stay, because an agent verifying
+#: its own write is doing the opposite of stalling.
+_LOOKUP_TOOLS = frozenset({
+    "read_file", "get_definition", "get_callers", "get_callees", "search_symbols",
+    "list_files",
 })
 
 
@@ -526,6 +546,7 @@ def _run_agent(
     #: turn asks with thinking off, rather than paying the whole budget to
     #: rediscover the same thing every round.
     stopped_thinking = False
+    stopped_reading = False
 
     for round_n in range(1, max_rounds + 1):
         if should_stop and should_stop():
@@ -544,6 +565,31 @@ def _run_agent(
             })
             bus.emit("steering_delivered", session_id, agent=role.name, step_id=step_id,
                      payload={"note": note, "round": round_n})
+
+        # Reading is closed once most of the attempt is gone and none of it has
+        # reached the disk. Said out loud and taken away at the same time: an
+        # agent told to stop reading while the tools are still in front of it
+        # reads on, and one whose tools vanish without a word retries them.
+        if (not stopped_reading and not turn.files_written and role.paths
+                and round_n > max(1, int(max_rounds * LOOKUP_SHARE))):
+            stopped_reading = True
+            specs = [spec for spec in specs
+                     if spec["function"]["name"] not in _LOOKUP_TOOLS]
+            messages.append({"role": "user", "content": (
+                f"You have used {round_n - 1} of your {max_rounds} tool rounds and "
+                f"have not written anything yet. The tools that only look things up "
+                f"are withdrawn for the rest of this attempt.\n\n"
+                f"Make the smallest change that addresses the task, using what you "
+                f"already know. If what you know is not enough to fix it properly, "
+                f"write the part you are sure of and say what is left — a partial "
+                f"fix that names its own gap is worth more to the next agent than "
+                f"a complete description of the problem.")})
+            bus.emit("reading_closed", session_id, agent=role.name, step_id=step_id,
+                     payload={"round": round_n, "of": max_rounds,
+                              "withdrawn": sorted(_LOOKUP_TOOLS),
+                              "message": (f"{round_n - 1} of {max_rounds} rounds spent "
+                                          f"without writing anything — lookup tools "
+                                          f"withdrawn for the rest of this attempt.")})
 
         messages, trimmed = fit_context(messages, model_config.input_budget, chars_per_token)
         if trimmed:
