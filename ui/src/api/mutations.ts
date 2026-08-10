@@ -92,7 +92,7 @@ export function useSessionLifecycle() {
   const client = useQueryClient();
   return {
     create: useMutation({
-      mutationFn: (body: { name: string; project_dir: string; goal?: string }) =>
+      mutationFn: (body: { name: string; project_dir?: string; goal?: string }) =>
         api.createSession(body),
       onSuccess: (session) => putSession(client, session),
     }),

@@ -45,7 +45,7 @@ from ..providers import (
 from ..session import ChatMessage, SessionStore
 from .. import paths, preview, vcs
 from ..usage import UsageLedger
-from ..workspace import Workspace
+from ..workspace import Workspace, folder_for
 from ..worker.client import BackendError
 
 #: The built UI. Source lives in ui/ and the build is committed here, so a
@@ -1413,7 +1413,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         name = (body.get("name") or "untitled").strip()
         project_dir = (body.get("project_dir") or "").strip()
         if not project_dir:
-            raise HTTPException(400, "project_dir is required")
+            # No path given: that is the normal case. The workspace is where
+            # projects go and the name is the folder — asking for an absolute
+            # path as well was asking the same question twice.
+            root = config.workspace_root
+            project_dir = str(root / folder_for(name))
+            if not Path(project_dir).resolve().is_relative_to(root.resolve()):
+                raise HTTPException(400, f"{name!r} does not name a folder.")
         problem, project_dir = check_project_dir(project_dir)
         if problem:
             raise HTTPException(400, problem)

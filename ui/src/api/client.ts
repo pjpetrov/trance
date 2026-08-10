@@ -72,11 +72,13 @@ const forProject = (sid: string, extra = "") =>
 
 export const api = {
   config: () => request<AppConfig>("/api/config"),
-  workspace: () => request<{ root: string; state_dir: string; entries?: string[] }>(
-    "/api/workspace"),
-  checkPath: (path: string) =>
-    request<{ ok: boolean; error?: string; path: string }>("/api/check-path",
-      { method: "POST", body: { path } }),
+  workspace: () => request<{
+    workspace: string; state_dir: string; writable: boolean;
+    suggested_name: string; suggested_dir: string;
+  }>("/api/workspace"),
+  // No checkPath: nothing types a path any more, and the stub that was here
+  // sent {path} to an endpoint that reads project_dir — it would have failed
+  // the first time anyone called it.
 
   settings: (sid: string) =>
     request<Planning & { scale: number[]; migrated: boolean }>(
@@ -146,7 +148,7 @@ export const api = {
   // ----------------------------------------------------------- sessions
   sessions: () => request<Session[]>("/api/sessions"),
   session: (sid: string) => request<Session>(`/api/sessions/${id(sid)}`),
-  createSession: (body: { name: string; project_dir: string; goal?: string }) =>
+  createSession: (body: { name: string; project_dir?: string; goal?: string }) =>
     request<Session>("/api/sessions", { method: "POST", body }),
   deleteSession: (sid: string, files = false) =>
     request<{ deleted: string; project_dir: string; files_deleted: boolean }>(

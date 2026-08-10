@@ -19,6 +19,7 @@ project made before any of this existed picks it up the first time it is opened.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -86,6 +87,28 @@ class SettingsStore:
                                  encoding="utf8")
         except OSError:
             pass
+
+
+#: Everything a folder name may keep; the rest becomes a dash.
+_KEEP = re.compile(r"[^a-z0-9._-]+")
+
+
+def folder_for(name: str) -> str:
+    """The folder a project called `name` gets inside the workspace.
+
+    Typing an absolute path was the one piece of ceremony between "I want to
+    build this" and building it, and it was the same path every time with a
+    different last component. The name is that component.
+
+    Deliberately the same folder for the same name: a second session on a
+    project you already have should join it, not start an empty copy beside it
+    — which is what the stores already assume, holding a project by its path.
+
+    Separators do not survive, so a name cannot reach outside the workspace.
+    """
+    slug = _KEEP.sub("-", name.strip().lower())
+    slug = re.sub(r"-{2,}", "-", slug).strip("-._")[:64].strip("-._")
+    return slug or "project"
 
 
 def seed(target: Path, source: Path | None) -> bool:

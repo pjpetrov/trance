@@ -78,6 +78,16 @@ export function usePresets() {
   });
 }
 
+/** Where new projects go. Read so the create form can show the folder a name
+ *  will land in, rather than asking for it. */
+export function useWorkspace() {
+  return useQuery({
+    queryKey: keys.workspace,
+    queryFn: () => api.workspace(),
+    staleTime: CONFIG_STALE,
+  });
+}
+
 export function useLoops(sessionId: string | null) {
   return useQuery({
     queryKey: [...keys.loops, sessionId ?? ""],

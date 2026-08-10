@@ -2,7 +2,7 @@
  *  orchestrator until it has enough to propose a plan. */
 
 import { useRef, useState } from "react";
-import { useSession, useSessions } from "@/api/queries";
+import { useSession, useSessions, useWorkspace } from "@/api/queries";
 import { useChat, useSessionLifecycle } from "@/api/mutations";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
@@ -187,13 +187,24 @@ export function HomeScreen() {
   );
 }
 
+/** A name, and nothing else.
+ *
+ *  It used to ask for an absolute project directory too, which was the same
+ *  path every time with a different last component — the name. The server
+ *  derives the folder from the name now; this shows which one, so the answer
+ *  is visible without being typed.
+ */
 function NewSession(
   { onCreate, busy }:
-  { onCreate: (body: { name: string; project_dir: string }) => void; busy: boolean },
+  { onCreate: (body: { name: string }) => void; busy: boolean },
 ) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [dir, setDir] = useState("");
+  const workspace = useWorkspace();
+  // The same rule the server applies, so what is shown is what is created.
+  const folder = name.trim().toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-").replace(/-{2,}/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "").slice(0, 64).replace(/[-._]+$/, "") || "project";
 
   if (!open) {
     return (
@@ -208,18 +219,19 @@ function NewSession(
       className="space-y-2 border-t border-line p-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!name.trim() || !dir.trim()) return;
-        onCreate({ name: name.trim(), project_dir: dir.trim() });
-        setOpen(false); setName(""); setDir("");
+        if (!name.trim()) return;
+        onCreate({ name: name.trim() });
+        setOpen(false); setName("");
       }}
     >
-      <Field label="Name">
+      <Field
+        label="Name"
+        hint={workspace.data
+          ? `${workspace.data.workspace}/${folder} — created if it is not there yet.`
+          : "The folder is made in the workspace, from this name."}
+      >
         <Input value={name} autoFocus onChange={(e) => setName(e.target.value)}
                placeholder="pacman" />
-      </Field>
-      <Field label="Project directory" hint="Absolute path. Created if it does not exist.">
-        <Input value={dir} onChange={(e) => setDir(e.target.value)}
-               placeholder="/home/you/projects/pacman" />
       </Field>
       <div className="flex gap-2">
         <Button variant="primary" type="submit" busy={busy} className="flex-1">Create</Button>

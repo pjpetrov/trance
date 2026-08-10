@@ -8,6 +8,7 @@ deliberately left behind — the API keys.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from trance.workspace import ProjectStores, Settings, SettingsStore, Workspace, seed
 
@@ -238,6 +239,59 @@ def test_models_stay_on_the_machine(tmp_path):
     client.put("/api/agents/backend", json={"preset": "claude"}, params={"session": game})
     agents = client.get("/api/agents", params={"session": game}).json()["agents"]
     assert next(a for a in agents if a["name"] == "backend")["preset"] == "claude"
+
+
+def test_a_new_session_needs_only_a_name(tmp_path):
+    """Typing an absolute path was the ceremony between "I want to build this"
+    and building it — and it was the same path every time, with the name on the
+    end."""
+    client, _ = _serve(tmp_path)
+    made = client.post("/api/sessions", json={"name": "Chicken Invaders"}).json()
+
+    assert made["project_dir"] == str(tmp_path / "workspace" / "chicken-invaders")
+    # And it is a real project directory, configured like any other.
+    client.put("/api/agents/frontend", json={"system_prompt": "canvas games"},
+               params={"session": made["id"]})
+    assert (tmp_path / "workspace" / "chicken-invaders" / ".trance" / "agents.json").is_file()
+
+
+def test_the_same_name_is_the_same_project(tmp_path):
+    """A second session on a project you already have should join it, not start
+    an empty copy beside it — which is what the stores assume, holding a project
+    by its path."""
+    client, _ = _serve(tmp_path)
+    first = client.post("/api/sessions", json={"name": "pacman"}).json()
+    client.put("/api/agents/frontend", json={"system_prompt": "mazes"},
+               params={"session": first["id"]})
+
+    second = client.post("/api/sessions", json={"name": "Pacman"}).json()
+    assert second["project_dir"] == first["project_dir"]
+    agents = client.get("/api/agents", params={"session": second["id"]}).json()["agents"]
+    assert next(a for a in agents if a["name"] == "frontend")["system_prompt"] == "mazes"
+
+
+def test_a_name_cannot_reach_outside_the_workspace(tmp_path):
+    """The name becomes a path, so it is input to a path — and the folder it
+    names has files written into it."""
+    client, _ = _serve(tmp_path)
+    workspace = (tmp_path / "workspace").resolve()
+
+    for name in ("../escaped", "/etc/passwd", "..", ".", "  ", "..%2F..%2Fetc"):
+        made = client.post("/api/sessions", json={"name": name})
+        assert made.status_code == 200, (name, made.text)
+        landed = Path(made.json()["project_dir"]).resolve()
+        assert landed.is_relative_to(workspace), (name, landed)
+        assert landed != workspace, name          # never the workspace itself
+
+
+def test_an_explicit_directory_is_still_honoured(tmp_path):
+    """Pointing trance at a repository that already exists, anywhere on disk, is
+    the other half of what it is for."""
+    client, _ = _serve(tmp_path)
+    elsewhere = tmp_path / "some" / "checkout"
+    made = client.post("/api/sessions",
+                       json={"name": "work", "project_dir": str(elsewhere)}).json()
+    assert made["project_dir"] == str(elsewhere)
 
 
 def test_a_project_handed_over_arrives_configured(tmp_path):
