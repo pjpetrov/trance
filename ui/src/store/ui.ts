@@ -24,10 +24,9 @@ interface UiStore {
    *  stops is indistinguishable from something broken. */
   follow: boolean;
   /** Console filters. Reads are the bulk of the traffic and the least of the
-   *  interest — but the switch that was supposed to hide them never did, so
-   *  they have always been shown. It works now; making it default to hiding
-   *  them at the same time would take away what people are used to reading,
-   *  and the button is right there. */
+   *  interest: on one measured step, 386 of an agent's 407 tool calls were
+   *  lookups and 15 were edits, so the work was buried in them. Hidden by
+   *  default now — the button says how many it is holding back. */
   showReads: boolean;
   hideFinished: boolean;
   /** Scope the console to one step, or null for the whole run. */
@@ -57,7 +56,7 @@ export const useUi = create<UiStore>((set) => ({
   modal: null,
   openStep: null,
   follow: true,
-  showReads: true,
+  showReads: false,
   hideFinished: false,
   consoleStep: null,
   filePath: null,

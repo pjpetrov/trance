@@ -13,6 +13,7 @@ import { useUi } from "@/store/ui";
 import { Badge, Button, Checkbox, Empty, Field, Input, Textarea }
   from "@/components/ui/primitives";
 import { LibraryFooter, LibraryList } from "@/components/ui/Library";
+import { ScopeSwitch, idFor, type Scope } from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
 
 /** A list as the editor holds it: the API keys lists by name, which a draft
@@ -24,7 +25,9 @@ interface NamedList {
 }
 
 export function CommandsEditor() {
-  const sessionId = useUi((state) => state.sessionId) ?? "";
+  const session = useUi((state) => state.sessionId);
+  const [scope, setScope] = useState<Scope>("project");
+  const sessionId = idFor(scope, session);
   const commands = useCommands(sessionId);
   const { save, remove, reset } = useCommandMutations(sessionId);
   const [applying, setApplying] = useState(false);
@@ -158,6 +161,8 @@ export function CommandsEditor() {
       </div>
 
       <footer className="flex items-center gap-2 border-t border-line px-4 py-3">
+        <ScopeSwitch scope={scope} onChange={setScope} what="allowlists" />
+        <div className="flex-1" />
         <LibraryFooter
           changeCount={library.changeCount}
           onApply={apply}

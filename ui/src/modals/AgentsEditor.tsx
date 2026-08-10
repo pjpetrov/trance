@@ -15,6 +15,7 @@ import { cn } from "@/lib/cn";
 import { Badge, Button, Checkbox, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
 import { LibraryFooter, LibraryList } from "@/components/ui/Library";
+import { ScopeSwitch, idFor, type Scope } from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
 import type { AgentRole, Toolset } from "@/api/types";
 
@@ -41,7 +42,9 @@ function blankAgent(taken: Set<string>): AgentRole {
 }
 
 export function AgentsEditor() {
-  const sessionId = useUi((state) => state.sessionId) ?? "";
+  const session = useUi((state) => state.sessionId);
+  const [scope, setScope] = useState<Scope>("project");
+  const sessionId = idFor(scope, session);
   const agents = useAgents(sessionId);
   const presets = usePresets();
   const config = useConfig();
@@ -255,6 +258,8 @@ export function AgentsEditor() {
       </div>
 
       <footer className="flex items-center gap-2 border-t border-line px-4 py-3">
+        <ScopeSwitch scope={scope} onChange={setScope} what="agents" />
+        <div className="flex-1" />
         <LibraryFooter
           changeCount={library.changeCount}
           onApply={apply}

@@ -45,7 +45,7 @@ from ..providers import (
 from ..session import ChatMessage, SessionStore
 from .. import paths, preview, vcs
 from ..usage import UsageLedger
-from ..workspace import Workspace, folder_for
+from ..workspace import DefaultStores, Workspace, folder_for
 from ..worker.client import BackendError
 
 #: The built UI. Source lives in ui/ and the build is committed here, so a
@@ -56,6 +56,11 @@ STATIC = Path(__file__).parent / "ui"
 #: How much history the console asks for when it opens a session. Enough to
 #: rebuild what you were looking at; the rest is fetched by whoever wants it.
 CONSOLE_TAIL = 400
+
+
+#: Addresses the workspace-wide configuration instead of a project's. Session
+#: ids are `s_…`, so this can never collide with a real one.
+DEFAULTS = "defaults"
 
 
 def engine_alive(session) -> bool:
@@ -85,6 +90,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     commands = CommandStore(Path(config.runs_dir) / "commands.json")
     loops = LoopStore(Path(config.runs_dir) / "loops.json")
     workspace = Workspace(defaults=Path(config.runs_dir))
+    # The workspace-wide files, addressable so they can be edited. Every new
+    # project is a copy of these, and until now the only way to change what the
+    # next project starts from was a text editor.
+    defaults_stores = DefaultStores(Path(config.runs_dir))
     set_command_policy(commands.policy)
     set_command_lists(commands.lists)
 
@@ -96,10 +105,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         can answer correctly — and guessing "the first one" would silently edit
         the wrong project's agents.
         """
+        if session == DEFAULTS:
+            return defaults_stores
         if not session:
             raise HTTPException(400, (
                 "this configuration belongs to a project, so the request has to "
-                "say which: add ?session=<id>."))
+                f"say which: add ?session=<id>, or ?session={DEFAULTS} to edit "
+                "what new projects start from."))
         return stores_of(_need(store, session))
 
     def stores_of(session):
@@ -768,7 +780,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     @app.get("/api/sessions/{session_id}/settings")
     def get_settings(session_id: str):
         """This project's run settings, and whether it inherited them."""
-        held = stores_of(_need(store, session_id))
+        held = (defaults_stores if session_id == DEFAULTS
+                else stores_of(_need(store, session_id)))
         return {**held.settings.settings.to_dict(), "scale": list(POINTS),
                 # True the first time a project is opened after this shipped:
                 # its configuration was just carried in from the workspace.

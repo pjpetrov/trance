@@ -151,6 +151,36 @@ class ProjectStores:
         return any(self.seeded.values())
 
 
+class DefaultStores:
+    """The workspace-wide configuration every new project is seeded from.
+
+    Same shape as ProjectStores, so nothing downstream has to know which of the
+    two it is holding. No `.trance/` and no seeding: these files *are* the
+    source, sitting where the installation keeps its state.
+
+    Editable for the same reason the per-project copies are. Tuning an agent
+    used to mean tuning it for every project at once; per-project stores fixed
+    that and left no way to change what the *next* project starts from — so a
+    prompt you had improved in four projects still had to be improved a fifth
+    time in the fifth.
+    """
+
+    def __init__(self, directory: Path):
+        self.dir = Path(directory)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.project = self.dir
+        self.seeded: dict[str, bool] = {}
+
+        self.roles = RoleStore(self.dir / AGENTS)
+        self.loops = LoopStore(self.dir / LOOPS)
+        self.commands = CommandStore(self.dir / COMMANDS)
+        self.settings = SettingsStore(self.dir / SETTINGS)
+
+    @property
+    def migrated(self) -> bool:
+        return False
+
+
 class Workspace:
     """Every project's stores, opened once each.
 

@@ -75,6 +75,38 @@ describe("the agents editor", () => {
   });
 });
 
+describe("editing what new projects start from", () => {
+  it("asks the defaults instead of the project when switched", async () => {
+    // Per-project stores made tuning an agent for one project safe, and left
+    // no way to change what the next project starts from.
+    const user = userEvent.setup();
+    const server = fakeServer({
+      "/api/sessions/s1": session(),
+      "/api/agents": {
+        agents: [{
+          name: "frontend", title: "Frontend", description: "", system_prompt: "p",
+          paths: ["src/**"], toolsets: ["files"], commands: [], command_list: "",
+          workdir: "", shell: null, verifier: false, preset: null,
+          backup_preset: null, tries: 2, backup_tries: 2, tool_rounds: 36,
+          color: "#7aa2f7",
+        }],
+        verifiers: [], toolsets: ["files"],
+      },
+      "/api/presets": { presets: [] },
+      "/api/config": { visual: { browser: true } },
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await screen.findByDisplayValue("frontend");
+    expect(server.calls.some((call) => call.url.includes("session=s1"))).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "New projects" }));
+    await waitFor(() =>
+      expect(server.calls.some((call) => call.url.includes("session=defaults"))).toBe(true));
+    expect(screen.getByText(/every new project is created with/)).toBeInTheDocument();
+  });
+});
+
 describe("the run screen", () => {
   it("fetches only the open step's history, not every step's", async () => {
     const user = userEvent.setup();

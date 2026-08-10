@@ -322,3 +322,68 @@ def test_a_project_handed_over_arrives_configured(tmp_path):
     agents = theirs.get("/api/agents", params={"session": sid}).json()["agents"]
     assert next(a for a in agents if a["name"] == "frontend")["system_prompt"] == "canvas games"
     assert theirs.get(f"/api/sessions/{sid}/settings").json()["git_commits"] is False
+
+
+# ------------------------------------------- editing what new projects start from
+
+def test_the_defaults_can_be_edited_and_reach_the_next_project(tmp_path):
+    """Per-project stores made tuning an agent for one project safe, and left
+    no way to change what the *next* project starts from — so a prompt improved
+    in four projects had to be improved a fifth time in the fifth."""
+    client, _ = _serve(tmp_path)
+
+    client.put("/api/agents/frontend", json={"system_prompt": "always canvas games"},
+               params={"session": "defaults"})
+
+    made = client.post("/api/sessions", json={"name": "brand new"}).json()
+    agents = client.get("/api/agents", params={"session": made["id"]}).json()["agents"]
+    assert next(a for a in agents if a["name"] == "frontend")["system_prompt"] \
+        == "always canvas games"
+
+
+def test_editing_the_defaults_leaves_existing_projects_alone(tmp_path):
+    """They were copied at creation and have moved on since. A template that
+    reached back into them would undo work nobody asked it to touch."""
+    client, _ = _serve(tmp_path)
+    already = client.post("/api/sessions", json={"name": "older"}).json()["id"]
+    client.put("/api/agents/frontend", json={"system_prompt": "tuned for this one"},
+               params={"session": already})
+
+    client.put("/api/agents/frontend", json={"system_prompt": "the new default"},
+               params={"session": "defaults"})
+
+    agents = client.get("/api/agents", params={"session": already}).json()["agents"]
+    assert next(a for a in agents if a["name"] == "frontend")["system_prompt"] \
+        == "tuned for this one"
+
+
+def test_the_defaults_are_a_real_place_on_disk(tmp_path):
+    """Where the workspace already kept them, not a fifth copy somewhere new."""
+    import json as _json
+
+    client, config = _serve(tmp_path)
+    client.put("/api/agents/frontend", json={"tool_rounds": 44},
+               params={"session": "defaults"})
+
+    stored = _json.loads((Path(config.runs_dir) / "agents.json").read_text())
+    role = next(a for a in stored["agents"] if a["name"] == "frontend")
+    assert role["tool_rounds"] == 44
+
+
+def test_a_request_with_no_session_still_refuses_to_guess(tmp_path):
+    """The point of requiring it stands: answering "the first one" would edit
+    the wrong project. The message now says how to ask for the defaults."""
+    client, _ = _serve(tmp_path)
+    answer = client.get("/api/agents")
+    assert answer.status_code == 400
+    assert "defaults" in answer.json()["detail"]
+
+
+def test_the_defaults_have_their_own_settings(tmp_path):
+    client, _ = _serve(tmp_path)
+    client.put("/api/config/planning", json={"git_commits": False},
+               params={"session": "defaults"})
+    assert client.get("/api/sessions/defaults/settings").json()["git_commits"] is False
+
+    made = client.post("/api/sessions", json={"name": "inherits it"}).json()["id"]
+    assert client.get(f"/api/sessions/{made}/settings").json()["git_commits"] is False

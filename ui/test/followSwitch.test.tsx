@@ -39,7 +39,10 @@ const serve = (events: TranceEvent[]) => fakeServer({
 
 beforeEach(() => {
   stubWebSocket();
-  useUi.setState({ sessionId: "s1", screen: "run", openStep: null, follow: true });
+  // These are about the console moving, not about what it filters — reads are
+  // hidden by default, and they are what this file fills the console with.
+  useUi.setState({ sessionId: "s1", screen: "run", openStep: null, follow: true,
+                   showReads: true });
 });
 afterEach(() => vi.unstubAllGlobals());
 
