@@ -51,7 +51,12 @@ export function useFollowHarness(sessionId: string | null) {
     // a plan, or is already running, must not move you off the screen you asked
     // for — only what happens *next* is worth changing the screen for.
     if (before && before.session === now.session) {
-      if (now.steps > 0 && before.steps === 0 && screen === "home") go("plan");
+      // Any step added, not just the first. The rule used to be "went from no
+      // plan to a plan", which is right exactly once per session: ask for a
+      // second feature and the orchestrator adds two steps to the twelve
+      // already there, and nothing happens — the plan it just wrote is on
+      // another screen and nothing says so.
+      if (now.steps > before.steps && screen === "home") go("plan");
       if (now.running && !before.running) go("run");
     }
 

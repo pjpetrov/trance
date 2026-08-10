@@ -47,6 +47,16 @@ const start = (first: Session) => {
 };
 
 describe("following the harness", () => {
+  it("opens the plan when more work is added to one that exists", async () => {
+    // The second feature request of a session: twelve steps become fourteen,
+    // and the plan you are meant to look at is on another screen.
+    start(flow(["st1", "done"], ["st2", "done"]));
+    expect(useUi.getState().screen).toBe("home");
+
+    push(flow(["st1", "done"], ["st2", "done"], ["st3", "pending"]));
+    await waitFor(() => expect(useUi.getState().screen).toBe("plan"));
+  });
+
   it("opens the plan when the orchestrator produces one", async () => {
     start(session({ id: "s1", flow: { steps: [], cursor: 0 } }));
     expect(useUi.getState().screen).toBe("home");        // still chatting
