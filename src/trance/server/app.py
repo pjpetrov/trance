@@ -58,6 +58,19 @@ STATIC = Path(__file__).parent / "ui"
 CONSOLE_TAIL = 400
 
 
+def engine_alive(session) -> bool:
+    """Is a flow engine actually executing this session right now?
+
+    `status` alone is not enough: a crashed engine can leave status at
+    "running" with no thread behind it, and a finished run leaves the thread
+    gone while pending steps can still be added by rerun or a flow edit — and
+    a run that is very much alive can have its status written over by something
+    else entirely, which is what taught this to be asked rather than assumed.
+    """
+    thread = getattr(session, "_thread", None)
+    return bool(thread is not None and thread.is_alive())
+
+
 def create_app(config: Config | None = None, sessions_dir: Path | None = None) -> FastAPI:
     config = config or Config.load()
     store = SessionStore(sessions_dir or Path(config.runs_dir) / "sessions")
@@ -245,16 +258,6 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             target, allowed=sorted(set(commands.get(target).allowed) | set(programs)))
         _publish_commands(commands)
         bus.emit("commands_updated", session.id, payload={"name": target, **policy.to_dict()})
-
-    def engine_alive(session) -> bool:
-        """Is a flow engine actually executing this session right now?
-
-        `status` alone is not enough: a crashed engine can leave status at
-        "running" with no thread behind it, and a finished run leaves the thread
-        gone while pending steps can still be added by rerun or a flow edit.
-        """
-        thread = getattr(session, "_thread", None)
-        return bool(thread is not None and thread.is_alive())
 
     def ensure_running(session) -> bool:
         """Start an engine if none is live and there is pending work.
@@ -1576,6 +1579,19 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     #: step of a long run is 13MB and three quarters of it is `messages`.
     HEAVY = ("messages", "reasoning", "rendered", "raw")
 
+    def _state_of(session) -> tuple:
+        """What a page draws from the session, as one comparable value.
+
+        Not the whole snapshot: run_seconds ticks every second and would make
+        every event look like a change, which is the megabyte-a-second version
+        of never updating at all.
+        """
+        return (
+            session.status, session.paused, session.error,
+            len(session.chat), len(session.review),
+            tuple((step.id, step.status, step.runs) for step in session.flow.steps),
+        )
+
     def _slim(event: dict) -> dict:
         """One event, minus what only the inspector opens."""
         payload = dict(event.get("payload") or {})
@@ -1734,7 +1750,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             # already happened.
             change = session.flow.keep_finished(
                 [Step.from_dict(s) for s in proposal["steps"]])
-            session.status = "ready"
+            # Not while it is running. The orchestrator can propose more work
+            # in the middle of a run, and saying "ready" then told the page
+            # nothing was running: it offered Start, and Start answered 409
+            # already running. Adding steps to a live flow does not stop it.
+            if not engine_alive(session):
+                session.status = "ready"
             if change["kept"]:
                 bus.emit("flow_extended", session_id, agent="orchestrator", payload={
                     **change,
@@ -2042,8 +2063,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         # finished, its engine thread is gone and nothing would pick this up.
         restarted = ensure_running(session)
         if restarted:
-            bus.emit("run_started", session_id,
-                     payload={"reason": f"rerun of {step.role} step", "steps": 1})
+            bus.emit("run_started", session_id, payload={
+                "reason": f"rerun of {step.role} step", "steps": 1,
+                "message": f"Started {step.role}: {(step.task or '')[:60]}"})
         # A stopping engine is still inside a model call; a live one will reach
         # this step on its own. Either way the click did something, and saying
         # which is the difference between "queued" and "broken".
@@ -2073,6 +2095,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         loop = asyncio.get_running_loop()
         queue = bus.subscribe_async(loop)
         session = store.get(session_id)
+        last_state = _state_of(session) if session else None
         try:
             if session:
                 # The socket carries what happens from now on. History is not
@@ -2092,17 +2115,21 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 # Sending it to every socket on every call is the same
                 # megabytes the history panel was taught not to ask for.
                 await ws.send_text(json.dumps(_slim(event.to_dict())))
-                # Anything that changes the flow is followed by the flow. A
-                # review adds a step and said only "review_sent", so the plan
-                # screen never heard that it had a new step in it.
-                if event.type in ("step_finished", "step_failed", "run_finished",
-                                  "flow_updated", "flow_proposed", "flow_extended",
-                                  "review_sent", "step_started", "verdict",
-                                  "run_stopped", "step_split"):
-                    current = store.get(session_id)
-                    if current:
+                # And the session itself whenever it has actually changed.
+                #
+                # This was a list of event types, and a list is a thing that
+                # goes out of date: a loop step announces itself with loop_node
+                # and step_outcome, neither of which was on it, so a page could
+                # watch a loop run through six blocks and still show the step
+                # it opened on. Comparing what the page was last told against
+                # what is true now cannot fall behind a new event type.
+                current = store.get(session_id)
+                if current:
+                    now = _state_of(current)
+                    if now != last_state:
+                        last_state = now
                         await ws.send_text(json.dumps({"type": "snapshot",
-                                                       "payload": current.to_dict()}))
+                                                        "payload": current.to_dict()}))
         except WebSocketDisconnect:
             pass
         except Exception:

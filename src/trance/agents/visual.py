@@ -219,10 +219,20 @@ class VisualSession:
         back whole by the history panel, and a base64 PNG in every one of them
         is how that panel went from fast to unusable once before.
         """
-        self._shots += 1
         step = _SAFE.sub("-", self.step_id or "step") or "step"
         folder = self.project / SHOTS_DIR / step
         folder.mkdir(parents=True, exist_ok=True)
+        # Carry on from whatever is already there. The counter used to start at
+        # zero for every agent turn while the folder stayed per step, so the
+        # second block of a step wrote over the first one's pictures — and a
+        # line saying "nothing changed" then sat above two visibly different
+        # images, because the pair it had compared was gone. Measured on one
+        # step: five of the last six "byte-for-byte identical" claims pointed
+        # at files that differ.
+        if self._shots == 0:
+            self._shots = max((int(found.stem) for found in folder.glob("*.png")
+                               if found.stem.isdigit()), default=0)
+        self._shots += 1
         name = f"{self._shots:03d}.png"
         (folder / name).write_bytes(png)
         return f"{step}/{name}"

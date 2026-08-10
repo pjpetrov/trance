@@ -116,8 +116,17 @@ class FlowEngine:
         session.status = "running"
         session._stop.clear()
         session.start_clock()
-        self._emit("run_started", payload={"steps": len(session.flow.steps),
-                                           "run_seconds": round(session.elapsed, 1)})
+        pending = sum(1 for step in session.flow.steps if step.status == "pending")
+        # With a message, because the console only draws events that have one —
+        # so pressing Start printed nothing at all, and the first line arrived
+        # whenever the first model answered. Half a minute of wondering whether
+        # the click had registered is half a minute of clicking it again.
+        self._emit("run_started", payload={
+            "steps": len(session.flow.steps),
+            "run_seconds": round(session.elapsed, 1),
+            "message": (f"Run started — {pending} step(s) to do."
+                        if pending else "Run started."),
+        })
         self.on_change()
 
         try:

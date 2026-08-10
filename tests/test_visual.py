@@ -988,3 +988,41 @@ def test_the_tools_work_once_a_page_is_open(tmp_path):
         assert session.press("Space")["delivered"] == ["Space"]
     finally:
         session.close()
+
+
+def test_a_second_turn_does_not_write_over_the_first_ones_pictures(tmp_path):
+    """The evidence a line points at has to still be there.
+
+    The counter restarted for every agent turn while the folder stayed per
+    step, so block two of a step wrote over block one's screenshots — and a
+    line reading "nothing changed · byte-for-byte identical" then sat above two
+    visibly different images, because the pair it had compared was gone.
+    Measured on one real step: five of the last six "identical" claims pointed
+    at files that differ.
+    """
+    from trance.agents.visual import VisualSession
+
+    first = VisualSession(tmp_path, session_id="s1", step_id="st1")
+    before = first.save(b"first-turn-before")
+    after = first.save(b"first-turn-after")
+
+    # A new turn on the same step: a fresh session object, as the loop makes.
+    second = VisualSession(tmp_path, session_id="s1", step_id="st1")
+    later = second.save(b"second-turn")
+
+    assert len({before, after, later}) == 3, (before, after, later)
+    shots = tmp_path / ".trance" / "shots"
+    assert (shots / before).read_bytes() == b"first-turn-before"
+    assert (shots / after).read_bytes() == b"first-turn-after"
+    assert (shots / later).read_bytes() == b"second-turn"
+
+
+def test_numbering_stays_readable_across_turns(tmp_path):
+    """Continuing the count, not salting the name: the order they were taken in
+    is the only thing that makes a folder of screenshots readable."""
+    from trance.agents.visual import VisualSession
+
+    VisualSession(tmp_path, step_id="st1").save(b"a")
+    VisualSession(tmp_path, step_id="st1").save(b"b")
+    third = VisualSession(tmp_path, step_id="st1").save(b"c")
+    assert third.endswith("003.png"), third

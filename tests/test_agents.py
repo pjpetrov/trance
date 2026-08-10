@@ -7290,6 +7290,126 @@ def test_the_socket_carries_what_happens_next_not_what_already_did(tmp_path):
     assert body["events"][-1]["payload"]["name"] == f"call_{app_module.CONSOLE_TAIL + 49}"
 
 
+def test_pressing_start_says_so_at_once(tmp_path):
+    """The console only draws events that carry a message, and run_started did
+    not — so pressing Start printed nothing, and the first line arrived whenever
+    the first model answered. Half a minute of wondering whether the click
+    registered is half a minute of clicking it again."""
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.session import Session
+    from trance.flow import Flow, Step
+
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.flow = Flow(steps=[Step(role="frontend", task="one"),
+                               Step(role="frontend", task="two")])
+    session.flow.steps[0].status = "done"
+
+    engine = FlowEngine(session, None, bus)
+    # The parts of starting up that need a repo and an index are not what this
+    # is about; everything after them is the real path.
+    engine._prepare_git = lambda: None
+    engine._reindex = lambda: None
+    engine._write_plan = lambda: None
+    engine._run_step = lambda step: setattr(step, "status", "done")
+    engine._run()
+
+    started = next(e for e in seen if e.type == "run_started")
+    assert "Run started" in started.payload["message"]
+    assert "1 step" in started.payload["message"]     # what is left to do
+    # And it is the first thing said, before any model is called.
+    assert seen[0].type == "run_started"
+
+
+def test_the_page_hears_about_a_change_no_list_predicted(tmp_path):
+    """Which events push a fresh session was a list, and a list goes out of
+    date: a loop step announces itself with loop_node and step_outcome, neither
+    of which was on it. So a page watched a loop run through six blocks while
+    still showing the step it opened on, and the run controls it drew were for
+    a session it last heard about minutes ago."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"title": "one", "role": "frontend", "task": "do it"}]})
+    session = app.state.store.get(sid)
+    step = session.flow.steps[0]
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        assert ws.receive_json()["type"] == "snapshot"
+
+        # An event nothing would have listed, and no change with it.
+        app.state.bus.emit("tool_call", sid, agent="frontend", step_id=step.id,
+                           payload={"name": "read_file"})
+        assert ws.receive_json()["type"] == "tool_call"
+
+        # Now the step actually changes, announced by an event that was never
+        # on the list.
+        step.status = "running"
+        app.state.bus.emit("loop_node", sid, agent="frontend", step_id=step.id,
+                           payload={"visit": 1, "of": 8})
+        assert ws.receive_json()["type"] == "loop_node"
+        fresh = ws.receive_json()
+        assert fresh["type"] == "snapshot"
+        assert fresh["payload"]["flow"]["steps"][0]["status"] == "running"
+
+
+def test_adding_steps_does_not_tell_the_page_the_run_stopped(tmp_path, monkeypatch):
+    """The orchestrator can propose more work in the middle of a run. Saying
+    "ready" then told the page nothing was running: it drew Start instead of
+    Pause and Stop, and Start answered 409 already running — which is what the
+    user saw, with the console filling in behind the dialog."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+    from trance.agents import orchestrator as orchestrator_agent
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    session = app.state.store.get(sid)
+    session.status = "running"
+
+    class _Alive:                      # an engine mid-run, as far as anything can tell
+        def is_alive(self):
+            return True
+
+    session._thread = _Alive()
+
+    monkeypatch.setattr(orchestrator_agent, "chat", lambda **_kw: {
+        "text": "here is more work",
+        "proposal": {"summary": "a game", "team": ["frontend"], "requirements": [],
+                     "steps": [{"role": "frontend", "task": "one more thing"}]},
+    })
+
+    client.post(f"/api/sessions/{sid}/chat", json={"message": "add a level"})
+
+    assert session.status == "running"        # not "ready"
+    assert len(session.flow.steps) == 1       # and the work really was added
+    assert client.get(f"/api/sessions/{sid}").json()["status"] == "running"
+
+
 def test_a_live_console_is_not_sent_the_prompts_either(tmp_path):
     """The list learned not to ship them; the socket was still sending every
     model_call in full to every connected page, 187KB of prompt at a time, for
