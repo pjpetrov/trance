@@ -769,10 +769,15 @@ class FlowEngine:
         asking the reviewer to read code that does not work yet, and the
         feedback the worker gets should be about one thing.
         """
-        # Every check, in order. The loop below has always been written for a
-        # chain; until now it was handed one name, because that is all a step
-        # could hold.
+        # Every check, in order: what the plan chose for this task, then what
+        # this agent always wants run against its work. Both, because they
+        # answer different questions — the plan knows this step writes files,
+        # the agent knows its work is the kind that breaks other things.
         checks = list(step.checks)
+        worker = self.session.role(step.role) if step.role else None
+        for always in getattr(worker, "checks", None) or []:
+            if always not in checks:
+                checks.append(always)
         if not checks:
             self._emit("verification_skipped", agent=step.role, step_id=step.id, payload={
                 "message": ("No fact check on this step, so the agent's own report of "

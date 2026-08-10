@@ -7405,6 +7405,79 @@ def test_two_requests_do_not_claim_each_others_commits(tmp_path, monkeypatch):
     assert [c["subject"] for c in theirs["commits"]] == ["frontend: the second thing"]
 
 
+def test_an_agent_can_carry_checks_of_its_own(tmp_path, monkeypatch):
+    """"After each step, run the regression tests" is a property of an agent's
+    work, not of one task. Ticking it onto twenty steps by hand is how it stops
+    being ticked."""
+    from trance.agents.roles import AgentRole, BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.session import Session
+
+    asked = []
+    bus = EventBus()
+
+    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
+                            "checks": ["regression"]})
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [frontend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["regression"]]
+    step = Step(role="frontend", task="add the level select", check="factchecker")
+    session.flow = Flow(steps=[step])
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)
+
+    class _Passed:
+        verdict = "PASS"
+        text = "VERDICT: PASS"
+        model_event_ids: list = []
+
+    def _ran(*, role, **_kw):
+        asked.append(role.name)
+        return _Passed()
+
+    monkeypatch.setattr("trance.engine.run_agent", _ran)
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._run_check(step, Attempt(n=1))
+
+    # The step's own check, then the one this agent always wants.
+    assert asked == ["factchecker", "regression"]
+
+
+def test_an_agents_checks_are_not_run_twice(tmp_path, monkeypatch):
+    """A step that already names the agent's check should not get it again —
+    two identical verdicts on one attempt is two model calls for one answer."""
+    from trance.agents.roles import AgentRole, BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.session import Session
+
+    asked = []
+    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
+                            "checks": ["regression"]})
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [frontend, BUILTIN_ROLES["regression"]]
+    step = Step.from_dict({"role": "frontend", "task": "t", "checks": ["regression"]})
+    session.flow = Flow(steps=[step])
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+
+    class _Passed:
+        verdict = "PASS"
+        text = "VERDICT: PASS"
+        model_event_ids: list = []
+
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda *, role, **_kw: (asked.append(role.name), _Passed())[1])
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._run_check(step, Attempt(n=1))
+
+    assert asked == ["regression"]
+
+
 def test_the_regression_check_is_added_once_there_is_a_suite(tmp_path):
     """"After each step, make sure nothing broke" is the question nobody
     remembers to ask until something is already broken — and asking it by hand

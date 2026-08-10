@@ -51,6 +51,14 @@ class AgentRole:
     #: actually inspect the result should be — an agent with no tools would
     #: return a verdict it has no way to have checked.
     verifier: bool = False
+    #: Verifiers that run after every step this agent does, whatever the plan
+    #: says. Set once, rather than ticked onto each of twenty steps — "after
+    #: each step, check nothing broke" is a property of the agent's work, not
+    #: of one task, and a check added by hand per step stops being added.
+    #:
+    #: They run in addition to the step's own; the step's are what the plan
+    #: chose for this task, these are what this agent always wants.
+    checks: list[str] = field(default_factory=list)
     #: Named model preset (provider + model in one). The normal way to assign
     #: a model to an agent; provider/model below stay for older configs.
     preset: str | None = None

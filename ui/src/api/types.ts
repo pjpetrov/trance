@@ -36,6 +36,9 @@ export interface AgentRole {
   workdir: string;
   shell: boolean | null;
   verifier: boolean;
+  /** Verifiers that run after every step this agent does, on top of whatever
+   *  the plan put on the step itself. */
+  checks?: string[];
   preset: string | null;
   backup_preset: string | null;
   tries: number;

@@ -15,6 +15,7 @@ import { cn } from "@/lib/cn";
 import { Badge, Button, Checkbox, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
 import { LibraryFooter, LibraryList } from "@/components/ui/Library";
+import { Checks } from "@/components/Checks";
 import { ScopeSwitch, idFor, type Scope } from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
 import type { AgentRole, Toolset } from "@/api/types";
@@ -212,6 +213,19 @@ export function AgentsEditor() {
                   paths: e.target.value.split("\n").map((p) => p.trim()).filter(Boolean),
                 })} />
             </Field>
+
+            {/* What this agent always wants proved about its own work. Set
+                once here rather than ticked onto each of twenty steps: "after
+                each step, check nothing broke" is a property of the work, and
+                a check added by hand per step stops being added. */}
+            <Checks
+              label="Always checked by"
+              empty="nothing — only whatever the plan puts on each step"
+              checks={draft.checks ?? []}
+              verifiers={(agents.data?.agents ?? [])
+                .filter((role) => role.verifier && role.name !== draft.name)}
+              onChange={(checks) => library.edit({ checks })}
+            />
 
             <Checkbox
               label="Can verify other steps"
