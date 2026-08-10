@@ -9199,3 +9199,133 @@ def test_a_dev_that_cannot_run_a_command_cannot_be_asked_to_run_tests():
 
     for name in ("frontend", "backend"):
         assert "commands" in BUILTIN_ROLES[name].toolsets, name
+
+
+# ==================== an agent's checks are copied onto the steps it will run
+
+def test_an_agents_checks_are_copied_onto_its_steps(tmp_path):
+    """Merged at run time, the chain was invisible: the plan showed one thing
+    and the engine ran another. Copied onto the step, the plan is honest — and
+    editable, because from then on the step is what runs."""
+    from trance.agents.roles import AgentRole, BUILTIN_ROLES
+    from trance.flow import Flow, Step, seed_checks
+
+    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
+                            "checks": ["factchecker", "reviewer", "regression"]})
+    flow = Flow(steps=[Step(role="frontend", task="auto-aim", check="reviewer"),
+                       Step(role="frontend", task="engine sounds")])
+    checks_of = {"frontend": frontend.checks}
+
+    assert seed_checks(flow, checks_of.get) == 2
+    # The agent's order, not the plan's: a name the plan also picked takes its
+    # place in the chain rather than being hoisted to the front.
+    assert flow.steps[0].checks == ["factchecker", "reviewer", "regression"]
+    assert flow.steps[1].checks == ["factchecker", "reviewer", "regression"]
+
+    # Once. A second pass puts nothing back.
+    flow.steps[0].checks_chain = ["factchecker"]
+    assert seed_checks(flow, checks_of.get) == 0
+    assert flow.steps[0].checks == ["factchecker"]
+
+
+def test_a_check_taken_off_a_step_stays_off(tmp_path, monkeypatch):
+    """The chips are the control. An agent-level check that reappears because
+    the engine merges it again makes taking it off decoration."""
+    from trance.agents.roles import AgentRole, BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step, seed_checks
+    from trance.session import Session
+
+    asked = []
+    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
+                            "checks": ["factchecker", "regression"]})
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [frontend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["regression"]]
+    step = Step(role="frontend", task="t")
+    session.flow = Flow(steps=[step])
+    seed_checks(session.flow, lambda name: frontend.checks if name == "frontend" else [])
+
+    # What removing a chip in the plan does.
+    step.checks_chain = ["factchecker"]
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+
+    class _Passed:
+        verdict = "PASS"
+        text = "VERDICT: PASS"
+        model_event_ids: list = []
+
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda *, role, **_kw: (asked.append(role.name), _Passed())[1])
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._run_check(step, Attempt(n=1))
+
+    assert asked == ["factchecker"]
+
+
+def test_a_step_waits_for_an_agent_that_has_no_checks_yet(tmp_path):
+    """Nothing to copy is not the same as copied. Marking it done would mean a
+    check added to an agent tomorrow never reaches the plan made today."""
+    from trance.flow import Flow, Step, seed_checks
+
+    flow = Flow(steps=[Step(role="frontend", task="t")])
+    assert seed_checks(flow, lambda _name: []) == 0
+    assert flow.steps[0].checks_seeded is False
+
+    assert seed_checks(flow, lambda _name: ["regression"]) == 1
+    assert flow.steps[0].checks == ["regression"]
+
+
+def test_a_loop_step_is_left_alone(tmp_path):
+    """A loop carries its own wiring — its nodes say who checks what, and the
+    step has no single agent to copy from."""
+    from trance.flow import Flow, Step, seed_checks
+
+    flow = Flow(steps=[Step(role="", loop="test-and-fix", task="t")])
+    assert seed_checks(flow, lambda _name: ["factchecker"]) == 0
+    assert flow.steps[0].checks == []
+
+
+def test_the_plan_shows_the_checks_the_agent_brings(tmp_path):
+    """Through the server, which is where it matters: what the plan screen is
+    handed has to be what the engine will run, or the chips are a guess."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow",
+               json={"steps": [{"role": "frontend", "task": "auto-aim"}]})
+
+    # The check is put on the agent after the plan already exists — the way it
+    # happens, three steps into a run.
+    client.put(f"/api/agents/frontend?session={sid}", json={"checks": ["regression"]})
+
+    step = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"][0]
+    assert step["checks"] == ["regression"]
+
+    # And taking it off in the plan is a decision the next read respects.
+    client.put(f"/api/sessions/{sid}/flow",
+               json={"steps": [{**step, "checks": []}]})
+    again = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"][0]
+    assert again["checks"] == []
+
+
+def test_a_loop_ships_without_a_fact_check_on_its_nodes():
+    """A loop is already a verifier and a fixer taking turns — its tester's run
+    is the evidence. A fact check on each node is another model call per visit
+    to confirm what the next node is about to test anyway."""
+    from trance.agents.store import default_loops
+
+    for loop in default_loops():
+        for node in loop.nodes:
+            assert node.check is None, f"{loop.name}/{node.role}"

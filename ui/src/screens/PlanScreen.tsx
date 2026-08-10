@@ -180,9 +180,20 @@ export function PlanScreen() {
                       onChange={(event) => {
                         const [kind, name] = event.target.value.split(":");
                         const next = [...steps];
+                        // Picking an agent brings its standing checks with it,
+                        // so the chips below say what will run before the step
+                        // is saved. Only onto a step that has none: the ones
+                        // already there were put there on purpose.
+                        const picked = agents.data?.agents
+                          .find((role) => role.name === name);
                         next[index] = kind === "loop"
                           ? { ...step, loop: name!, role: "" }
-                          : { ...step, loop: "", role: name! };
+                          : {
+                              ...step, loop: "", role: name!,
+                              checks: step.checks?.length
+                                ? step.checks
+                                : [...(picked?.checks ?? [])],
+                            };
                         persist(next);
                       }}
                     >

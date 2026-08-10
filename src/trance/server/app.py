@@ -35,7 +35,7 @@ from ..config import Config
 from dataclasses import replace
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
-from ..flow import Flow, Step
+from ..flow import Flow, Step, seed_checks
 from ..loops import EXITS, STOP, Loop, validate as validate_loop
 from ..providers.base import list_models
 from ..providers import (
@@ -318,8 +318,18 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         session._handover.start()
 
     def refresh_team(session):
-        """Re-bind a session's team to its project's agent definitions."""
+        """Re-bind a session's team to its project's agent definitions.
+
+        And copy each agent's standing checks onto its steps, once, so the plan
+        shows what will actually run and can change it. Here because it is the
+        one place every read and every agent edit passes through: a check added
+        to an agent reaches the steps already planned, and a check taken off a
+        step stays off.
+        """
         session.team = stores_of(session).roles.resolve_team(session.team)
+        if seed_checks(session.flow, lambda name: getattr(
+                session.role(name) or stores_of(session).roles.get(name), "checks", [])):
+            touch(session)
         return session
 
     # ------------------------------------------------------------- static

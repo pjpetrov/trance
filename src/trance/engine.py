@@ -29,7 +29,7 @@ from .curator.walker import CuratorConfig, curate
 from .db import GraphDB
 from .events import EventBus
 from .agents.roles import BUILTIN_ROLES
-from .flow import Attempt, GateResult, Step
+from .flow import Attempt, GateResult, Step, merge_checks
 from .loops import CHECK_FAILED, EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS
 from .indexer.service import default_db_path, index_repo
 from .session import Session
@@ -769,20 +769,19 @@ class FlowEngine:
         asking the reviewer to read code that does not work yet, and the
         feedback the worker gets should be about one thing.
         """
-        # Every check, from both places they can be set. They answer different
-        # questions — the plan knows this step writes files, the agent knows
-        # its work is the kind that breaks other things.
+        # Checks come from two places: the plan knows this step writes files,
+        # the agent knows its work is the kind that breaks other things.
         #
-        # The agent's list decides the order of everything in it, because that
-        # order was typed by a person and means something: cheap checks before
-        # slow ones, and no point reviewing code the tests have not run. A name
-        # the plan also picked takes its place in that order rather than being
-        # hoisted to the front. Anything only the plan asked for goes first: it
-        # is about this one task, so it is the most specific thing to try.
-        worker = self.session.role(step.role) if step.role else None
-        always = [name for name in (getattr(worker, "checks", None) or []) if name]
-        checks = [name for name in step.checks if name and name not in always]
-        checks += [name for name in dict.fromkeys(always) if name not in checks]
+        # Once the step's chain has been seeded from the agent, the step is the
+        # whole answer — a check taken off in the plan has to stay off, or the
+        # control is decoration. Merging is for the steps that predate seeding,
+        # and for anything built without going past the plan.
+        if step.checks_seeded:
+            checks = list(step.checks)
+        else:
+            worker = self.session.role(step.role) if step.role else None
+            checks = merge_checks(
+                step.checks, list(getattr(worker, "checks", None) or []))
         if not checks:
             self._emit("verification_skipped", agent=step.role, step_id=step.id, payload={
                 "message": ("No fact check on this step, so the agent's own report of "

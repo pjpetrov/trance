@@ -292,6 +292,33 @@ describe("the plan screen", () => {
       expect(JSON.stringify(saved?.body)).toContain("Draw the ghosts");
     });
   });
+
+  it("brings the agent's standing checks onto a step when you pick it", async () => {
+    // Otherwise the chips say one thing and the engine runs another: the chain
+    // was merged at run time, where nobody could see it or take one off.
+    const user = userEvent.setup();
+    const server = fakeServer({
+      "/api/sessions/s1": session(),
+      "/api/agents": {
+        agents: [role({ name: "frontend", checks: ["factchecker", "regression"] }),
+                 role({ name: "tester", verifier: true, checks: [] })],
+        verifiers: ["factchecker", "regression"], toolsets: [],
+      },
+      "/api/loops": { loops: [] },
+      "/api/sessions/s1/flow": { steps: [], team: [] },
+    });
+
+    renderWithQuery(<PlanScreen />);
+    await screen.findByDisplayValue("Build the maze renderer");
+
+    await user.selectOptions(screen.getAllByRole("combobox")[0]!, "role:frontend");
+
+    await waitFor(() => {
+      const saved = server.to("/api/sessions/s1/flow").at(-1);
+      expect((saved?.body as { steps: { checks: string[] }[] }).steps[0]!.checks)
+        .toEqual(["factchecker", "regression"]);
+    });
+  });
 });
 
 describe("the agents editor", () => {

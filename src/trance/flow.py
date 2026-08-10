@@ -98,6 +98,11 @@ class Step:
     #: The engine has always looped over a list here; it was only ever handed
     #: one, because `check` held a single name.
     checks_chain: list[str] = field(default_factory=list)
+    #: Whether this step's chain has already been filled in from its agent's
+    #: standing checks. Once it has, the chain on the step is the whole truth:
+    #: taking a check off in the plan means it does not run, rather than being
+    #: quietly put back by the agent that suggested it.
+    checks_seeded: bool = False
     #: Who tries to fix a failed check. Empty means this step's own role has
     #: another go. Either way the block then runs again.
     on_fail: str | None = None
@@ -209,8 +214,14 @@ class Step:
         # Older shapes fold into `check`.
         # A chain sent as `checks` is the real field now; the singular shapes
         # below are what older plans and older clients say.
+        # `checks` is the field clients send; `checks_chain` is how it is
+        # stored, and to_dict emits both. So presence decides, not truth: a
+        # client saying "checks: []" is taking every check off, and reading
+        # that as "said nothing" left the stored chain in place — which is how
+        # a check removed on the plan screen came back on the next read.
+        said_checks = "checks" in data
         chain = [name for name in (data.pop("checks", None) or []) if name]
-        if chain:
+        if said_checks:
             data["checks_chain"] = chain
         if not data.get("check"):
             gates = data.get("gates") or []
@@ -219,6 +230,45 @@ class Step:
         step = cls(**{k: v for k, v in data.items() if k in known})
         step.attempts = attempts
         return step
+
+
+def merge_checks(own: list[str], always: list[str]) -> list[str]:
+    """One chain from a step's own checks and its agent's standing ones.
+
+    The agent's list decides the order of every name in it: that order was
+    typed by a person and means something — cheap checks before slow ones, no
+    point reviewing code whose tests have not run. A check only this step asked
+    for runs first, being the most specific thing about this one task.
+    """
+    always = list(dict.fromkeys(name for name in always if name))
+    first = [name for name in dict.fromkeys(own) if name and name not in always]
+    return first + always
+
+
+def seed_checks(flow: "Flow", checks_of) -> int:
+    """Copy each agent's standing checks onto its steps. Returns how many.
+
+    A chain merged at run time is a chain nobody can see or change: the plan
+    showed one thing and the engine ran another. Copying it onto the step makes
+    the plan honest — and makes it editable, since from then on the step is
+    what runs.
+
+    Done once per step, deliberately. Re-seeding on every load would put back
+    every check anyone took off, which is the whole point of being able to.
+    A step whose agent has no checks stays unseeded, so adding one to that
+    agent later still reaches the steps already planned.
+    """
+    filled = 0
+    for step in flow.steps:
+        if step.checks_seeded or step.loop or not step.role:
+            continue
+        always = [name for name in (checks_of(step.role) or []) if name]
+        if not always:
+            continue
+        step.checks_chain = merge_checks(step.checks, always)
+        step.checks_seeded = True
+        filled += 1
+    return filled
 
 
 @dataclass
@@ -325,6 +375,15 @@ class Flow:
             existing.role, existing.task = incoming.role, incoming.task
             existing.loop = incoming.loop
             existing.check = incoming.checker
+            # The whole chain, not just its first name. Copying only `check`
+            # meant the chips on the plan screen quietly did nothing to a step
+            # that already existed: the second and third check survived the
+            # round trip only for steps being created.
+            existing.checks_chain = list(incoming.checks)
+            # Sticky: once an agent's checks have been copied onto a step, a
+            # later edit cannot un-copy them, or the next read would put back
+            # the check that was just taken off.
+            existing.checks_seeded = incoming.checks_seeded or existing.checks_seeded
             existing.on_fail = incoming.on_fail
             existing.max_loops = incoming.max_loops
             existing.gates, existing.verify_with = [], None
