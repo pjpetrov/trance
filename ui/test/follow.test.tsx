@@ -84,20 +84,31 @@ describe("following the harness", () => {
     await waitFor(() => expect(useUi.getState().openStep).toBe("st2"));
   });
 
-  it("stops following once you open a different step", async () => {
-    useUi.setState({ screen: "run" });
-    start(flow(["st1", "running"], ["st2", "pending"], ["st3", "pending"]));
-    await waitFor(() => expect(useUi.getState().openStep).toBe("st1"));
+  it("moves to the next step from wherever you are, while following", async () => {
+    // The case that looked broken: the page opens on the last step that ran,
+    // nothing is running yet, and then the next one starts. There used to be a
+    // silent second rule — only follow when the open step is the one that was
+    // running — so following was on and did nothing.
+    useUi.setState({ screen: "run", follow: true });
+    start(flow(["st1", "done"], ["st2", "pending"], ["st3", "pending"]));
+    useUi.setState({ openStep: "st1" });          // where the run page landed
 
-    // Reading an earlier step while the run goes on: it must stay put.
-    useUi.setState({ openStep: "st3" });
     push(flow(["st1", "done"], ["st2", "running"], ["st3", "pending"]));
-    await waitFor(() => expect(useUi.getState().openStep).toBe("st3"));
+    await waitFor(() => expect(useUi.getState().openStep).toBe("st2"));
 
-    // Back to the one that is running, and following resumes.
-    useUi.setState({ openStep: "st2" });
+    // And on to the one after it when that finishes.
     push(flow(["st1", "done"], ["st2", "done"], ["st3", "running"]));
     await waitFor(() => expect(useUi.getState().openStep).toBe("st3"));
+  });
+
+  it("does not move at all once following is off", async () => {
+    useUi.setState({ screen: "run", follow: false });
+    start(flow(["st1", "running"], ["st2", "pending"]));
+    useUi.setState({ openStep: "st1" });
+
+    push(flow(["st1", "done"], ["st2", "running"]));
+    await new Promise((done) => setTimeout(done, 40));
+    expect(useUi.getState().openStep).toBe("st1");
   });
 
   it("opens a mid-run session on the step that is working, without moving you", async () => {

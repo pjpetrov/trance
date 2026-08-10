@@ -63,12 +63,19 @@ export function useFollowHarness(sessionId: string | null) {
     // Selecting a step is not moving you, though: it only decides what the run
     // screen shows when you get there. So it happens on first sight too, or
     // opening a session that is mid-run shows a console scoped to nothing while
-    // an agent works. Following it onwards is the console's switch: someone who
-    // has paused it is reading something, and moving the step out from under
-    // them is the same interruption as scrolling.
+    // an agent works.
+    //
+    // While following, whatever starts running is what you are shown — a step
+    // finishing and the next one starting is exactly the moment you want to be
+    // taken to. There used to be a second, silent rule underneath the switch:
+    // it only followed when the open step was the one that had just been
+    // running. So landing on the last step that ran, with nothing running yet,
+    // meant the next step started and nothing moved — following was on and did
+    // nothing, which is the one thing a switch must never do. Looking somewhere
+    // else is said by turning it off, or by clicking another step, which does.
     const first = !before || before.session !== now.session;
-    if (now.step && now.step !== (before?.step ?? null) && (follow || first)
-        && (openStep === null || openStep === before?.step)) {
+    const arriving = openStep === null && first;
+    if (now.step && now.step !== (before?.step ?? null) && (follow || arriving)) {
       setOpenStep(now.step);
     }
   }, [live]);

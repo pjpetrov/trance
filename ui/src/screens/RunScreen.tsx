@@ -24,7 +24,7 @@ import { toast } from "@/components/Toaster";
 import type { Step, TranceEvent } from "@/api/types";
 
 export function RunScreen() {
-  const { sessionId, openStep, setOpenStep } = useUi();
+  const { sessionId, openStep, setOpenStep, setFollow } = useUi();
   const session = useSession(sessionId);
   const steps = session.data?.flow.steps ?? [];
 
@@ -69,7 +69,15 @@ export function RunScreen() {
         // Clicking the open step used to close it, which left the console
         // showing a session-wide feed nobody asked for. One step is always
         // open; picking a different one is the only thing a click does.
-        onSelect={setOpenStep}
+        //
+        // And picking a different one pauses following, exactly as scrolling
+        // up does: both say "I am reading this". Without it, following would
+        // take the step away again at the next transition, for no visible
+        // reason. The switch says so, and turning it back on resumes.
+        onSelect={(id) => {
+          if (id !== openStep) setFollow(false);
+          setOpenStep(id);
+        }}
         pinnedRun={pinnedRun} onPickRun={setPinnedRun}
       />
       <Console stepId={openStep} pinnedRun={pinnedRun} onPickRun={setPinnedRun} />

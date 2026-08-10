@@ -142,6 +142,33 @@ const flow = (...rows: [string, StepStatus][]): Session => session({
   flow: { steps: rows.map(([id, status]) => step({ id, status })), cursor: 0 },
 });
 
+describe("clicking a step", () => {
+  it("pauses following, the way scrolling up does", async () => {
+    // Otherwise the next transition takes the step away again for no visible
+    // reason. The switch says why nothing is moving.
+    const user = userEvent.setup();
+    useUi.setState({ follow: true, openStep: null });
+    fakeServer({
+      "/api/sessions/s1": session({
+        status: "running",
+        flow: {
+          steps: [step({ id: "st1", task: "the first step", status: "done", runs: 1 }),
+                  step({ id: "st2", task: "the second step", status: "running" })],
+          cursor: 0,
+        },
+      }),
+      "/api/sessions/s1/events": eventsRoute([], []),
+    });
+    renderWithQuery(<RunScreen />);
+    await waitFor(() => expect(useUi.getState().openStep).toBe("st2"));
+    expect(useUi.getState().follow).toBe(true);   // arriving is not a click
+
+    await user.click(screen.getByText("the first step"));
+    expect(useUi.getState().openStep).toBe("st1");
+    expect(useUi.getState().follow).toBe(false);
+  });
+});
+
 describe("following from step to step", () => {
   beforeEach(() => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
