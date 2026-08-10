@@ -333,6 +333,23 @@ function Console(
     && (stepId ? Boolean(shown?.running) : true);
   const liveId = going && events.length ? events[events.length - 1]!.id : null;
 
+  // The command that started and has not ended. Only its ending was ever
+  // drawn, so a step blocked on one showed nothing for the three minutes it
+  // took the timeout to kill it.
+  const liveCommand = useMemo(() => {
+    if (!going) return null;
+    const over = new Set(events
+      .filter((event) => event.type === "command_finished")
+      .map((event) => event.payload?.command_id));
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!;
+      if (event.type === "command_started" && !over.has(event.payload?.command_id)) {
+        return event.id;
+      }
+    }
+    return null;
+  }, [events, going]);
+
   // Two different scrolls. Arriving at a run puts you at its end, because the
   // last thing that happened is what you opened it to read. After that the
   // console only follows if you are already at the bottom — yanking the view
@@ -409,12 +426,12 @@ function Console(
                 // blocks is otherwise a wall you have to scroll past to reach
                 // the part that is live.
                 openByDefault={block.running || index === blocks.length - 1}
-                liveId={liveId}
+                liveId={liveId} liveCommand={liveCommand}
               />
             ))
           : events.map((event) => (
               <EventLine key={event.id} event={event} sessionId={sessionId!}
-                         live={event.id === liveId} />
+                         live={event.id === liveId || event.id === liveCommand} />
             ))}
 
         {!loading && !events.length && (
@@ -498,8 +515,11 @@ function ModelState({ events, going }: { events: TranceEvent[]; going: boolean }
  *  Folded it says who ran, how it went and one line of why — which is what you
  *  want from the seven blocks you are not currently reading. */
 function AgentBlock(
-  { block, sessionId, openByDefault, liveId }:
-  { block: Block; sessionId: string; openByDefault: boolean; liveId: string | null },
+  { block, sessionId, openByDefault, liveId, liveCommand }:
+  {
+    block: Block; sessionId: string; openByDefault: boolean;
+    liveId: string | null; liveCommand: string | null;
+  },
 ) {
   const [open, setOpen] = useState(openByDefault);
   // What it spent itself on. On the header rather than inside, because the
@@ -542,7 +562,7 @@ function AgentBlock(
         <div className="space-y-px px-1 pb-1">
           {block.events.map((event) => (
             <EventLine key={event.id} event={event} sessionId={sessionId}
-                       live={event.id === liveId} />
+                       live={event.id === liveId || event.id === liveCommand} />
           ))}
         </div>
       )}

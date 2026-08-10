@@ -1285,7 +1285,18 @@ class AgentTools:
             output = output[:half] + "\n… (trimmed) …\n" + output[-half:]
 
         if cancelled:
-            text = f"$ {command}\nCancelled by the user after {elapsed}s.\n{output}"
+            # Said plainly, because the obvious reading of a killed command is
+            # "it crashed, run it again" — and running it again is the one
+            # response that wastes another three minutes of the step.
+            text = (f"$ {command}\nSTOPPED BY THE USER after {elapsed}s. The person "
+                    f"watching this run killed it deliberately; it did not fail on "
+                    f"its own and it did not finish, so any output below is partial "
+                    f"and nothing it would have done has been done.\n\n"
+                    f"Do not run it again. Either it was taking too long — in which "
+                    f"case a narrower command, or background=true if it never exits, "
+                    f"is what was wanted — or it was the wrong thing to run. Work with "
+                    f"what you have, or say in your report that you needed it.\n\n"
+                    f"{output}")
         elif timed_out:
             text = (f"$ {command}\nTimed out after {COMMAND_TIMEOUT_S}s and was killed.\n"
                     f"{output}\n\nThis command does not exit on its own. To run a server "

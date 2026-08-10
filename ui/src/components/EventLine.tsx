@@ -12,6 +12,9 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useFullEvent } from "@/api/queries";
+import { useCommandMutations } from "@/api/mutations";
+import { useUi } from "@/store/ui";
+import { toast } from "@/components/Toaster";
 import { cn } from "@/lib/cn";
 import { clip, shortModel, timeOf, tokens } from "@/lib/format";
 import { api } from "@/api/client";
@@ -25,6 +28,7 @@ export function EventLine(
   const rendered = describe(event, sessionId, Boolean(live));
   const [open, setOpen] = useState(Boolean(defaultOpen ?? rendered.open));
   if (!rendered.show) return null;
+  const Row = rendered.body ? "button" : "div";
 
   return (
     <div
@@ -34,8 +38,11 @@ export function EventLine(
         rendered.failed && "border-err/40",
       )}
     >
-      <button
-        onClick={() => rendered.body && setOpen(!open)}
+      {/* A row that opens onto something is a button; one that does not is a
+          div, because a line with its own control — cancelling the command it
+          is reporting — cannot nest a button inside a button. */}
+      <Row
+        {...(rendered.body ? { onClick: () => setOpen(!open) } : {})}
         className={cn(
           "flex w-full items-baseline gap-2 px-2 py-1 text-left",
           rendered.body && "cursor-pointer hover:bg-panel-2/60",
@@ -53,10 +60,45 @@ export function EventLine(
         {event.agent && (
           <span className="shrink-0 text-[11px] text-muted">{event.agent}</span>
         )}
-      </button>
+      </Row>
 
       {open && rendered.body && <div className="space-y-2 px-2 pb-2">{rendered.body}</div>}
     </div>
+  );
+}
+
+/** A command that is still running, and the way to stop it.
+ *
+ * Only its ending was ever drawn, so a command that hung showed nothing at all
+ * until the 180s timeout killed it — three minutes of a console that looked
+ * idle while the step was blocked on one line.
+ */
+function RunningCommand({ event }: { event: TranceEvent }) {
+  const sessionId = useUi((state) => state.sessionId) ?? "";
+  const { cancel } = useCommandMutations(sessionId);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const payload = event.payload ?? {};
+  const seconds = Math.max(0, Math.round((now - new Date(event.ts).getTime()) / 1000));
+  return (
+    <span className="flex items-baseline gap-2">
+      <span className="min-w-0 flex-1 truncate">{String(payload.command ?? "")}</span>
+      <span className="shrink-0 tabular-nums text-warn">running {seconds}s</span>
+      <button
+        className="shrink-0 rounded-[--radius] border border-err/50 px-1.5 text-[11px]
+                   text-err hover:bg-err/10 disabled:opacity-50"
+        disabled={cancel.isPending}
+        onClick={() => cancel.mutateAsync(String(payload.command_id ?? ""))
+          .then((result) => toast.ok(result.cancelled
+            ? "Command cancelled. The agent is told you stopped it."
+            : "That command had already finished."))
+          .catch((error) => toast.err(String(error)))}
+      >cancel</button>
+    </span>
   );
 }
 
@@ -128,6 +170,16 @@ function describe(event: TranceEvent, sessionId: string, live: boolean): Rendere
   // call that has not come back, and without it the console shows nothing at
   // all while a local model spends two minutes on one generation — which is
   // indistinguishable from stuck. So the last one stays, and counts.
+  // Drawn only while it is still going: once it ends, its tool_call line says
+  // what it did, with the output and the exit code.
+  if (event.type === "command_started") {
+    if (!live) return HIDDEN;
+    return {
+      show: true, icon: "$", iconTone: "text-warn",
+      label: <RunningCommand event={event} />,
+    };
+  }
+
   if (event.type === "model_waiting") {
     if (!live) return HIDDEN;
     return {

@@ -1299,7 +1299,11 @@ def test_a_running_command_can_be_cancelled(project):
     outcome = result["outcome"]
     assert outcome.ok is False
     assert outcome.detail["cancelled"] is True
-    assert "Cancelled by the user" in outcome.text
+    # A killed process looks exactly like a crashed one from inside the model,
+    # and the obvious response to a crash is to run it again — which spends the
+    # next three minutes the same way.
+    assert "STOPPED BY THE USER" in outcome.text
+    assert "Do not run it again" in outcome.text
     assert not running_commands()           # deregistered either way
 
 

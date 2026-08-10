@@ -321,6 +321,10 @@ export interface EventPayload {
   out_of_rounds?: boolean;
   usage?: CallUsage;
   summary?: { message_count?: number; est_tokens?: number };
+  /** command_started / command_finished: the command and the handle that
+   *  cancels it while it is still going. */
+  command?: string;
+  command_id?: string;
   /** model_waiting: the gauge, sized before the answer exists */
   context?: ContextUsage;
   /** what /events drops to keep the payload small */
