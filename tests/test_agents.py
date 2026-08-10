@@ -9170,3 +9170,32 @@ def test_thinking_stays_off_for_the_rest_of_a_turn_once_it_has_overrun(
     assert sent[1] == off             # the retry that recovers it
     # And every round after it, without spending the budget to find out again.
     assert all(later == off for later in sent[2:]), sent
+
+
+# ============================== a feature the devs build comes with its test
+
+def test_the_devs_are_told_to_leave_a_test_behind_and_run_the_suite():
+    """A feature nothing checks is one the next step can undo unnoticed. The
+    rule has to name the whole suite, not just the new test: a new test passing
+    while two old ones fail is exactly the case this is for."""
+    from trance.agents.roles import BUILTIN_ROLES
+
+    for name in ("frontend", "backend"):
+        prompt = BUILTIN_ROLES[name].system_prompt
+        assert "regression test for every feature" in prompt.lower(), name
+        # Written, then run — reading the diff is not evidence it still works.
+        assert "run the whole suite" in prompt.lower(), name
+        assert "run_command" in prompt, name
+        # And the report is not allowed to run ahead of the evidence.
+        assert "Do not report SUCCESS with a suite you did not run" in prompt, name
+        # A suite nobody can find is a suite nobody runs — including the
+        # regression verifier, which looks for the command in the project.
+        assert "README" in prompt, name
+
+
+def test_a_dev_that_cannot_run_a_command_cannot_be_asked_to_run_tests():
+    """The rule is only honest if the toolset behind it is there."""
+    from trance.agents.roles import BUILTIN_ROLES
+
+    for name in ("frontend", "backend"):
+        assert "commands" in BUILTIN_ROLES[name].toolsets, name

@@ -51,7 +51,7 @@ export function AgentsEditor() {
   const presets = usePresets();
   const config = useConfig();
   const mine = useAgentMutations(sessionId);
-  const { save, remove, draftPrompt } = mine;
+  const { save, remove, reset, draftPrompt } = mine;
   // The same writes, aimed at what new sessions are created from.
   const template = useAgentMutations(DEFAULTS);
   const [applying, setApplying] = useState(false);
@@ -271,6 +271,24 @@ export function AgentsEditor() {
                   }))
                   .catch((error) => toast.err(String(error)))}
               >Draft a prompt from the name</Button>
+              {draft.protected && (
+                // A session keeps its own copy of every prompt, taken when it
+                // was created. Improvements to a shipped agent otherwise reach
+                // new sessions only, and the project you are actually running
+                // keeps the prompt it was born with.
+                <Button
+                  size="sm" busy={reset.isPending}
+                  title="Take the current shipped prompt and permissions for this agent"
+                  onClick={() => reset.mutateAsync(draft.name)
+                    .then(() => {
+                      // The server has already written it; anything staged for
+                      // this agent would only put the old prompt back on Apply.
+                      library.forget(draft.name);
+                      toast.ok(`${draft.name} is back to its shipped prompt.`);
+                    })
+                    .catch((error) => toast.err(String(error)))}
+                >Restore shipped prompt</Button>
+              )}
               <Button
                 size="sm" variant="danger"
                 onClick={() => library.remove(draft.name)}

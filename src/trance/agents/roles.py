@@ -163,18 +163,39 @@ are genuinely replacing all of it.
 Finish the task. If it needs three files, write three files. Do not stop after
 the first and describe the rest.
 
-## Tests that outlive your step
+## A regression test for every feature you build
 
-Leave a test behind for the behaviour you added, in whatever the project
-already uses — the framework, the directory and the naming that are there.
-Write it against what the feature must do, not how you happened to implement
-it: a test that breaks when the code is refactored and passes when the feature
-breaks is worse than none.
+Part of the task, not extra credit. A feature nothing checks is a feature the
+next step can undo without anyone noticing, and that is how work already paid
+for gets lost.
+
+For every behaviour you add or change:
+
+1. Write it.
+2. Write a test for it, in whatever the project already uses — its framework,
+   its directory, its naming. If the project has no test framework at all, set
+   up the smallest one that runs from a single command; every later step gets
+   that cost back.
+3. Run the whole suite with run_command, not only your new test. Your test
+   passing while two others now fail is exactly what this rule is for.
+4. Fix what you broke. A test that passed before your step and fails after it
+   is yours to fix, whoever wrote it.
+
+Do not report SUCCESS with a suite you did not run, or with failures you did
+not account for. If something was already failing when you arrived, name it —
+that is a fact the next agent needs, not a mess to quietly tidy or ignore.
+
+Test what the feature must do, not how you happened to implement it: a test
+that breaks when the code is refactored and passes when the feature breaks is
+worse than none. Where you genuinely cannot assert on the result — how a canvas
+looks, whether a sound is audible — assert on what you can reach: that the
+handler runs, that the state changes, that the right function is called with
+the right arguments.
 
 Then make sure the project says how to run them. If there is no test script,
-add one; if the README does not name it, add the line. A later agent, and a
-regression check, find the command by reading the project — not by guessing —
-and a suite nobody can run is a suite nobody runs.
+add one; if the README does not name it, add the line. A later agent, and the
+regression check that runs after your step, find the command by reading the
+project — not by guessing — and a suite nobody can run is a suite nobody runs.
 
 ## When you cannot see the fault
 

@@ -106,6 +106,43 @@ describe("editing what new projects start from", () => {
     expect(screen.getByText(/every new session is created with/)).toBeInTheDocument();
   });
 
+  it("can take a shipped agent's current prompt into a session that has an old copy", async () => {
+    // A session copies every prompt when it is created and keeps that copy, so
+    // improving a built-in agent otherwise reaches new sessions only — while
+    // the project actually being worked on runs the prompt it was born with.
+    const user = userEvent.setup();
+    const server = fakeServer({
+      "/api/agents": {
+        agents: [{ ...role({ name: "frontend" }), protected: true }],
+        verifiers: [], toolsets: [],
+      },
+      "/api/presets": { presets: [] },
+      "/api/config": config(),
+      "/api/agents/frontend/reset": role({ name: "frontend" }),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await user.click(await screen.findByRole("button", { name: "Restore shipped prompt" }));
+
+    await waitFor(() =>
+      expect(server.to("/api/agents/frontend/reset")).toHaveLength(1));
+    // It has already landed, so it is not left staged as an unsaved change
+    // that Apply would write the old prompt back over.
+    expect(screen.getByText("No changes")).toBeInTheDocument();
+  });
+
+  it("does not offer to restore an agent nobody ships", async () => {
+    fakeServer({
+      "/api/agents": { agents: [role({ name: "mine" })], verifiers: [], toolsets: [] },
+      "/api/presets": { presets: [] },
+      "/api/config": config(),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await screen.findByDisplayValue("mine");
+    expect(screen.queryByRole("button", { name: "Restore shipped prompt" })).toBeNull();
+  });
+
   it("can write an edit into the defaults without leaving this session", async () => {
     // Switching scope, finding the same agent again and re-typing the same
     // change is the step people skip — so the improvement stays in one

@@ -36,6 +36,10 @@ export interface DraftLibrary<T> {
   isNew: (name: string) => boolean;
 
   discard: () => void;
+  /** Drop the pending edit for one item, so the server's copy shows through
+   *  again. For a change that has already landed by another route — restoring
+   *  a built-in agent, which the server does in one call. */
+  forget: (name: string) => void;
   /** Call after a successful save so the draft stops shadowing the server. */
   settle: () => void;
 }
@@ -113,6 +117,8 @@ export function useDraftLibrary<T extends object>(
     changed: [...Object.values(edits), ...added],
     removed,
     isNew: (name) => added.some((item) => nameOf(item) === name),
+
+    forget: (name) => setEdits(({ [name]: _dropped, ...rest }) => rest),
 
     discard: () => { setEdits({}); setAdded([]); setRemoved([]); },
     settle: () => { setEdits({}); setAdded([]); setRemoved([]); },
