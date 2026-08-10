@@ -806,12 +806,16 @@ def _run_agent(
         })
         messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
         try:
-            response = client.complete(messages, tools=None, cancel_token=session_id)
+            response, stopped_thinking = _ask_without_tools(
+                client, messages, config=model_config, bus=bus, session_id=session_id,
+                role=role, step_id=step_id, round_n=max_rounds + 1,
+                stopped_thinking=stopped_thinking)
         except Cancelled:
             turn.stop_reason = "cancelled"
             return turn
         totals["input_tokens"] += response.usage.get("prompt_tokens", 0)
         totals["output_tokens"] += response.usage.get("completion_tokens", 0)
+        turn.context = context_usage(messages, response, model_config)
         event = bus.emit(
             "model_call", session_id, agent=role.name, step_id=step_id,
             payload={"round": max_rounds + 1, "model": model_config.model,
@@ -819,6 +823,7 @@ def _run_agent(
                      "response_text": response.text, "reasoning": response.reasoning,
                      "tool_calls": [], "finish_reason": "max_rounds",
                      "usage": response.usage, "preset": model_config.preset,
+                     "context": turn.context,
                      "summary": summarize_messages(messages)},
         )
         turn.model_event_ids.append(event.id)
@@ -847,18 +852,23 @@ def _run_agent(
         })
         messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
         try:
-            follow_up = client.complete(messages, tools=None, cancel_token=session_id)
+            follow_up, stopped_thinking = _ask_without_tools(
+                client, messages, config=model_config, bus=bus, session_id=session_id,
+                role=role, step_id=step_id, round_n=turn.rounds + 1,
+                stopped_thinking=stopped_thinking)
         except Cancelled:
             turn.stop_reason = "cancelled"
             return turn
         totals["input_tokens"] += follow_up.usage.get("prompt_tokens", 0)
         totals["output_tokens"] += follow_up.usage.get("completion_tokens", 0)
+        turn.context = context_usage(messages, follow_up, model_config)
         bus.emit("model_call", session_id, agent=role.name, step_id=step_id, payload={
             "round": turn.rounds + 1, "model": model_config.model,
             "base_url": model_config.base_url, "messages": messages,
             "response_text": follow_up.text, "reasoning": follow_up.reasoning,
             "tool_calls": [], "finish_reason": follow_up.finish_reason,
             "usage": follow_up.usage, "preset": model_config.preset,
+            "context": turn.context,
             "summary": summarize_messages(messages),
             "asked_for_outcome": True,
         })
@@ -868,7 +878,19 @@ def _run_agent(
             # Asked twice and still unreadable. Fail closed — a result nobody
             # can read is not evidence of success — but say that is why, rather
             # than presenting the agent's prose as a failure reason.
+            #
+            # "Never stated" reads as an agent that ignored the instruction, and
+            # for a local thinking model that is usually the wrong story: it
+            # returned nothing at all, having spent the reply budget. Say which
+            # of the two happened, because the fixes are different — one is a
+            # prompt, the other is the model's reply budget.
+            silent = (follow_up.finish_reason == "length"
+                      and not (follow_up.text or "").strip())
             turn.text += (
+                f"\n\nOUTCOME: FAILED — the model used its whole "
+                f"{model_config.max_tokens}-token reply budget without producing "
+                f"an answer, so this step has no result to read."
+                if silent else
                 "\n\nOUTCOME: FAILED — the agent was asked twice and never stated "
                 "SUCCESS or FAILED, so there is no readable result for this step.")
 
@@ -879,6 +901,31 @@ def _run_agent(
 #: Backends whose chat template takes `enable_thinking`. Only these can be
 #: asked to stop, and only these get the retry below.
 THINKING_TOGGLE_KINDS = ("llamacpp", "vllm")
+
+
+def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_id,
+                       round_n, stopped_thinking):
+    """The two asks made with tools withheld — report now, and state your outcome.
+
+    They used to go out raw, and that is how a step could fail for no reason:
+    measured on one session, the model spent all 8,000 tokens thinking about its
+    final report, returned an empty string twice, and the step was recorded as
+    "asked twice and never stated SUCCESS or FAILED" — an agent that answered
+    nothing, reported as an agent that would not follow instructions. These are
+    the two calls whose answer decides the step, so they are the last place to
+    skip the recovery every other round gets.
+
+    Returns (response, stopped_thinking).
+    """
+    response = client.complete(
+        messages, tools=None, cancel_token=session_id,
+        **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+           if stopped_thinking else {}))
+    response, overran = _answer_or_retry_without_thinking(
+        response, client=client, messages=messages, specs=None, config=config,
+        bus=bus, session_id=session_id, role=role, step_id=step_id,
+        round_n=round_n, already_overran=stopped_thinking)
+    return response, stopped_thinking or overran
 
 
 def _answer_or_retry_without_thinking(response, *, client, messages, specs, config,

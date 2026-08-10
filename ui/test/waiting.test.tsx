@@ -66,6 +66,20 @@ describe("the console header", () => {
     expect(screen.queryByText(/~$/)).not.toBeInTheDocument();
   });
 
+  it("keeps the last reading when the newest event has none", async () => {
+    // A step that ran out of rounds ends on a call that carried no gauge, and
+    // the header went blank at exactly the moment the window was fullest.
+    running([
+      event("model_waiting", { preset: "Qwen", context: CONTEXT }),
+      event("model_call", { preset: "Qwen", round: 1, response_text: "out of rounds",
+                            finish_reason: "max_rounds" }),
+    ]);
+
+    renderWithQuery(<RunScreen />);
+    await waitFor(() => expect(screen.getByText("32%")).toBeInTheDocument());
+    expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument();
+  });
+
   it("shows nothing at all before any model has been called", async () => {
     running([]);
     renderWithQuery(<RunScreen />);

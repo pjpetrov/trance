@@ -374,8 +374,17 @@ function ModelState({ events }: { events: TranceEvent[] }) {
   const waiting = last?.type === "model_waiting";
   // Both events carry the gauge: the waiting one sizes it from an estimate so
   // it moves while the model thinks, the finished one replaces it with what the
-  // model actually reported.
-  const context = last?.payload?.context;
+  // model actually reported. Read separately from the newest event that has one
+  // rather than off `last`, because a single event without the reading — one
+  // emitted before this existed, or by a call that forgot it — would otherwise
+  // blank a gauge that was up a second ago. The last reading is still true.
+  const context = useMemo(() => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const found = events[index]!.payload?.context;
+      if (found) return found;
+    }
+    return null;
+  }, [events]);
 
   useEffect(() => {
     if (!waiting) return;

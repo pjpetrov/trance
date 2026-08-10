@@ -8053,6 +8053,104 @@ def test_a_round_spent_entirely_on_thinking_is_asked_again_without_it(tmp_path, 
     assert told.payload["limit"] == 600
 
 
+def test_the_ask_for_an_outcome_gets_the_same_recovery(tmp_path, monkeypatch):
+    """The two asks made with tools withheld used to go out raw, and that is how
+    a step failed for no reason: measured on one real session, the model spent
+    all 8,000 tokens thinking about its final report and returned nothing twice,
+    and the step was recorded as an agent that would not state an outcome."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    calls, seen = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _ThinksAboutTheReport:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            calls.append(extra_body)
+            if len(calls) == 1:
+                return ChatResponse(text="I rewrote the spawner.")   # no outcome line
+            if len(calls) == 2:                                      # the ask, all think
+                return ChatResponse(text="", finish_reason="length",
+                                    reasoning="weighing it up at great length…")
+            return ChatResponse(text="OUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _ThinksAboutTheReport())
+    turn = runner.run_agent(
+        role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+        config=ModelConfig(kind="llamacpp", max_tokens=8000), bus=bus,
+        session_id="s", step_id="st")
+
+    assert calls[2] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert turn.outcome[0] == "SUCCESS"
+    assert any(e.type == "thinking_overran" for e in seen)
+
+
+def test_a_model_that_answers_nothing_is_not_reported_as_disobedient(tmp_path, monkeypatch):
+    """"Never stated SUCCESS or FAILED" reads as an agent ignoring the
+    instruction. When the reply budget went entirely on thinking the agent said
+    nothing at all, and the fix is the budget rather than the prompt — so the
+    step has to say which of the two happened."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    bus = EventBus()
+
+    class _Silent:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            return ChatResponse(text="", finish_reason="length", reasoning="…")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _Silent())
+    turn = runner.run_agent(
+        role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+        config=ModelConfig(kind="llamacpp", max_tokens=8000), bus=bus,
+        session_id="s", step_id="st")
+
+    assert turn.outcome[0] == "FAILED"
+    assert "8000-token reply budget" in turn.text
+    assert "never stated" not in turn.text
+
+
+def test_the_last_word_of_a_turn_still_carries_the_context_gauge(tmp_path, monkeypatch):
+    """The gauge reads the newest model event, so a final call that omitted the
+    reading blanked it: a step that ran out of rounds ended showing no context
+    at all, which is exactly when you want to know how full the window got."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _NeverStops:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            if tools is None:                       # the out-of-rounds ask
+                return ChatResponse(text="Ran out of room.\n\nOUTCOME: FAILED — unfinished")
+            return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                ToolCall(id="c1", name="list_files", arguments={"path": "."})])
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _NeverStops())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=2,
+                     session_id="s", step_id="st")
+
+    calls = [e for e in seen if e.type == "model_call"]
+    assert calls[-1].payload["finish_reason"] == "max_rounds"
+    assert calls[-1].payload["context"]["window"] > 0
+    # Every one of them, not just the last: the gauge should never go backwards
+    # to nothing part-way through a run either.
+    assert all(call.payload.get("context") for call in calls)
+
+
 def test_the_thinking_that_was_paid_for_is_kept(tmp_path, monkeypatch):
     """It is the most useful record of why the round went the way it did."""
     from trance.agents.roles import BUILTIN_ROLES
