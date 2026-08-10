@@ -35,6 +35,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 const running = (events: TranceEvent[]) => fakeServer({
   "/api/sessions/s1": session({
+    status: "running",
     flow: { steps: [step({ status: "running" })], cursor: 0 },
   }),
   "/api/sessions/s1/events": { events, total: events.length, shown: events.length },
@@ -47,10 +48,9 @@ describe("the console header", () => {
     })]);
 
     renderWithQuery(<RunScreen />);
-    expect(await screen.findByText(/waiting for Qwen3.6-llama.cpp/)).toBeInTheDocument();
-    // Once, in the header. It used to be there and on a console line per round,
-    // and the repeats pushed the work off the screen.
-    expect(screen.getAllByText(/waiting for/)).toHaveLength(1);
+    // Twice: the header, and the console's newest line. It used to be on a
+    // console line per round, and the repeats pushed the work off the screen.
+    expect(await screen.findAllByText(/waiting for Qwen3.6-llama.cpp/)).toHaveLength(2);
     // The gauge is up before the answer exists, from an estimate that says so.
     expect(screen.getByText(/^17.7k\/55.0k~$/)).toBeInTheDocument();
     expect(screen.getByText("32%")).toBeInTheDocument();
@@ -100,6 +100,40 @@ describe("the console header", () => {
     expect(await screen.findByText("no thinking")).toBeInTheDocument();
     // And a backend whose thinking trance does not set is not called either way.
     expect(screen.getAllByText("thinking")).toHaveLength(2);
+  });
+
+  it("keeps only the newest waiting line in the console", async () => {
+    // A step doing twenty rounds of reads showed twenty identical lines, so the
+    // work scrolled off the screen. One line, for the call that has not come
+    // back, is what tells you it is working rather than stuck.
+    running([
+      event("model_waiting", { preset: "Qwen", round: 1, context: CONTEXT }),
+      event("model_call", { preset: "Qwen", round: 1, response_text: "ok" }),
+      event("model_waiting", { preset: "Qwen", round: 2, context: CONTEXT }),
+    ]);
+
+    renderWithQuery(<RunScreen />);
+    // Header plus one console line: the first waiting event is history now.
+    await waitFor(() => expect(screen.getAllByText(/waiting for/)).toHaveLength(2));
+    // And it counts, so a two-minute generation looks like a two-minute
+    // generation rather than a frozen page.
+    expect(screen.getByText(/^\d+s$/)).toBeInTheDocument();
+  });
+
+  it("does not count up on a run that has stopped", async () => {
+    const events = [event("model_waiting", { preset: "Qwen", round: 9, context: CONTEXT })];
+    fakeServer({
+      "/api/sessions/s1": session({
+        status: "halted",
+        flow: { steps: [step({ status: "failed" })], cursor: 0 },
+      }),
+      "/api/sessions/s1/events": { events, total: 1, shown: 1 },
+    });
+
+    renderWithQuery(<RunScreen />);
+    await screen.findByText(/Build the maze renderer/);
+    // Nothing is waiting for anything: the run ended on that line hours ago.
+    expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument();
   });
 
   it("shows nothing at all before any model has been called", async () => {

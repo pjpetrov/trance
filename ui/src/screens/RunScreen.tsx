@@ -260,6 +260,7 @@ function Console(
   { stepId: string | null; pinnedRun: number | null; onPickRun: (run: number | null) => void },
 ) {
   const { sessionId, showReads, toggleReads } = useUi();
+  const session = useSession(sessionId);
   const tail = useEventTail(sessionId);
   const stepEvents = useStepEvents(sessionId, stepId);
   const bottom = useRef<HTMLDivElement>(null);
@@ -279,6 +280,12 @@ function Console(
   const events = stepId ? (shown?.events ?? []) : (tail.data ?? []);
   const blocks = useMemo(() => splitIntoBlocks(events), [events]);
   const loading = stepId ? stepEvents.isLoading : tail.isLoading;
+
+  // The newest event, but only while something is actually going: a finished
+  // run whose last event happens to be a waiting one must not sit there
+  // counting up the hours since it stopped.
+  const going = stepId ? Boolean(shown?.running) : session.data?.status === "running";
+  const liveId = going && events.length ? events[events.length - 1]!.id : null;
 
   // Two different scrolls. Arriving at a run puts you at its end, because the
   // last thing that happened is what you opened it to read. After that the
@@ -309,7 +316,7 @@ function Console(
           : "everything the agents have done"}
         actions={
           <>
-            <ModelState events={events} />
+            <ModelState events={events} going={going} />
             {(tail.isFetching || stepEvents.isFetching) && <Spinner className="text-muted" />}
             {stepId && pinnedRun !== null && (
               <Button size="sm" onClick={() => onPickRun(null)}>latest run</Button>
@@ -332,10 +339,12 @@ function Console(
                 // blocks is otherwise a wall you have to scroll past to reach
                 // the part that is live.
                 openByDefault={block.running || index === blocks.length - 1}
+                liveId={liveId}
               />
             ))
           : events.map((event) => (
-              <EventLine key={event.id} event={event} sessionId={sessionId!} />
+              <EventLine key={event.id} event={event} sessionId={sessionId!}
+                         live={event.id === liveId} />
             ))}
 
         {!loading && !events.length && (
@@ -359,7 +368,7 @@ function Console(
  *  stuck. The runner now announces the call before making it; this turns that
  *  into a line that counts, and clears itself when the answer lands.
  */
-function ModelState({ events }: { events: TranceEvent[] }) {
+function ModelState({ events, going }: { events: TranceEvent[]; going: boolean }) {
   const [now, setNow] = useState(() => Date.now());
 
   // The last thing that said anything about a model call, either way round.
@@ -371,7 +380,10 @@ function ModelState({ events }: { events: TranceEvent[] }) {
     return null;
   }, [events]);
 
-  const waiting = last?.type === "model_waiting";
+  // Waiting only counts while something is running. A run that stopped on a
+  // waiting event left the header spinning and counting up the hours since,
+  // which says "working" about a session that has been dead all night.
+  const waiting = going && last?.type === "model_waiting";
   // Both events carry the gauge: the waiting one sizes it from an estimate so
   // it moves while the model thinks, the finished one replaces it with what the
   // model actually reported. Read separately from the newest event that has one
@@ -416,8 +428,8 @@ function ModelState({ events }: { events: TranceEvent[] }) {
  *  Folded it says who ran, how it went and one line of why — which is what you
  *  want from the seven blocks you are not currently reading. */
 function AgentBlock(
-  { block, sessionId, openByDefault }:
-  { block: Block; sessionId: string; openByDefault: boolean },
+  { block, sessionId, openByDefault, liveId }:
+  { block: Block; sessionId: string; openByDefault: boolean; liveId: string | null },
 ) {
   const [open, setOpen] = useState(openByDefault);
   // A block that was folded stays folded when it finishes; one you are watching
@@ -452,7 +464,8 @@ function AgentBlock(
       {open && (
         <div className="space-y-px px-1 pb-1">
           {block.events.map((event) => (
-            <EventLine key={event.id} event={event} sessionId={sessionId} />
+            <EventLine key={event.id} event={event} sessionId={sessionId}
+                       live={event.id === liveId} />
           ))}
         </div>
       )}

@@ -10,7 +10,7 @@
  * compile error here rather than a line that silently renders as nothing.
  */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useFullEvent } from "@/api/queries";
 import { cn } from "@/lib/cn";
 import { clip, shortModel, timeOf, tokens } from "@/lib/format";
@@ -19,10 +19,10 @@ import type { ImageDiff, PageErrors, ToolDetail, TranceEvent } from "@/api/types
 import { Badge, Code, type Tone } from "@/components/ui/primitives";
 
 export function EventLine(
-  { event, sessionId, defaultOpen }:
-  { event: TranceEvent; sessionId: string; defaultOpen?: boolean },
+  { event, sessionId, defaultOpen, live }:
+  { event: TranceEvent; sessionId: string; defaultOpen?: boolean; live?: boolean },
 ) {
-  const rendered = describe(event, sessionId);
+  const rendered = describe(event, sessionId, Boolean(live));
   const [open, setOpen] = useState(Boolean(defaultOpen ?? rendered.open));
   if (!rendered.show) return null;
 
@@ -60,6 +60,25 @@ export function EventLine(
   );
 }
 
+/** The call that has not come back yet, counting while it does not. */
+function WaitingLabel({ event }: { event: TranceEvent }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const payload = event.payload ?? {};
+  const seconds = Math.max(0, Math.round((now - new Date(event.ts).getTime()) / 1000));
+  return (
+    <span className="text-accent">
+      waiting for {shortModel(payload.model, payload.preset)}
+      {payload.thinking === false && <span className="text-warn/80"> · no thinking</span>}
+      <span className="ml-2 tabular-nums text-muted">{seconds}s</span>
+    </span>
+  );
+}
+
 interface Rendered {
   show: boolean;
   icon: string;
@@ -74,7 +93,7 @@ interface Rendered {
 
 const HIDDEN: Rendered = { show: false, icon: "", label: "" };
 
-function describe(event: TranceEvent, sessionId: string): Rendered {
+function describe(event: TranceEvent, sessionId: string, live: boolean): Rendered {
   const payload = event.payload ?? {};
 
   if (event.type === "model_call") {
@@ -104,11 +123,18 @@ function describe(event: TranceEvent, sessionId: string): Rendered {
     };
   }
 
-  // One per round, all the same sentence, interleaved between the lines that
-  // carry the content. The header says it live and with the seconds counting,
-  // which is the only time it tells you anything the next line won't; kept as
-  // an event because the gauge and the thinking state ride on it.
-  if (event.type === "model_waiting") return HIDDEN;
+  // One per round, all the same sentence, so the finished ones are noise
+  // between the lines that carry the content. The newest one is not: it is the
+  // call that has not come back, and without it the console shows nothing at
+  // all while a local model spends two minutes on one generation — which is
+  // indistinguishable from stuck. So the last one stays, and counts.
+  if (event.type === "model_waiting") {
+    if (!live) return HIDDEN;
+    return {
+      show: true, icon: "◌", iconTone: "text-accent",
+      label: <WaitingLabel event={event} />,
+    };
+  }
 
   if (event.type !== "tool_call") {
     const message = String(payload.message ?? payload.reason ?? payload.summary ?? "");
