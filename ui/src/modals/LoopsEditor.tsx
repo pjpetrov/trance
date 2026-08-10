@@ -14,7 +14,8 @@ import { useUi } from "@/store/ui";
 import { Badge, Button, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
 import { LibraryFooter, LibraryList } from "@/components/ui/Library";
-import { ScopeSwitch, idFor, type Scope } from "@/components/ScopeSwitch";
+import { DEFAULTS, ScopeSwitch, idFor, type Scope }
+  from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
 import type { Loop, LoopNode } from "@/api/types";
 
@@ -63,20 +64,24 @@ export function LoopsEditor() {
   const loops = useLoops(sessionId);
   const agents = useAgents(sessionId);
   const { save, remove } = useLoopMutations(sessionId);
+  const template = useLoopMutations(DEFAULTS);
   const [applying, setApplying] = useState(false);
 
   const library = useDraftLibrary<Loop>(loops.data, (loop) => loop.name);
   const draft = library.selected;
 
-  const apply = async () => {
+  const apply = async (alsoDefault = false) => {
     setApplying(true);
     try {
       for (const name of library.removed) await remove.mutateAsync(name);
       for (const loop of library.changed) {
         await save.mutateAsync({ name: loop.name, body: loop });
+        // Deletions are not repeated against the template — see AgentsEditor.
+        if (alsoDefault) await template.save.mutateAsync({ name: loop.name, body: loop });
       }
       library.settle();
-      toast.ok(`Applied ${library.changeCount} change(s).`);
+      toast.ok(`Applied ${library.changeCount} change(s)`
+               + (alsoDefault ? ", here and for new sessions." : "."));
     } catch (error) {
       // A loop a step still names cannot be deleted; the server says so.
       toast.err(`${error}. Nothing else was applied.`);
@@ -261,7 +266,8 @@ export function LoopsEditor() {
         <div className="flex-1" />
         <LibraryFooter
           changeCount={library.changeCount}
-          onApply={apply}
+          onApply={() => apply()}
+          onApplyDefault={scope === "project" ? () => apply(true) : undefined}
           onDiscard={library.discard}
           busy={applying}
         />

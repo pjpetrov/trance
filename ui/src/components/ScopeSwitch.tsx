@@ -25,8 +25,8 @@ export function ScopeSwitch(
   return (
     <div className="flex items-center gap-3">
       <div className="flex rounded-[--radius] border border-line p-0.5 text-xs">
-        {([["project", "This project"],
-           ["defaults", "New projects"]] as const).map(([id, label]) => (
+        {([["project", "Current session"],
+           ["defaults", "Default"]] as const).map(([id, label]) => (
           <button
             key={id}
             onClick={() => onChange(id)}
@@ -39,8 +39,8 @@ export function ScopeSwitch(
       </div>
       <p className="text-xs text-muted">
         {scope === "project"
-          ? `The ${what} this project runs with.`
-          : `The ${what} every new project is created with. Projects that already `
+          ? `The ${what} this session runs with.`
+          : `The ${what} every new session is created with. Sessions that already `
             + "exist keep their own copy."}
       </p>
     </div>

@@ -13,7 +13,8 @@ import { useUi } from "@/store/ui";
 import { Badge, Button, Checkbox, Empty, Field, Input, Textarea }
   from "@/components/ui/primitives";
 import { LibraryFooter, LibraryList } from "@/components/ui/Library";
-import { ScopeSwitch, idFor, type Scope } from "@/components/ScopeSwitch";
+import { DEFAULTS, ScopeSwitch, idFor, type Scope }
+  from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
 
 /** A list as the editor holds it: the API keys lists by name, which a draft
@@ -30,6 +31,7 @@ export function CommandsEditor() {
   const sessionId = idFor(scope, session);
   const commands = useCommands(sessionId);
   const { save, remove, reset } = useCommandMutations(sessionId);
+  const template = useCommandMutations(DEFAULTS);
   const [applying, setApplying] = useState(false);
 
   const lists: NamedList[] = Object.entries(commands.data?.lists ?? {})
@@ -39,17 +41,19 @@ export function CommandsEditor() {
     commands.data ? lists : undefined, (list) => list.name);
   const draft = library.selected;
 
-  const apply = async () => {
+  const apply = async (alsoDefault = false) => {
     setApplying(true);
     try {
       for (const name of library.removed) await remove.mutateAsync(name);
       for (const list of library.changed) {
-        await save.mutateAsync({
-          name: list.name, body: { allowed: list.allowed, shell: list.shell },
-        });
+        const body = { allowed: list.allowed, shell: list.shell };
+        await save.mutateAsync({ name: list.name, body });
+        // Deletions are not repeated against the template — see AgentsEditor.
+        if (alsoDefault) await template.save.mutateAsync({ name: list.name, body });
       }
       library.settle();
-      toast.ok(`Applied ${library.changeCount} change(s).`);
+      toast.ok(`Applied ${library.changeCount} change(s)`
+               + (alsoDefault ? ", here and for new sessions." : "."));
     } catch (error) {
       toast.err(`${error}. Nothing else was applied.`);
     } finally {
@@ -165,7 +169,8 @@ export function CommandsEditor() {
         <div className="flex-1" />
         <LibraryFooter
           changeCount={library.changeCount}
-          onApply={apply}
+          onApply={() => apply()}
+          onApplyDefault={scope === "project" ? () => apply(true) : undefined}
           onDiscard={library.discard}
           busy={applying}
         />

@@ -16,7 +16,8 @@ import { Badge, Button, Checkbox, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
 import { LibraryFooter, LibraryList } from "@/components/ui/Library";
 import { Checks } from "@/components/Checks";
-import { ScopeSwitch, idFor, type Scope } from "@/components/ScopeSwitch";
+import { DEFAULTS, ScopeSwitch, idFor, type Scope }
+  from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
 import type { AgentRole, Toolset } from "@/api/types";
 
@@ -49,13 +50,16 @@ export function AgentsEditor() {
   const agents = useAgents(sessionId);
   const presets = usePresets();
   const config = useConfig();
-  const { save, remove, draftPrompt } = useAgentMutations(sessionId);
+  const mine = useAgentMutations(sessionId);
+  const { save, remove, draftPrompt } = mine;
+  // The same writes, aimed at what new sessions are created from.
+  const template = useAgentMutations(DEFAULTS);
   const [applying, setApplying] = useState(false);
 
   const library = useDraftLibrary<AgentRole>(agents.data?.agents, (role) => role.name);
   const draft = library.selected;
 
-  const apply = async () => {
+  const apply = async (alsoDefault = false) => {
     setApplying(true);
     try {
       // Deletions first: a rename is expressed as an add plus a delete, and
@@ -63,9 +67,17 @@ export function AgentsEditor() {
       for (const name of library.removed) await remove.mutateAsync(name);
       for (const role of library.changed) {
         await save.mutateAsync({ name: role.name, body: role });
+        // Only what this edit wrote. A deletion is not repeated against the
+        // template: an agent still on some other session's team cannot be
+        // deleted there, and half of a two-part apply failing is worse than
+        // not offering it. Delete it in the Default scope.
+        if (alsoDefault) {
+          await template.save.mutateAsync({ name: role.name, body: role });
+        }
       }
       library.settle();
-      toast.ok(`Applied ${library.changeCount} change(s).`);
+      toast.ok(`Applied ${library.changeCount} change(s)`
+               + (alsoDefault ? ", here and for new sessions." : "."));
     } catch (error) {
       // The draft is deliberately kept: some of it may have saved, and throwing
       // away the rest because one failed would lose work.
@@ -276,7 +288,8 @@ export function AgentsEditor() {
         <div className="flex-1" />
         <LibraryFooter
           changeCount={library.changeCount}
-          onApply={apply}
+          onApply={() => apply()}
+          onApplyDefault={scope === "project" ? () => apply(true) : undefined}
           onDiscard={library.discard}
           busy={applying}
         />

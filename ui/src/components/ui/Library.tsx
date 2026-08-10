@@ -72,10 +72,15 @@ export function LibraryList<T>(
 
 /** The footer every library shares: what is pending, and the two ways out. */
 export function LibraryFooter(
-  { changeCount, onApply, onDiscard, busy, note }:
+  { changeCount, onApply, onApplyDefault, onDiscard, busy, note }:
   {
     changeCount: number;
     onApply: () => void;
+    /** Write the same changes into what new sessions start from. Offered
+     *  because the usual reason for tuning an agent here is that you want it
+     *  that way everywhere, and re-doing the edit in the other scope is the
+     *  step people skip. */
+    onApplyDefault?: () => void;
     onDiscard: () => void;
     busy?: boolean;
     note?: ReactNode;
@@ -90,6 +95,12 @@ export function LibraryFooter(
           : "No changes")}
       </span>
       <Button onClick={onDiscard} disabled={!dirty || busy}>Discard</Button>
+      {onApplyDefault && (
+        <Button
+          onClick={onApplyDefault} disabled={!dirty} busy={busy}
+          title="Apply to this session and to what new sessions start from"
+        >Apply as default</Button>
+      )}
       <Button variant="primary" onClick={onApply} disabled={!dirty} busy={busy}>
         Apply{dirty ? ` (${changeCount})` : ""}
       </Button>

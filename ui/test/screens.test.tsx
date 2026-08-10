@@ -100,10 +100,46 @@ describe("editing what new projects start from", () => {
     await screen.findByDisplayValue("frontend");
     expect(server.calls.some((call) => call.url.includes("session=s1"))).toBe(true);
 
-    await user.click(screen.getByRole("button", { name: "New projects" }));
+    await user.click(screen.getByRole("button", { name: "Default" }));
     await waitFor(() =>
       expect(server.calls.some((call) => call.url.includes("session=defaults"))).toBe(true));
-    expect(screen.getByText(/every new project is created with/)).toBeInTheDocument();
+    expect(screen.getByText(/every new session is created with/)).toBeInTheDocument();
+  });
+
+  it("can write an edit into the defaults without leaving this session", async () => {
+    // Switching scope, finding the same agent again and re-typing the same
+    // change is the step people skip — so the improvement stays in one
+    // session and the next one starts from the old prompt again.
+    const user = userEvent.setup();
+    const server = fakeServer({
+      "/api/agents": { agents: [role({ name: "frontend" })], verifiers: [], toolsets: [] },
+      "/api/presets": { presets: [] },
+      "/api/config": config(),
+      "/api/agents/frontend": role(),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await user.type(await screen.findByDisplayValue("Frontend engineer"), "!");
+    await user.click(screen.getByRole("button", { name: "Apply as default" }));
+
+    await waitFor(() => expect(server.to("/api/agents/frontend")).toHaveLength(2));
+    const sent = server.to("/api/agents/frontend");
+    // Once where it was edited, once into what new sessions start from.
+    expect(sent.some((call) => call.url.includes("session=defaults"))).toBe(true);
+    expect(sent.some((call) => !call.url.includes("session=defaults"))).toBe(true);
+  });
+
+  it("does not offer it while the defaults are what you are editing", async () => {
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/agents": { agents: [role({ name: "frontend" })], verifiers: [], toolsets: [] },
+      "/api/presets": { presets: [] },
+      "/api/config": config(),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await user.click(await screen.findByRole("button", { name: "Default" }));
+    expect(screen.queryByRole("button", { name: "Apply as default" })).toBeNull();
   });
 });
 
@@ -250,7 +286,7 @@ describe("the agents editor", () => {
 
     renderWithQuery(<AgentsEditor />);
     // Nothing pending, nothing to apply.
-    const apply = await screen.findByRole("button", { name: /^Apply/ });
+    const apply = await screen.findByRole("button", { name: /^Apply( \(|$)/ });
     expect(apply).toBeDisabled();
     expect(screen.getByText("No changes")).toBeInTheDocument();
 
@@ -259,7 +295,7 @@ describe("the agents editor", () => {
     // Still nothing sent: an edit is a draft until it is applied.
     expect(server.to("/api/agents/frontend")).toHaveLength(0);
 
-    await user.click(screen.getByRole("button", { name: /^Apply/ }));
+    await user.click(screen.getByRole("button", { name: /^Apply( \(|$)/ }));
     await waitFor(() => {
       const saved = server.to("/api/agents/frontend").at(-1);
       expect(saved?.method).toBe("PUT");
