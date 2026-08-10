@@ -290,7 +290,7 @@ function Console(
   { stepId, pinnedRun, onPickRun }:
   { stepId: string | null; pinnedRun: number | null; onPickRun: (run: number | null) => void },
 ) {
-  const { sessionId, showReads, toggleReads } = useUi();
+  const { sessionId, showReads, toggleReads, follow, setFollow } = useUi();
   const session = useSession(sessionId);
   const tail = useEventTail(sessionId);
   const stepEvents = useStepEvents(sessionId, stepId);
@@ -342,13 +342,22 @@ function Console(
     bottom.current?.scrollIntoView({ block: "end" });
   }, [landedOn]);
 
+  // Following used to be inferred from where the scrollbar happened to be, so
+  // it stopped for reasons nothing showed and nothing could turn back on. It
+  // is a switch now: this only asks whether it is on.
   useEffect(() => {
-    const node = bottom.current;
-    const box = node?.parentElement;
-    if (!node || !box) return;
-    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-    if (atBottom) node.scrollIntoView({ block: "end" });
-  }, [events.length]);
+    if (follow) bottom.current?.scrollIntoView({ block: "end" });
+  }, [events.length, follow]);
+
+  // Scrolling up is how anyone says "stop moving, I am reading this". Scrolling
+  // back down does not turn it on again — the switch does, so that what it says
+  // is always what is happening.
+  const onScroll = (moved: React.UIEvent<HTMLDivElement>) => {
+    const box = moved.currentTarget;
+    if (follow && box.scrollHeight - box.scrollTop - box.clientHeight > 160) {
+      setFollow(false);
+    }
+  };
 
   return (
     <Panel className="flex min-h-0 min-w-0 flex-col">
@@ -367,13 +376,28 @@ function Console(
             {stepId && pinnedRun !== null && (
               <Button size="sm" onClick={() => onPickRun(null)}>latest run</Button>
             )}
+            <Button
+              size="sm"
+              variant={follow ? "primary" : "ghost"}
+              title={follow
+                ? "Following the run: newest lines stay in view, and the console "
+                  + "moves to whichever step is working. Scrolling up pauses it."
+                : "Paused. Nothing moves on its own until you turn this back on."}
+              onClick={() => {
+                const next = !follow;
+                setFollow(next);
+                // Turning it on means "show me what is happening now", which is
+                // the newest run of the step, not whichever one was pinned.
+                if (next) { onPickRun(null); bottom.current?.scrollIntoView({ block: "end" }); }
+              }}
+            >{follow ? "following" : "follow"}</Button>
             <Button variant="ghost" size="sm" onClick={toggleReads}>
               {showReads ? "hide reads" : `show reads${hidden ? ` (${hidden})` : ""}`}
             </Button>
           </>
         }
       />
-      <div className="min-h-0 flex-1 space-y-px overflow-y-auto p-2">
+      <div className="min-h-0 flex-1 space-y-px overflow-y-auto p-2" onScroll={onScroll}>
         {loading && <Spinner className="m-3 text-muted" />}
 
         {stepId

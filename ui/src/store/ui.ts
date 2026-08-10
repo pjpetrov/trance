@@ -18,6 +18,11 @@ interface UiStore {
   modal: Modal;
   /** The step whose detail panel is open, if any. */
   openStep: string | null;
+  /** Whether the console follows the run: the newest lines stay in view, the
+   *  open step moves to whatever is working, and the newest run is the one
+   *  shown. It was implicit before, and something implicit that sometimes
+   *  stops is indistinguishable from something broken. */
+  follow: boolean;
   /** Console filters. Reads are the bulk of the traffic and the least of the
    *  interest — but the switch that was supposed to hide them never did, so
    *  they have always been shown. It works now; making it default to hiding
@@ -34,6 +39,7 @@ interface UiStore {
   go: (screen: Screen) => void;
   openModal: (modal: Modal) => void;
   setOpenStep: (stepId: string | null) => void;
+  setFollow: (follow: boolean) => void;
   setConsoleStep: (stepId: string | null) => void;
   toggleReads: () => void;
   toggleHideFinished: () => void;
@@ -45,6 +51,7 @@ export const useUi = create<UiStore>((set) => ({
   screen: "home",
   modal: null,
   openStep: null,
+  follow: true,
   showReads: true,
   hideFinished: false,
   consoleStep: null,
@@ -59,6 +66,7 @@ export const useUi = create<UiStore>((set) => ({
   go: (screen) => set({ screen }),
   openModal: (modal) => set({ modal }),
   setOpenStep: (openStep) => set({ openStep }),
+  setFollow: (follow) => set({ follow }),
   setConsoleStep: (consoleStep) => set({ consoleStep }),
   toggleReads: () => set((s) => ({ showReads: !s.showReads })),
   toggleHideFinished: () => set((s) => ({ hideFinished: !s.hideFinished })),

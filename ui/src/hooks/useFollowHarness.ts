@@ -45,7 +45,7 @@ export function useFollowHarness(sessionId: string | null) {
 
     // Read the store rather than subscribing to it: this reacts to the harness,
     // and re-running whenever the user opens a modal would make it fight them.
-    const { screen, go, openStep, setOpenStep } = useUi.getState();
+    const { screen, go, openStep, setOpenStep, follow } = useUi.getState();
 
     // First sight of a session is not a change. Landing on one that already has
     // a plan, or is already running, must not move you off the screen you asked
@@ -58,8 +58,11 @@ export function useFollowHarness(sessionId: string | null) {
     // Selecting a step is not moving you, though: it only decides what the run
     // screen shows when you get there. So it happens on first sight too, or
     // opening a session that is mid-run shows a console scoped to nothing while
-    // an agent works.
-    if (now.step && now.step !== (before?.step ?? null)
+    // an agent works. Following it onwards is the console's switch: someone who
+    // has paused it is reading something, and moving the step out from under
+    // them is the same interruption as scrolling.
+    const first = !before || before.session !== now.session;
+    if (now.step && now.step !== (before?.step ?? null) && (follow || first)
         && (openStep === null || openStep === before?.step)) {
       setOpenStep(now.step);
     }
