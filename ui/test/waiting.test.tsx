@@ -48,6 +48,9 @@ describe("the console header", () => {
 
     renderWithQuery(<RunScreen />);
     expect(await screen.findByText(/waiting for Qwen3.6-llama.cpp/)).toBeInTheDocument();
+    // Once, in the header. It used to be there and on a console line per round,
+    // and the repeats pushed the work off the screen.
+    expect(screen.getAllByText(/waiting for/)).toHaveLength(1);
     // The gauge is up before the answer exists, from an estimate that says so.
     expect(screen.getByText(/^17.7k\/55.0k~$/)).toBeInTheDocument();
     expect(screen.getByText("32%")).toBeInTheDocument();

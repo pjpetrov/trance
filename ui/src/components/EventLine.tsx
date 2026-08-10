@@ -104,6 +104,12 @@ function describe(event: TranceEvent, sessionId: string): Rendered {
     };
   }
 
+  // One per round, all the same sentence, interleaved between the lines that
+  // carry the content. The header says it live and with the seconds counting,
+  // which is the only time it tells you anything the next line won't; kept as
+  // an event because the gauge and the thinking state ride on it.
+  if (event.type === "model_waiting") return HIDDEN;
+
   if (event.type !== "tool_call") {
     const message = String(payload.message ?? payload.reason ?? payload.summary ?? "");
     if (!message) return HIDDEN;
