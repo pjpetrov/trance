@@ -988,15 +988,17 @@ def _roles():
     return list(BUILTIN_ROLES.values())
 
 
-def test_the_proposal_schema_only_offers_real_verifiers():
-    """Regression: verify_with was a free string, so the orchestrator could —
-    and did — propose itself as the verifier."""
+def test_the_proposal_is_not_asked_who_should_check():
+    """It was, and it answered from the shape of the sentence in front of it —
+    a different verifier each time the same plan was proposed. Checks belong to
+    the agent, set once by a person. An argument nobody reads is also tokens
+    spent on every plan, and a slot a model will fill because it is there."""
     from trance.agents.orchestrator import propose_flow_tool
 
     props = (propose_flow_tool(_roles())["function"]["parameters"]
              ["properties"]["steps"]["items"]["properties"])
-    assert set(props["check"]["enum"]) == {"tester", "reviewer", "factchecker",
-                                           "visual-tester", "regression"}
+    assert "check" not in props
+    assert "verify_with" not in props
     assert "orchestrator" not in props["role"]["enum"]     # it assigns work, not does it
     # No fixer here any more: bringing in a second agent on failure is what a
     # loop is, and offering both invited a plan the step editor cannot show.
@@ -1012,20 +1014,21 @@ def test_the_schema_follows_the_live_library():
                       toolsets=["files"], paths=["migrations/**"])
     props = (propose_flow_tool([*_roles(), custom, plain])["function"]["parameters"]
              ["properties"]["steps"]["items"]["properties"])
-    assert "auditor" in props["check"]["enum"]        # custom verifier offered
-    assert "dba" not in props["check"]["enum"]        # cannot verify
-    assert "dba" in props["role"]["enum"]             # but can be assigned work
+    assert "auditor" in props["role"]["enum"]         # a step can be given to either
+    assert "dba" in props["role"]["enum"]
     assert "on_fail" not in props                     # fixers live in loops now
 
 
-def test_a_proposal_naming_a_non_verifier_as_the_check_drops_it():
+def test_a_proposal_that_names_a_check_anyway_is_ignored_and_says_so():
+    """The field is gone from the schema, which does not stop a model writing
+    one. Silently dropping it would leave the plan looking like it forgot."""
     from trance.agents.orchestrator import _normalize
 
     out = _normalize({"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "t", "check": "orchestrator"},
+        {"role": "backend", "task": "t", "check": "reviewer"},
     ]}, _roles())
     assert out["steps"][0]["check"] is None
-    assert any("orchestrator" in d for d in out["dropped_checks"])
+    assert any("reviewer" in d for d in out["dropped_checks"])
 
 
 def test_a_fixer_without_a_check_is_dropped():
@@ -1048,13 +1051,15 @@ def test_the_orchestrator_cannot_assign_work_to_itself():
     assert "orchestrator" not in out["team"]
 
 
-def test_legacy_verify_with_in_a_proposal_becomes_the_check():
+def test_legacy_verify_with_in_a_proposal_is_ignored_too():
+    """It was the old name for the same field. Reading it would put the model
+    back in charge of who checks the work through the back door."""
     from trance.agents.orchestrator import _normalize
 
     out = _normalize({"summary": "s", "team": [], "steps": [
         {"role": "backend", "task": "t", "verify_with": "tester"},
     ]}, _roles())
-    assert out["steps"][0]["check"] == "tester"
+    assert out["steps"][0]["check"] is None
 
 
 def test_a_proposed_step_does_not_set_a_try_count():
@@ -1073,13 +1078,17 @@ def test_a_proposed_step_does_not_set_a_try_count():
     assert "max_loops" not in schema["properties"]["steps"]["items"]["properties"]
 
 
-def test_check_and_fixer_are_pulled_onto_the_team():
-    from trance.agents.orchestrator import _normalize
+def test_the_fact_check_joins_the_team_it_will_check():
+    """Put there by rule rather than by the plan — but a check the session has
+    never heard of cannot run, so it has to arrive with the step."""
+    from trance.agents.orchestrator import _normalize, ensure_checks
+    from trance.agents.roles import BUILTIN_ROLES as R
 
-    out = _normalize({"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "t", "check": "factchecker", "on_fail": "reviewer"},
-    ]}, _roles())
-    assert set(out["team"]) == {"backend", "factchecker", "reviewer"}
+    out = ensure_checks(_normalize({"summary": "s", "team": ["backend"], "steps": [
+        {"role": "backend", "task": "build the API"},
+    ]}, _roles()), roles=list(R.values()))
+    assert out["steps"][0]["checks"] == ["factchecker"]
+    assert set(out["team"]) == {"backend", "factchecker"}
 
 
 
@@ -4042,9 +4051,10 @@ def test_the_orchestrator_can_put_a_loop_on_a_step(tmp_path, monkeypatch):
     assert "added_final_check" not in result["proposal"]   # it did not forget
 
 
-def test_a_step_that_writes_files_gets_a_fact_check(tmp_path):
-    """An agent reporting SUCCESS is the one thing here with no independent
-    evidence behind it."""
+def test_a_planned_step_that_writes_files_is_fact_checked(tmp_path):
+    """The floor, applied by rule: an agent reporting SUCCESS is the one claim
+    here with no evidence behind it. Everything above the floor comes from the
+    agent, which is where a person sets it."""
     from trance.agents.orchestrator import ensure_checks
     from trance.agents.roles import BUILTIN_ROLES as R
 
@@ -4053,20 +4063,9 @@ def test_a_step_that_writes_files_gets_a_fact_check(tmp_path):
         {"role": "frontend", "loop": "", "task": "build the UI", "check": None}]}
     out = ensure_checks(proposal, roles=list(R.values()))
 
-    assert [s["check"] for s in out["steps"]] == ["factchecker", "factchecker"]
+    assert [s["checks"] for s in out["steps"]] == [["factchecker"], ["factchecker"]]
     assert out["added_checks"] == 2
-    assert "factchecker" in out["team"]          # and it joins the team
-
-
-def test_a_check_the_orchestrator_chose_is_left_alone(tmp_path):
-    from trance.agents.orchestrator import ensure_checks
-    from trance.agents.roles import BUILTIN_ROLES as R
-
-    proposal = {"summary": "s", "team": [], "steps": [
-        {"role": "backend", "loop": "", "task": "t", "check": "tester"}]}
-    out = ensure_checks(proposal, roles=list(R.values()))
-    assert out["steps"][0]["check"] == "tester"
-    assert "added_checks" not in out
+    assert "factchecker" in out["team"]
 
 
 def test_nothing_is_checked_where_nothing_is_written(tmp_path):
@@ -4101,8 +4100,9 @@ def test_the_orchestrator_is_told_to_check_every_writing_step(tmp_path, monkeypa
     orchestrator.chat(messages=[{"role": "user", "content": "hi"}], project_dir=tmp_path,
                       config=ModelConfig(), bus=EventBus(), session_id="s")
 
-    assert "PUT A CHECK ON EVERY STEP THAT WRITES FILES" in captured["system"]
-    assert "taken at its word" in captured["system"]
+    # It is told the opposite of what it used to be told: not to pick one.
+    assert "Do not choose who checks the work" in captured["system"]
+    assert "put on each step for you" in captured["system"]
 
 
 def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
@@ -7548,56 +7548,6 @@ def test_an_agents_checks_are_not_run_twice(tmp_path, monkeypatch):
     engine._run_check(step, Attempt(n=1))
 
     assert asked == ["regression"]
-
-
-def test_the_regression_check_is_added_once_there_is_a_suite(tmp_path):
-    """"After each step, make sure nothing broke" is the question nobody
-    remembers to ask until something is already broken — and asking it by hand
-    on every step of a twenty-step plan is how it stops being asked."""
-    from trance.agents.orchestrator import ensure_checks
-    from trance.agents.roles import BUILTIN_ROLES
-
-    roles = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"],
-             BUILTIN_ROLES["regression"]]
-    proposal = {"steps": [{"role": "frontend", "task": "add the level select"}],
-                "team": ["frontend"]}
-
-    (tmp_path / "tests").mkdir()                       # the project has a suite
-    done = ensure_checks(dict(proposal), roles=roles, project=tmp_path)
-    assert done["steps"][0]["checks"] == ["factchecker", "regression"]
-    assert "regression" in done["team"]
-
-
-def test_nothing_regresses_against_a_project_with_no_tests(tmp_path):
-    """On the step that creates the project there is nothing to regress
-    against, and a check that answers "there are no tests" after every step is
-    a model call spent saying so."""
-    from trance.agents.orchestrator import ensure_checks
-    from trance.agents.roles import BUILTIN_ROLES
-
-    roles = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"],
-             BUILTIN_ROLES["regression"]]
-    done = ensure_checks({"steps": [{"role": "frontend", "task": "start it"}],
-                          "team": ["frontend"]}, roles=roles, project=tmp_path)
-
-    assert done["steps"][0]["checks"] == ["factchecker"]
-    assert "regression" not in done["team"]
-
-
-def test_a_suite_is_recognised_however_the_project_keeps_it(tmp_path):
-    from trance.agents.orchestrator import has_tests
-
-    assert has_tests(tmp_path) is False
-    assert has_tests(None) is False
-
-    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest run"}}',
-                                           encoding="utf8")
-    assert has_tests(tmp_path) is True
-
-    other = tmp_path / "python-one"
-    other.mkdir()
-    (other / "pytest.ini").write_text("[pytest]", encoding="utf8")
-    assert has_tests(other) is True
 
 
 def test_a_step_can_be_checked_by_more_than_one_agent(tmp_path):

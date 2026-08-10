@@ -317,6 +317,19 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             target=wait_and_start, name=f"handover-{session.id}", daemon=True)
         session._handover.start()
 
+    def checks_for(session):
+        """What each agent's steps are checked by — the only source there is.
+
+        The plan used to choose a verifier per step, which meant a model
+        picking one from the shape of a sentence, differently each time it was
+        asked. It is a property of the agent: set once, in one place, by a
+        person who knows what this project needs.
+        """
+        def of(name: str) -> list[str]:
+            role = session.role(name) or stores_of(session).roles.get(name)
+            return list(getattr(role, "checks", None) or [])
+        return of
+
     def refresh_team(session):
         """Re-bind a session's team to its project's agent definitions.
 
@@ -327,8 +340,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         step stays off.
         """
         session.team = stores_of(session).roles.resolve_team(session.team)
-        if seed_checks(session.flow, lambda name: getattr(
-                session.role(name) or stores_of(session).roles.get(name), "checks", [])):
+        if seed_checks(session.flow, checks_for(session)):
             touch(session)
         return session
 
@@ -1921,12 +1933,6 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "team": [r.to_dict() for r in session.team],
                 "dropped_checks": proposal.get("dropped_checks") or [],
             })
-            if proposal.get("added_checks"):
-                bus.emit("warning", session_id, agent="orchestrator", payload={
-                    "message": (f"Added a factchecker to {proposal['added_checks']} step(s) "
-                                f"that write files — it only confirms the files exist. "
-                                f"Clear it on a step if you do not want one."),
-                })
             if proposal.get("added_final_check"):
                 bus.emit("warning", session_id, agent="orchestrator", payload={
                     "message": (f"The plan did not end by verifying itself, so a final "
@@ -1935,8 +1941,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 })
             if proposal.get("dropped_checks"):
                 bus.emit("warning", session_id, agent="orchestrator", payload={
-                    "message": ("Dropped checks that cannot verify: "
-                                + ", ".join(proposal["dropped_checks"])),
+                    "message": ("Ignored what the plan said about checking: "
+                                + ", ".join(proposal["dropped_checks"])
+                                + ". Each agent's own checks are used instead."),
                 })
             # Oversized steps are pointed out, not acted on. Splitting rewrites
             # the plan you are reading, takes a model call per step, and is a
@@ -1997,7 +2004,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         outcome = session.flow.apply_edits(steps)
         # A step added here is answered with its agent's checks already on it,
         # rather than showing an empty row until the next read seeds it.
-        seed_checks(session.flow, lambda name: getattr(session.role(name), "checks", []))
+        seed_checks(session.flow, checks_for(session))
         bus.emit("flow_updated", session_id,
                  payload={"flow": session.flow.to_dict(), **outcome})
         touch(session)

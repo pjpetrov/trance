@@ -67,7 +67,6 @@ def split_step_tool(roles: list, threshold: int) -> dict:
                                     "description": ("One concrete piece of work, naming "
                                                     "the files it touches."),
                                 },
-                                "check": {"type": "string", "enum": verifiers},
                                 "on_fail": {"type": "string", "enum": workers},
                                 "points": {"type": "integer", "description": POINTS_SCALE,
                                            "enum": list(POINTS)},
@@ -160,13 +159,13 @@ def _ask_for_split(step: dict, *, roles: list, config: ModelConfig, bus: EventBu
             continue
         pieces = _normalize({"steps": call.arguments.get("steps") or [],
                              "team": []}, roles)["steps"]
-        # Inherit what the split forgot: a piece with no check is not a reason
-        # to lose the check the original had.
+        # Each piece is checked the way the original was: the pieces are the
+        # same work, by the same agent, and the chain came from that agent.
         for piece in pieces:
-            piece.setdefault("check", step.get("check"))
-            if not piece.get("check"):
-                piece["check"] = step.get("check")
-            if not piece.get("on_fail") and piece["check"]:
+            piece["check"] = step.get("check")
+            piece["checks"] = list(step.get("checks") or [])
+            piece["checks_seeded"] = bool(step.get("checks_seeded"))
+            if not piece.get("on_fail"):
                 piece["on_fail"] = step.get("on_fail")
         return pieces
     return []
@@ -239,15 +238,6 @@ def propose_flow_tool(roles: list, loop_names: list | None = None) -> dict:
                                     "description": ("One concrete, verifiable piece of work, "
                                                     "naming the files it touches."),
                                 },
-                                "check": {
-                                    "type": "string",
-                                    "description": (
-                                        "Optional reality check run after the work. Passing "
-                                        "lets the flow move to the next step. Only these "
-                                        "agents can check work — no other value is valid."
-                                    ),
-                                    "enum": verifiers,
-                                },
                                 "points": {
                                     "type": "integer",
                                     "description": POINTS_SCALE,
@@ -291,15 +281,11 @@ def chat(
           "whose files no agent owns cannot succeed no matter how many times it runs. "
           "Assign each step to the agent that owns the files it touches, and split a "
           "task that spans two remits into two steps."
-        + "\n\nOnly these agents can CHECK another agent's work:\n"
-        + ("\n".join(f"- {r.name}: {r.description}" for r in verifiers) or "- (none)")
-        + "\n\nNever name any other agent as a check — an agent that cannot inspect a "
-          "result can only guess at a verdict.\n\n"
-          "PUT A CHECK ON EVERY STEP THAT WRITES FILES — `factchecker` unless you have "
-          "a reason to choose another. It only asks whether the files the agent claimed "
-          "to write exist and have content, which is cheap and catches the commonest "
-          "failure there is: an agent reporting SUCCESS for work it did not do. A step "
-          "with no check is taken at its word.\n\n"
+        + "\n\nDo not choose who checks the work. Every agent carries the checks its "
+          "own work needs, set once where the agent is configured, and they are put on "
+          "each step for you. A plan that picked a verifier per step picked it from a "
+          "sentence, not from what the project has, and picked differently every time "
+          "it was asked.\n\n"
           "If the check passes, the flow moves on. If the step itself does not succeed, "
           "the same agent tries again — as many times as that agent is configured for, "
           "which is not yours to decide — and running out halts the run.\n\n"
@@ -353,8 +339,7 @@ def chat(
         if call.malformed:
             truncated_call = True
             continue
-        proposal = ensure_checks(_normalize(call.arguments, roles), roles=roles,
-                                 project=project_dir)
+        proposal = ensure_checks(_normalize(call.arguments, roles), roles=roles)
         proposal["requirements"] = [
             str(item).strip()
             for item in (call.arguments.get("requirements") or [])
@@ -410,12 +395,16 @@ def _normalize(arguments: dict, roles: list) -> dict:
         elif role not in known or role == "orchestrator":
             continue
 
+        # Whatever it named, it does not decide this. Checks belong to the
+        # agent — one place, visible, edited by a person — and a model asked to
+        # pick one per step answers from the shape of the sentence in front of
+        # it, differently each time it is asked.
         proposed = raw.get("check") or raw.get("verify_with")
         if isinstance(proposed, list):
             proposed = proposed[0] if proposed else None
-        check = proposed if proposed in verifiers else None
-        if proposed and not check:
-            dropped.append(f"{proposed} (as the check on the {role} step)")
+        check = None
+        if proposed:
+            dropped.append(f"{proposed} (checks come from the agent, not the plan)")
 
         # Older proposals (and older saved flows) may still carry one.
         fixer = raw.get("on_fail")
@@ -448,73 +437,33 @@ def _normalize(arguments: dict, roles: list) -> dict:
 #: The cheapest check there is: it only asks whether the files an agent claimed
 #: to write exist and have content. It cannot judge quality and does not try.
 DEFAULT_CHECK = "factchecker"
-#: Added alongside it once the project has a suite to run. "Did this step break
-#: something that used to work" is the question nobody remembers to ask until
-#: something is already broken, and asking it by hand on every step of a
-#: twenty-step plan is how it stops being asked.
-REGRESSION_CHECK = "regression"
+def ensure_checks(proposal: dict, *, roles=None) -> dict:
+    """Put the fact check on every planned step that writes files.
 
+    Not a choice, and deliberately not the planner's. An agent reporting
+    SUCCESS is the only claim in this system with no evidence behind it, and
+    the commonest way a run goes wrong is a step that said it wrote a file and
+    did not. So it is always the same check, applied by rule — where asking a
+    model for one per step got a verifier picked from the shape of a sentence,
+    and a different one each time the same plan was proposed.
 
-def has_tests(project: Path | None) -> bool:
-    """Whether there is a suite for a regression check to run.
-
-    Nothing to regress against on the step that creates the project, and a
-    check that answers "there are no tests" after every step is a model call
-    spent saying so. It starts applying once tests exist.
-    """
-    if project is None:
-        return False
-    project = Path(project)
-    if any((project / name).is_dir() for name in ("tests", "test", "__tests__", "spec")):
-        return True
-    manifest = project / "package.json"
-    if manifest.is_file():
-        try:
-            import json as _json
-            scripts = (_json.loads(manifest.read_text(encoding="utf8"))
-                       .get("scripts") or {})
-        except (OSError, ValueError):
-            scripts = {}
-        if "test" in scripts:
-            return True
-    return any((project / name).is_file()
-               for name in ("pytest.ini", "tox.ini", "vitest.config.ts",
-                            "vitest.config.js", "jest.config.js"))
-
-
-def ensure_checks(proposal: dict, *, roles=None, project: Path | None = None) -> dict:
-    """Put a fact check on every step that produces files.
-
-    An agent reporting SUCCESS is the one thing in this system with no
-    independent evidence behind it, and the commonest way a run goes wrong is a
-    step that claimed to write a file and did not. The check costs one small
-    call and catches exactly that, so it is the default rather than a choice
-    the orchestrator has to remember.
+    Everything else the step is checked by comes from its agent, and lands on
+    the step when the plan is read. This is only the floor.
     """
     by_name = {r.name: r for r in (roles or [])}
     checker = by_name.get(DEFAULT_CHECK)
     if checker is None or not checker.verifier:
         return proposal
-    regression = by_name.get(REGRESSION_CHECK)
 
     added = []
-    wants_regression = False
     for step in proposal.get("steps") or []:
-        if step.get("loop") or step.get("check"):
+        if step.get("loop"):
             continue                     # a loop carries its own wiring
         role = by_name.get(step.get("role") or "")
-        # Nothing to fact-check where nothing is written.
         if role is None or "files" not in role.toolsets:
-            continue
-        chain = [DEFAULT_CHECK]
-        # And, where there is a suite, whether this step broke it. Both run in
-        # order after the work; the first FAIL sends it back and the whole
-        # chain runs again, so a fix that breaks the earlier one cannot pass.
-        if regression is not None and regression.verifier and has_tests(project):
-            chain.append(REGRESSION_CHECK)
+            continue                     # nothing written, nothing to check
         step["check"] = DEFAULT_CHECK
-        step["checks"] = chain
-        wants_regression = wants_regression or REGRESSION_CHECK in chain
+        step["checks"] = [DEFAULT_CHECK]
         added.append(step.get("task", ""))
 
     if added:
@@ -522,8 +471,6 @@ def ensure_checks(proposal: dict, *, roles=None, project: Path | None = None) ->
         team = list(proposal.get("team") or [])
         if DEFAULT_CHECK not in team:
             team.append(DEFAULT_CHECK)
-        if wants_regression and REGRESSION_CHECK not in team:
-            team.append(REGRESSION_CHECK)
         proposal["team"] = team
     return proposal
 
