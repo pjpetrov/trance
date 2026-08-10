@@ -81,6 +81,15 @@ class AgentRole:
     #: A tester that runs one command needs three; an agent building a feature
     #: file by file needs twenty, and hitting the wall mid-way is how a step
     #: ends with half the work done and a summary of what it meant to do.
+    #:
+    #: Measured on one real repair loop before these were raised: the dev roles
+    #: hit their 24 in seven blocks out of eight and the visual tester hit its
+    #: 16 in every single one, ending "analyzed all source files but ran out of
+    #: tool rounds before implementing any fixes; no files were modified". The
+    #: window was not the constraint — context at the ceiling was 54-73% of
+    #: budget — so the count was cutting work short with room to spare, and
+    #: each restart re-read the same files: 389 lookups over that step, of
+    #: which only 144 were distinct.
     tool_rounds: int = 0
     color: str = "#7aa2f7"
 
@@ -218,7 +227,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "backend": AgentRole(
         name="backend",
-        tool_rounds=24,
+        tool_rounds=36,
         title="Backend engineer",
         description="Server-side code: APIs, business logic, persistence.",
         system_prompt=(
@@ -242,7 +251,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "frontend": AgentRole(
         name="frontend",
-        tool_rounds=24,
+        tool_rounds=36,
         title="Frontend engineer",
         description="Client-side code: UI components, state, API calls.",
         system_prompt=(
@@ -257,7 +266,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "tester": AgentRole(
         name="tester",
-        tool_rounds=24,
+        tool_rounds=36,
         verifier=True,
         title="Tester",
         description="Writes and runs tests; reports what actually happened.",
@@ -375,7 +384,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "visual-tester": AgentRole(
         name="visual-tester",
-        tool_rounds=16,
+        tool_rounds=24,
         verifier=True,
         title="Visual tester",
         description=(
@@ -443,7 +452,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "reviewer": AgentRole(
         name="reviewer",
-        tool_rounds=20,
+        tool_rounds=28,
         verifier=True,
         title="Reviewer",
         description="Reads code for defects; does not edit.",

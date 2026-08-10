@@ -7073,13 +7073,25 @@ def test_the_shipped_budgets_match_what_the_roles_actually_use():
     """Set from real runs rather than from intuition. Across the sessions in
     this repo: tester ran out of rounds on 100% of attempts, backend 83%,
     reviewer 60%, frontend 50% — while devops peaked at 7 rounds and the
-    factchecker at 7, both comfortably inside the default twelve."""
+    factchecker at 7, both comfortably inside the default twelve.
+
+    Raised again on the same evidence, from a repair loop on a bigger project:
+    frontend hit its 24 in seven blocks out of eight and the visual tester hit
+    its 16 in all four, ending "analyzed all source files but ran out of tool
+    rounds before implementing any fixes; no files were modified". The window
+    was not what stopped them — context at the ceiling was 54-73% of budget —
+    and the restart bought nothing, because the next block began from a blank
+    context and read the same files again: 389 lookups over that step, 144 of
+    them distinct.
+    """
     from trance.agents.roles import BUILTIN_ROLES
 
     # The ones that were hitting the wall get room.
     for name in ("backend", "frontend", "tester"):
-        assert BUILTIN_ROLES[name].tool_rounds == 24, name
-    assert BUILTIN_ROLES["reviewer"].tool_rounds == 20
+        assert BUILTIN_ROLES[name].tool_rounds == 36, name
+    assert BUILTIN_ROLES["reviewer"].tool_rounds == 28
+    # It opens a page, presses keys and looks — and still ran out every time.
+    assert BUILTIN_ROLES["visual-tester"].tool_rounds == 24
 
     # The ones that were not keep the default, because a budget is a ceiling,
     # not an allowance to spend.
@@ -7120,7 +7132,7 @@ def test_a_setting_added_after_the_file_was_written_is_inherited(tmp_path):
     path.write_text(json.dumps(old))
 
     store = RoleStore(path)
-    assert store.get("tester").tool_rounds == BUILTIN_ROLES["tester"].tool_rounds == 24
+    assert store.get("tester").tool_rounds == BUILTIN_ROLES["tester"].tool_rounds == 36
     assert store.get("devops").tool_rounds == 0           # its built-in has none either
 
 

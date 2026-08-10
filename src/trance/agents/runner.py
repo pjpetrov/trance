@@ -26,8 +26,11 @@ VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
 
 #: Tool rounds an agent gets in one attempt, when neither it nor its model says
-#: otherwise. Enough to read a few things and write a file in pieces.
-DEFAULT_TOOL_ROUNDS = 12
+#: otherwise. Enough to read a few things and write a file in pieces — which
+#: was the wrong measure of enough: agents that hit their limit had spent it
+#: working out where the code was, and the restart bought them nothing because
+#: the next attempt started from the same blank context and read it all again.
+DEFAULT_TOOL_ROUNDS = 20
 
 #: A working agent ends its reply with this so the step has an outcome of its
 #: own. A tester that writes a good test and finds a real bug did its job
