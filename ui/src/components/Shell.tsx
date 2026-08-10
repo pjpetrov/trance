@@ -42,12 +42,28 @@ const SCREENS: { id: Screen; label: string }[] = [
  *  other silently gives every pending step the colour of an error. */
 export function stepTone(status: StepStatus | undefined): Tone {
   switch (status) {
-    case "running": return "accent";
+    case "running":
+    case "verifying": return "accent";
     case "done": return "ok";
     case "failed":
     case "halted": return "err";
+    // Not an error: the work is there and a verifier could not say either way.
+    // It wants a person, which is what amber means everywhere else here.
+    case "blocked":
     case "skipped": return "warn";
     default: return "neutral";
+  }
+}
+
+/** The word for a status the dot alone cannot carry. Empty when the dot says
+ *  it: a green dot is "done" and a pulsing one is "running". */
+export function stepWord(status: StepStatus | undefined): string {
+  switch (status) {
+    case "verifying": return "verifying";
+    case "blocked": return "unverified";
+    case "skipped": return "skipped";
+    case "halted": return "halted";
+    default: return "";
   }
 }
 

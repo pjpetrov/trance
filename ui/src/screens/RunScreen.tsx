@@ -19,7 +19,7 @@ import { EventLine } from "@/components/EventLine";
 import { ContextGauge } from "@/components/ContextGauge";
 import { Badge, Button, Dot, Empty, Input, Panel, PanelHeader, Spinner }
   from "@/components/ui/primitives";
-import { stepTone } from "@/components/Shell";
+import { stepTone, stepWord } from "@/components/Shell";
 import { toast } from "@/components/Toaster";
 import type { Step, TranceEvent } from "@/api/types";
 
@@ -213,12 +213,13 @@ function StepRow(
                        open ? "bg-panel-2 ring-1 ring-accent/40" : "hover:bg-panel-2")}>
       <button onClick={onSelect} className="flex w-full items-start gap-2 px-2 py-1.5 text-left">
         <span className="mt-1">
-          <Dot tone={stepTone(step.status)} pulse={step.status === "running"} />
+          <Dot tone={stepTone(step.status)} pulse={step.status === "running" || step.status === "verifying"} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs text-muted">
             {n}. {step.loop || step.role}
             {step.runs > 1 && ` · ${step.runs} runs`}
+            {stepWord(step.status) && ` · ${stepWord(step.status)}`}
           </span>
           <span className="block truncate text-sm">{clip(step.task, 64)}</span>
         </span>

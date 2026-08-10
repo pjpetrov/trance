@@ -7445,6 +7445,78 @@ def test_an_agent_can_carry_checks_of_its_own(tmp_path, monkeypatch):
     assert asked == ["factchecker", "regression"]
 
 
+def test_the_agents_own_order_is_the_one_that_runs(tmp_path, monkeypatch):
+    """Typing factchecker, reviewer, regression on an agent means run them in
+    that order — cheap before slow, and no point reviewing code whose tests
+    have not run. A plan that also names the reviewer must not hoist it to the
+    front and invert that."""
+    from trance.agents.roles import AgentRole, BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.session import Session
+
+    asked = []
+    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
+                            "checks": ["factchecker", "reviewer", "regression"]})
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [frontend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["reviewer"],
+                    BUILTIN_ROLES["regression"]]
+    # What the orchestrator wrote onto the step: the reviewer, on its own.
+    step = Step(role="frontend", task="auto-aim at the nearest police car",
+                check="reviewer")
+    session.flow = Flow(steps=[step])
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+
+    class _Passed:
+        verdict = "PASS"
+        text = "VERDICT: PASS"
+        model_event_ids: list = []
+
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda *, role, **_kw: (asked.append(role.name), _Passed())[1])
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._run_check(step, Attempt(n=1))
+
+    assert asked == ["factchecker", "reviewer", "regression"]
+
+
+def test_a_check_only_this_task_wants_runs_first(tmp_path, monkeypatch):
+    """It was chosen for this one step, so it is the most specific thing to
+    ask, and it should not sit behind the agent's whole standing chain."""
+    from trance.agents.roles import AgentRole, BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.session import Session
+
+    asked = []
+    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
+                            "checks": ["factchecker", "regression"]})
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [frontend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["regression"],
+                    BUILTIN_ROLES["reviewer"]]
+    step = Step.from_dict({"role": "frontend", "task": "t", "checks": ["reviewer"]})
+    session.flow = Flow(steps=[step])
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+
+    class _Passed:
+        verdict = "PASS"
+        text = "VERDICT: PASS"
+        model_event_ids: list = []
+
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda *, role, **_kw: (asked.append(role.name), _Passed())[1])
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._run_check(step, Attempt(n=1))
+
+    assert asked == ["reviewer", "factchecker", "regression"]
+
+
 def test_an_agents_checks_are_not_run_twice(tmp_path, monkeypatch):
     """A step that already names the agent's check should not get it again —
     two identical verdicts on one attempt is two model calls for one answer."""

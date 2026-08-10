@@ -46,6 +46,12 @@ function endingOf(events: TranceEvent[]): string {
     const event = events[index]!;
     if (!ENDINGS.has(event.type)) continue;
     const payload = event.payload ?? {};
+    // A step that ends blocked reported success and then failed to have it
+    // confirmed. Printing the agent's own word for it is how the console came
+    // to say SUCCESS beside a step the list would not call done.
+    if (event.type === "step_finished" && payload.status === "blocked") {
+      return "UNVERIFIED";
+    }
     const said = payload.outcome ?? payload.exit ?? payload.verdict ?? payload.result;
     if (typeof said === "string" && said) return said;
     if (event.type === "step_failed") return "FAILED";

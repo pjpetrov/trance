@@ -14,7 +14,12 @@ export type SessionStatus =
   | "ready" | "running" | "paused" | "finished" | "error" | "halted";
 
 export type StepStatus =
-  | "pending" | "running" | "done" | "failed" | "skipped" | "halted";
+  // "verifying" and "blocked" come out of the engine like any other. Leaving
+  // them off this list did not stop them arriving — it made them render as
+  // the default, so work that succeeded but could not be verified looked
+  // exactly like work that had never run.
+  | "pending" | "running" | "verifying" | "done" | "blocked"
+  | "failed" | "skipped" | "halted";
 
 export type Outcome = "SUCCESS" | "FAILED" | "UNCLEAR" | "UNSTATED";
 export type Verdict = "PASS" | "FAIL";

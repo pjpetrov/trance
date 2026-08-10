@@ -769,15 +769,20 @@ class FlowEngine:
         asking the reviewer to read code that does not work yet, and the
         feedback the worker gets should be about one thing.
         """
-        # Every check, in order: what the plan chose for this task, then what
-        # this agent always wants run against its work. Both, because they
-        # answer different questions — the plan knows this step writes files,
-        # the agent knows its work is the kind that breaks other things.
-        checks = list(step.checks)
+        # Every check, from both places they can be set. They answer different
+        # questions — the plan knows this step writes files, the agent knows
+        # its work is the kind that breaks other things.
+        #
+        # The agent's list decides the order of everything in it, because that
+        # order was typed by a person and means something: cheap checks before
+        # slow ones, and no point reviewing code the tests have not run. A name
+        # the plan also picked takes its place in that order rather than being
+        # hoisted to the front. Anything only the plan asked for goes first: it
+        # is about this one task, so it is the most specific thing to try.
         worker = self.session.role(step.role) if step.role else None
-        for always in getattr(worker, "checks", None) or []:
-            if always not in checks:
-                checks.append(always)
+        always = [name for name in (getattr(worker, "checks", None) or []) if name]
+        checks = [name for name in step.checks if name and name not in always]
+        checks += [name for name in dict.fromkeys(always) if name not in checks]
         if not checks:
             self._emit("verification_skipped", agent=step.role, step_id=step.id, payload={
                 "message": ("No fact check on this step, so the agent's own report of "

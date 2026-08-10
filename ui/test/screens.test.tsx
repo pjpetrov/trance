@@ -144,6 +144,36 @@ describe("editing what new projects start from", () => {
 });
 
 describe("the run screen", () => {
+  it("does not draw work that could not be verified as work never started", async () => {
+    // The engine ends such a step "blocked": the agent reported success and a
+    // verifier could not confirm it. The UI had no case for that status, so it
+    // fell to the default and got the same grey dot as a pending step — while
+    // the console beside it, reading the agent's own report, said SUCCESS.
+    fakeServer({
+      "/api/sessions/s1": session({
+        flow: {
+          steps: [step({ id: "st1", role: "frontend", status: "blocked",
+                         task: "Implement auto-aim toward the nearest police car" })],
+          cursor: 0,
+        },
+      }),
+      "/api/sessions/s1/events": eventsRoute([], [
+        event({} as never, {
+          id: "ev-fin", type: "step_finished", step_id: "st1", agent: "frontend",
+          payload: { status: "blocked", outcome: "SUCCESS", integrity: "UNKNOWN" },
+        }),
+      ]),
+    });
+
+    renderWithQuery(<RunScreen />);
+    // Said on the row, not only in a colour.
+    expect(await screen.findByText(/unverified/)).toBeInTheDocument();
+    // And the console does not call it a success.
+    await waitFor(() =>
+      expect(screen.queryByText("SUCCESS")).toBeNull());
+    expect(await screen.findByText("UNVERIFIED")).toBeInTheDocument();
+  });
+
   it("fetches only the open step's history, not every step's", async () => {
     const user = userEvent.setup();
     const server = fakeServer({

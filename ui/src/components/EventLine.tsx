@@ -665,6 +665,9 @@ function Shot(
 export function toneForOutcome(outcome: string | undefined): Tone {
   if (outcome === "SUCCESS" || outcome === "PASS") return "ok";
   if (!outcome) return "neutral";
+  // Nobody could tell. Red would say the work is wrong, which is not what was
+  // found — what was found is that nothing found anything.
+  if (outcome === "UNVERIFIED" || outcome === "UNKNOWN") return "warn";
   return "err";
 }
 

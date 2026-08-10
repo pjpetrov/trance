@@ -19,12 +19,10 @@ import { Badge, Button, Empty, Panel, PanelHeader, Select, Textarea }
 import { Modal } from "@/components/ui/Modal";
 import { toast } from "@/components/Toaster";
 import { Checks } from "@/components/Checks";
+// The same map as the run screen's dots: a second copy of it here is how
+// two screens end up disagreeing about what a status means.
+import { stepTone } from "@/components/Shell";
 import type { Step, StepStatus } from "@/api/types";
-
-const STATUS_TONE: Record<StepStatus, "neutral" | "accent" | "ok" | "err" | "warn"> = {
-  pending: "neutral", running: "accent", done: "ok",
-  failed: "err", halted: "err", skipped: "warn",
-};
 
 /** What the orchestrator is asked when you press Generate. Kept here rather
  *  than typed each time, because "propose the plan" and "give me a plan now"
@@ -140,7 +138,7 @@ export function PlanScreen() {
               {["done", "failed", "skipped", "halted"].map((status) => {
                 const count = done.filter((step) => step.status === status).length;
                 return count
-                  ? <Badge key={status} tone={STATUS_TONE[status as StepStatus]}>
+                  ? <Badge key={status} tone={stepTone(status as StepStatus)}>
                       {count} {status}
                     </Badge>
                   : null;
@@ -204,7 +202,7 @@ export function PlanScreen() {
                       </optgroup>
                     </Select>
 
-                    <Badge tone={STATUS_TONE[step.status]}>{step.status}</Badge>
+                    <Badge tone={stepTone(step.status)}>{step.status}</Badge>
 
                     <div className="flex-1" />
 
