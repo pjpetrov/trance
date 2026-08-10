@@ -1264,6 +1264,20 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(502, "the model returned nothing to use")
         return {"name": name, "system_prompt": text}
 
+    @app.get("/api/usage")
+    def lifetime_usage():
+        """What every model has been asked to do, across every session.
+
+        Read from the ledger rather than assembled from the presets, which
+        carry the same numbers: a model you have since deleted still spent what
+        it spent, and a total that quietly drops it is not a total.
+        """
+        rows = [{"model": name, **spend} for name, spend in ledger.lifetime().items()]
+        rows.sort(key=lambda row: -row["total"])
+        return {"models": rows,
+                "total": sum(row["total"] for row in rows),
+                "calls": sum(row["calls"] for row in rows)}
+
     @app.get("/api/sessions/{session_id}/usage")
     def session_usage(session_id: str):
         """What this run has asked of each model."""

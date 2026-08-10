@@ -33,6 +33,7 @@ export const keys = {
   events: (id: string) => ["events", id] as const,
   stepEvents: (id: string, stepId: string) => ["events", id, "step", stepId] as const,
   usage: (id: string) => ["usage", id] as const,
+  lifetimeUsage: ["usage", "lifetime"] as const,
   settings: (id: string) => ["settings", id] as const,
   memory: (id: string) => ["memory", id] as const,
   files: (id: string) => ["files", id] as const,
@@ -187,6 +188,16 @@ export function useUsage(sessionId: string | null) {
     queryFn: () => api.usage(sessionId!),
     enabled: Boolean(sessionId),
     refetchInterval: 10_000,
+  });
+}
+
+/** What every model has been asked to do, across every session. Slower-moving
+ *  than the session's own tally, so it is not polled as hard. */
+export function useLifetimeUsage() {
+  return useQuery<Usage>({
+    queryKey: keys.lifetimeUsage,
+    queryFn: () => api.lifetimeUsage(),
+    refetchInterval: 30_000,
   });
 }
 

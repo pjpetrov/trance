@@ -10,8 +10,8 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RunScreen } from "@/screens/RunScreen";
-import { PlanScreen } from "@/screens/PlanScreen";
 import { AgentsEditor } from "@/modals/AgentsEditor";
+import { PlanScreen } from "@/screens/PlanScreen";
 import { ModelsEditor } from "@/modals/ModelsEditor";
 import { SettingsPanel } from "@/modals/SettingsPanel";
 import { useUi } from "@/store/ui";
@@ -28,6 +28,46 @@ beforeEach(() => {
 });
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("the agents editor", () => {
+  it("offers the settings that decide what happens when an agent fails", async () => {
+    // Backup model, tries, and tries-on-the-backup were editable only by hand
+    // in agents.json — so a backup nobody set meant a step failed twice and
+    // stopped, with no sign anywhere that a stronger model was an option.
+    fakeServer({
+      "/api/sessions/s1": session(),
+      "/api/agents": {
+        agents: [{
+          name: "frontend", title: "Frontend", description: "", system_prompt: "p",
+          paths: ["src/**"], toolsets: ["files"], commands: [], command_list: "",
+          workdir: "", shell: null, verifier: false, preset: "Qwen",
+          backup_preset: null, tries: 2, backup_tries: 2, tool_rounds: 36,
+          color: "#7aa2f7",
+        }],
+        verifiers: [], toolsets: ["files", "graph", "commands"],
+      },
+      "/api/presets": { presets: [
+        { name: "Qwen", kind: "llamacpp", model: "qwen", base_url: "", context_window: 64000,
+          max_tokens: 8000, has_key: false, self_contained: true },
+        { name: "Sonnet", kind: "anthropic", model: "claude", base_url: "",
+          context_window: 200000, max_tokens: 8000, has_key: true, self_contained: true },
+      ] },
+      "/api/config": { visual: { browser: true } },
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await screen.findByDisplayValue("frontend");
+
+    // Field wraps its input in the label, so the accessible name carries the
+    // hint too — query on the part of it that is unique.
+    expect(screen.getByLabelText(/Attempts on the model above/)).toHaveValue(2);
+    // The backup's own tries are meaningless until a backup is chosen.
+    expect(screen.getByLabelText(/Ignored without a backup model/)).toBeDisabled();
+    // And a model cannot be its own backup.
+    const backup = screen.getByLabelText(/retries on the same model/) as HTMLSelectElement;
+    expect([...backup.options].map((option) => option.value)).toEqual(["", "Sonnet"]);
+  });
+});
 
 describe("the run screen", () => {
   it("fetches only the open step's history, not every step's", async () => {

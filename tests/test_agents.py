@@ -7403,6 +7403,35 @@ def test_two_requests_do_not_claim_each_others_commits(tmp_path, monkeypatch):
     assert [c["subject"] for c in theirs["commits"]] == ["frontend: the second thing"]
 
 
+def test_lifetime_usage_survives_the_model_being_deleted(tmp_path):
+    """"What have I spent on this model" is a question about the past. A total
+    assembled from the presets that still exist quietly drops the ones you have
+    since deleted, which is the opposite of a total."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    app.state.usage.record("s1", "Qwen3.6-llama.cpp",
+                            {"prompt_tokens": 1000, "completion_tokens": 200})
+    app.state.usage.record("s2", "a-model-since-deleted",
+                            {"prompt_tokens": 50, "completion_tokens": 5})
+
+    body = client.get("/api/usage").json()
+    names = [row["model"] for row in body["models"]]
+    assert "a-model-since-deleted" in names
+    assert names[0] == "Qwen3.6-llama.cpp"          # biggest first
+    assert body["total"] == 1255
+    assert body["calls"] == 2
+    # And it is every session's spend, not one run's.
+    assert client.get("/api/usage").json()["models"][0]["input_tokens"] == 1000
+
+
 def test_pressing_start_says_so_at_once(tmp_path):
     """The console only draws events that carry a message, and run_started did
     not — so pressing Start printed nothing, and the first line arrived whenever

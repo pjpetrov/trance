@@ -127,13 +127,53 @@ export function AgentsEditor() {
                      onChange={(e) => library.edit({ description: e.target.value })} />
             </Field>
 
-            <Field
-              label="Tool rounds"
-              hint="Reads, writes or commands per attempt before it must report. 0 uses the default of 12."
-            >
-              <Input type="number" min={0} className="w-28" value={draft.tool_rounds || ""}
-                     onChange={(e) => library.edit({ tool_rounds: Number(e.target.value) || 0 })} />
-            </Field>
+            {/* The three settings that decide what happens when this agent
+                fails: how many goes it gets, what it falls back to, and how
+                many goes it gets on that. They were only editable by hand in
+                agents.json, which is where a backup model nobody set meant a
+                step just failed twice and stopped. */}
+            <div className="grid grid-cols-2 gap-3">
+              <Field
+                label="Backup model"
+                hint={draft.backup_preset
+                  ? "Used after the tries below are spent. The one thing a retry otherwise never changes."
+                  : "None — it retries on the same model, which usually fails the same way."}
+              >
+                <Select value={draft.backup_preset ?? ""}
+                        onChange={(e) => library.edit({ backup_preset: e.target.value || null })}>
+                  <option value="">— no backup —</option>
+                  {presets.data?.filter((preset) => preset.name !== draft.preset)
+                    .map((preset) => (
+                      <option key={preset.name} value={preset.name}>{preset.name}</option>
+                    ))}
+                </Select>
+              </Field>
+              <Field
+                label="Tool rounds"
+                hint="Reads, writes or commands per attempt before it must report. 0 uses the default."
+              >
+                <Input type="number" min={0} value={draft.tool_rounds || ""}
+                       onChange={(e) => library.edit({ tool_rounds: Number(e.target.value) || 0 })} />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Tries" hint="Attempts on the model above before the backup takes over.">
+                <Input type="number" min={1} value={draft.tries || 1}
+                       onChange={(e) => library.edit({ tries: Number(e.target.value) || 1 })} />
+              </Field>
+              <Field
+                label="Tries on the backup"
+                hint={draft.backup_preset
+                  ? "Attempts on the backup after that."
+                  : "Ignored without a backup model — the agent simply gets the tries above."}
+              >
+                <Input type="number" min={0} disabled={!draft.backup_preset}
+                       value={draft.backup_tries ?? 0}
+                       onChange={(e) => library.edit({
+                         backup_tries: Number(e.target.value) || 0 })} />
+              </Field>
+            </div>
 
             <section className="space-y-1">
               <div className="text-xs font-medium text-muted">Capabilities</div>

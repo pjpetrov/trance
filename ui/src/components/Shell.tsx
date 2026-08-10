@@ -19,6 +19,7 @@ import { RunScreen } from "@/screens/RunScreen";
 import { FilesScreen } from "@/screens/FilesScreen";
 import { ReviewsScreen } from "@/screens/ReviewsScreen";
 import { CommitsScreen } from "@/screens/CommitsScreen";
+import { StatsScreen } from "@/screens/StatsScreen";
 import { ApprovalPrompt } from "@/components/ApprovalPrompt";
 import { Modals } from "@/modals/Modals";
 import type { SessionStatus, StepStatus } from "@/api/types";
@@ -32,6 +33,7 @@ const SCREENS: { id: Screen; label: string }[] = [
   { id: "commits", label: "Commits" },
   { id: "files", label: "Files" },
   { id: "reviews", label: "Reviews" },
+  { id: "stats", label: "Statistics" },
 ];
 
 /** One place deciding what a status looks like, so the dot in the picker and
@@ -103,6 +105,7 @@ export function Shell({ socket }: { socket: SocketState }) {
           : screen === "run" ? <RunScreen />
           : screen === "reviews" ? <ReviewsScreen />
           : screen === "commits" ? <CommitsScreen />
+          : screen === "stats" ? <StatsScreen />
           : <FilesScreen />}
       </main>
 

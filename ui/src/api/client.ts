@@ -200,6 +200,8 @@ export const api = {
     request<TranceEvent>(`/api/sessions/${id(sid)}/events/${id(eventId)}`),
 
   usage: (sid: string) => request<Usage>(`/api/sessions/${id(sid)}/usage`),
+  /** Every session's spend, including models whose preset has since gone. */
+  lifetimeUsage: () => request<Usage>("/api/usage"),
 
   // ------------------------------------------------------------- memory
   memory: (sid: string) =>
