@@ -1995,6 +1995,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         session.team = roles.resolve_team(wanted)
 
         outcome = session.flow.apply_edits(steps)
+        # A step added here is answered with its agent's checks already on it,
+        # rather than showing an empty row until the next read seeds it.
+        seed_checks(session.flow, lambda name: getattr(session.role(name), "checks", []))
         bus.emit("flow_updated", session_id,
                  payload={"flow": session.flow.to_dict(), **outcome})
         touch(session)

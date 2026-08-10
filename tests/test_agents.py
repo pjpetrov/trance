@@ -9498,3 +9498,26 @@ def test_a_worker_is_not_asked_for_a_verdict(tmp_path, monkeypatch):
               task="t", project=project, config=ModelConfig(), bus=EventBus(),
               session_id="s", step_id="st")
     assert calls["n"] == 1
+
+
+def test_a_step_added_to_the_plan_comes_back_with_its_checks(tmp_path):
+    """The write answers with what will run. Seeding only on the next read
+    showed an empty row for a step that was in fact fully checked."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/agents/frontend?session={sid}",
+               json={"checks": ["factchecker", "regression"]})
+
+    body = client.put(f"/api/sessions/{sid}/flow",
+                      json={"steps": [{"role": "frontend", "task": "add the level select"}]})
+    assert body.json()["steps"][0]["checks"] == ["factchecker", "regression"]
