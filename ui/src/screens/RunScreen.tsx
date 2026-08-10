@@ -13,7 +13,7 @@ import { useRunControl, useStartRun, useStepActions, useSteer } from "@/api/muta
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { clip, timeOf } from "@/lib/format";
-import { currentRun, splitIntoBlocks, splitIntoRuns, type Block, type Run }
+import { currentRun, isLookup, splitIntoBlocks, splitIntoRuns, tallyOf, type Block, type Run }
   from "@/lib/runs";
 import { EventLine } from "@/components/EventLine";
 import { ContextGauge } from "@/components/ContextGauge";
@@ -277,7 +277,14 @@ function Console(
   // With no step open, the console is the session's recent history — which is
   // what it always was, and what "show me the last execution" wants when you
   // arrive on the page rather than having clicked anything.
-  const events = stepId ? (shown?.events ?? []) : (tail.data ?? []);
+  const all = stepId ? (shown?.events ?? []) : (tail.data ?? []);
+  // "show reads" changed its own label and nothing else, so a repair turn that
+  // made 84 lookups and 3 edits buried the edits in a wall of lookups and the
+  // button that was supposed to fix that did nothing.
+  const hidden = useMemo(
+    () => (showReads ? 0 : all.filter(isLookup).length), [all, showReads]);
+  const events = useMemo(
+    () => (showReads ? all : all.filter((event) => !isLookup(event))), [all, showReads]);
   const blocks = useMemo(() => splitIntoBlocks(events), [events]);
   const loading = stepId ? stepEvents.isLoading : tail.isLoading;
 
@@ -322,7 +329,7 @@ function Console(
               <Button size="sm" onClick={() => onPickRun(null)}>latest run</Button>
             )}
             <Button variant="ghost" size="sm" onClick={toggleReads}>
-              {showReads ? "hide reads" : "show reads"}
+              {showReads ? "hide reads" : `show reads${hidden ? ` (${hidden})` : ""}`}
             </Button>
           </>
         }
@@ -432,6 +439,10 @@ function AgentBlock(
   { block: Block; sessionId: string; openByDefault: boolean; liveId: string | null },
 ) {
   const [open, setOpen] = useState(openByDefault);
+  // What it spent itself on. On the header rather than inside, because the
+  // question it answers — "what is it doing so much?" — is asked about a block
+  // you have not opened.
+  const tally = useMemo(() => tallyOf(block.events), [block.events]);
   // A block that was folded stays folded when it finishes; one you are watching
   // opens itself when it starts.
   useEffect(() => { if (openByDefault) setOpen(true); }, [openByDefault]);
@@ -455,6 +466,9 @@ function AgentBlock(
             : <Badge>done</Badge>}
         {!open && block.summary && (
           <span className="min-w-0 flex-1 truncate text-xs text-muted">{block.summary}</span>
+        )}
+        {tally && (
+          <span className="shrink-0 text-[11px] text-muted/80">{tally}</span>
         )}
         <span className="ml-auto shrink-0 text-[11px] text-muted">
           {timeOf(block.startedAt)}

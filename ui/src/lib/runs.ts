@@ -185,3 +185,36 @@ export function splitIntoBlocks(events: TranceEvent[]): Block[] {
   close();
   return blocks;
 }
+
+/** What a block actually spent itself on, for the header when it is folded.
+ *
+ * "What is it doing so much?" was unanswerable from the console: one repair
+ * turn made 84 lookups and 3 edits, and the only way to know was to unfold it
+ * and count. Measured on one real step: 389 lookups against 15 edits, spread
+ * over eight blocks — the shape of the problem is in the tally, not in any one
+ * line.
+ */
+export function tallyOf(events: TranceEvent[]): string {
+  const counts = { lookups: 0, edits: 0, commands: 0, browser: 0 };
+  for (const event of events) {
+    if (event.type !== "tool_call") continue;
+    const kind = event.payload?.detail?.kind;
+    if (kind === "read" || kind === "graph") counts.lookups += 1;
+    else if (kind === "write") counts.edits += 1;
+    else if (kind === "command" || kind === "background") counts.commands += 1;
+    else if (kind === "page" || kind === "key" || kind === "canvas"
+             || kind === "wait" || kind === "screenshot") counts.browser += 1;
+  }
+  const said = (n: number, one: string, many = `${one}s`) =>
+    n ? `${n} ${n === 1 ? one : many}` : "";
+  return [said(counts.lookups, "lookup"), said(counts.edits, "edit"),
+          said(counts.commands, "command"), said(counts.browser, "browser call")]
+    .filter(Boolean).join(" · ");
+}
+
+/** A read or a graph hit: kept, but not worth looking at unless asked for. */
+export function isLookup(event: TranceEvent): boolean {
+  if (event.type !== "tool_call") return false;
+  const kind = event.payload?.detail?.kind;
+  return kind === "read" || kind === "graph";
+}
