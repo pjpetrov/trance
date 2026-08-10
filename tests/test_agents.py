@@ -9329,3 +9329,37 @@ def test_a_loop_ships_without_a_fact_check_on_its_nodes():
     for loop in default_loops():
         for node in loop.nodes:
             assert node.check is None, f"{loop.name}/{node.role}"
+
+
+def test_a_loop_node_is_checked_by_what_the_node_names(tmp_path, monkeypatch):
+    """A loop's wiring lives on its nodes — each says who checks that turn. A
+    chain left on the step would run after every node instead, which is both a
+    contradiction and a bill."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.session import Session
+
+    asked = []
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"],
+                    BUILTIN_ROLES["reviewer"]]
+    step = Step.from_dict({"role": "", "loop": "test-and-fix", "task": "t",
+                           "checks": ["reviewer"]})
+    session.flow = Flow(steps=[step])
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+
+    class _Passed:
+        verdict = "PASS"
+        text = "VERDICT: PASS"
+        model_event_ids: list = []
+
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda *, role, **_kw: (asked.append(role.name), _Passed())[1])
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._run_check(step, Attempt(n=1), chain=["factchecker"])
+
+    assert asked == ["factchecker"]

@@ -293,6 +293,27 @@ describe("the plan screen", () => {
     });
   });
 
+  it("does not ask who checks a loop step — its nodes already say", async () => {
+    fakeServer({
+      "/api/sessions/s1": session({
+        flow: {
+          steps: [step({ id: "st1", role: "", loop: "test-and-fix",
+                         task: "Get the tests passing" })],
+          cursor: 0,
+        },
+      }),
+      "/api/agents": { agents: [role({ name: "factchecker", verifier: true })],
+                       verifiers: ["factchecker"], toolsets: [] },
+      "/api/loops": { loops: [{ name: "test-and-fix", description: "", prompt: "",
+                                nodes: [], start: "", max_steps: 10 }] },
+      "/api/sessions/s1/flow": { steps: [], team: [] },
+    });
+
+    renderWithQuery(<PlanScreen />);
+    await screen.findByDisplayValue("Get the tests passing");
+    expect(screen.queryByText("Checked by")).toBeNull();
+  });
+
   it("brings the agent's standing checks onto a step when you pick it", async () => {
     // Otherwise the chips say one thing and the engine runs another: the chain
     // was merged at run time, where nobody could see it or take one off.

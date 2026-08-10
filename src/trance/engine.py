@@ -310,8 +310,11 @@ class FlowEngine:
             attempt.commit = self._commit_step(step, role.name, outcome)
             exit_name = SUCCESS if outcome == OUTCOME_SUCCESS else FAILED
             if outcome == OUTCOME_SUCCESS and node.check:
-                step.check = node.check          # so _run_check knows who to ask
-                if self._run_check(step, attempt) == "FAIL":
+                step.check = node.check          # so the messages name the right one
+                # This node's check and nothing else. A loop's wiring lives on
+                # its nodes — each says who checks that turn — and a chain left
+                # on the step would run after every node instead.
+                if self._run_check(step, attempt, chain=[node.check]) == "FAIL":
                     exit_name = CHECK_FAILED
             # A fixer that made things worse should not hand its mess on.
             if exit_name != SUCCESS and node.revert_on_fail:
@@ -762,12 +765,16 @@ class FlowEngine:
 
     # ------------------------------------------------------------- verify
 
-    def _run_check(self, step: Step, attempt: Attempt) -> str | None:
+    def _run_check(self, step: Step, attempt: Attempt,
+                   chain: list[str] | None = None) -> str | None:
         """Run each gate in order; the first FAIL stops the chain.
 
         Gates are sequential on purpose. If the tester fails there is no point
         asking the reviewer to read code that does not work yet, and the
         feedback the worker gets should be about one thing.
+
+        `chain` names the checks outright, for a caller that knows better than
+        the step does — a loop, whose nodes carry their own.
         """
         # Checks come from two places: the plan knows this step writes files,
         # the agent knows its work is the kind that breaks other things.
@@ -776,7 +783,9 @@ class FlowEngine:
         # whole answer — a check taken off in the plan has to stay off, or the
         # control is decoration. Merging is for the steps that predate seeding,
         # and for anything built without going past the plan.
-        if step.checks_seeded:
+        if chain is not None:
+            checks = [name for name in chain if name]
+        elif step.checks_seeded:
             checks = list(step.checks)
         else:
             worker = self.session.role(step.role) if step.role else None

@@ -234,15 +234,20 @@ export function PlanScreen() {
                     >Delete</Button>
                   </div>
 
-                  <Checks
-                    checks={step.checks ?? []}
-                    verifiers={verifiers}
-                    onChange={(checks) => {
-                      const next = [...steps];
-                      next[index] = { ...step, checks };
-                      persist(next);
-                    }}
-                  />
+                  {/* A loop carries its own: each node names who checks that
+                      turn, in the loops editor. A second answer here would run
+                      after every node and contradict the first. */}
+                  {!step.loop && (
+                    <Checks
+                      checks={step.checks ?? []}
+                      verifiers={verifiers}
+                      onChange={(checks) => {
+                        const next = [...steps];
+                        next[index] = { ...step, checks };
+                        persist(next);
+                      }}
+                    />
+                  )}
 
                   <Textarea
                     rows={5}
