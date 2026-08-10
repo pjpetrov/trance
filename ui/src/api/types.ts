@@ -529,6 +529,11 @@ export interface ModelSpend {
   calls: number;
   input_tokens: number;
   output_tokens: number;
+  /** Of the input, cache re-reads — billed at roughly a tenth of a fresh
+   *  token. Claude Code re-reads its whole conversation every internal turn,
+   *  so without this split its raw input count reads 20x every other backend
+   *  while most of it is the same tokens over and over. */
+  cache_read_tokens?: number;
   total: number;
 }
 

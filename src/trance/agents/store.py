@@ -105,18 +105,35 @@ class RoleStore:
                 self._save()
         return removed
 
+    #: What reset keeps from the stored copy: how *you* wired the agent into
+    #: your setup, as opposed to what the agent is. Restoring the prompt used
+    #: to take these too, so one click silently unassigned the model and wiped
+    #: the checks the user had put on — and the first sign was a verifier that
+    #: stopped running.
+    RESET_KEEPS = ("preset", "backup_preset", "tries", "backup_tries",
+                   "checks", "command_list", "commands", "workdir", "shell",
+                   "tool_rounds", "color")
+
     def reset(self, name: str) -> AgentRole | None:
         """Restore a built-in agent to its shipped definition.
 
         Stored edits are never overwritten on load, which is right — but it also
         means prompt improvements that ship with a new trance version don't
         reach an agent you've already saved. This is the opt-in.
+
+        The shipped *definition* — prompt, remit, toolsets, title. The user's
+        wiring — model, checks, retries, allowlist — survives: it was never the
+        thing being restored, and it is not the thing that goes stale.
         """
         shipped = BUILTIN_ROLES.get(name)
         if shipped is None:
             return None
         role = copy.deepcopy(shipped)
         with self._lock:
+            held = self._roles.get(name)
+            if held is not None:
+                for keep in self.RESET_KEEPS:
+                    setattr(role, keep, copy.deepcopy(getattr(held, keep)))
             self._roles[name] = role
             self._save()
         return role

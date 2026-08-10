@@ -125,7 +125,8 @@ def test_cache_tokens_are_counted_as_input(monkeypatch):
                                        "cache_read_input_tokens": 7370, "output_tokens": 4})
     response = ClaudeCodeClient(ModelConfig(kind="claudecode")).complete(
         [{"role": "user", "content": "hi"}])
-    assert response.usage == {"prompt_tokens": 12941, "completion_tokens": 4}
+    assert response.usage == {"prompt_tokens": 12941, "completion_tokens": 4,
+                              "cache_read_tokens": 7370}
 
 
 def test_a_cli_that_is_not_there_says_so(monkeypatch):

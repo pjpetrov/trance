@@ -131,6 +131,7 @@ function Row({ row, most }: { row: ModelSpend; most: number }) {
   // the row, and a separate column of bars reads as a second table.
   const share = Math.round((row.total / most) * 100);
   const perCall = row.calls ? Math.round(row.input_tokens / row.calls) : 0;
+  const cached = row.input_tokens ? (row.cache_read_tokens ?? 0) / row.input_tokens : 0;
 
   return (
     <tr className="border-t border-line/60">
@@ -145,7 +146,17 @@ function Row({ row, most }: { row: ModelSpend; most: number }) {
       <td className="px-2 py-1.5 text-right tabular-nums text-muted">
         {row.calls.toLocaleString()}
       </td>
-      <td className="px-2 py-1.5 text-right tabular-nums">{tokens(row.input_tokens)}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums">
+        {tokens(row.input_tokens)}
+        {cached >= 0.5 && (
+          <span
+            className="block text-[10px] text-muted"
+            title={`${tokens(row.cache_read_tokens ?? 0)} of the input was cache re-reads, `
+              + "billed at roughly a tenth of a fresh token — the same conversation "
+              + "read back on every internal turn"}
+          >{Math.round(cached * 100)}% cached</span>
+        )}
+      </td>
       <td className="px-2 py-1.5 text-right tabular-nums">{tokens(row.output_tokens)}</td>
       <td className={cn("px-2 py-1.5 text-right tabular-nums",
                         perCall > 30_000 ? "text-warn" : "text-muted")}>

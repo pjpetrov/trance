@@ -49,6 +49,12 @@ from ..providers.claudecode_client import _is_abort, _why
 #: show for it.
 DELEGATED_TIMEOUT_S = 3600.0
 
+#: Internal turns above which the step gets flagged to the user. Measured: a
+#: one-line edit is ~3 turns, an ordinary step 10-30, and the runs that ate a
+#: subscription limit in an afternoon were 64-83 turns each, re-reading the
+#: whole conversation every turn.
+TURNS_WORTH_A_LOOK = 40
+
 #: trance's tools, over MCP. With these the delegated step is a trance step:
 #: a write outside the remit is refused as it happens, reads are deduplicated,
 #: commands are checked against the allowlist, and every call reaches the
@@ -226,6 +232,22 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
     touched = _touched(project, before)
     outside = [p for p in touched if not _may_write(role, p)]
 
+    turns = int(body.get("num_turns") or 1)
+    if turns > TURNS_WORTH_A_LOOK:
+        # Not an error — the work may be fine — but 80 internal turns re-read
+        # this conversation 80 times, and each *retry* of the step pays all of
+        # it again. Measured live: three retries of one delegated step cost
+        # 6.5M input tokens between them. The person watching should see that
+        # while it is one step, not on the statistics page a day later.
+        bus.emit("warning", session_id, agent=role.name, step_id=step_id, payload={
+            "message": (
+                f"This delegated step took {turns} internal turns and "
+                f"{usage.get('prompt_tokens', 0):,} input tokens "
+                f"({usage.get('cache_read_tokens', 0):,} of them cache re-reads). "
+                f"A step this size is cheaper split into smaller ones — and every "
+                f"retry of it pays the whole amount again."),
+        })
+
     bus.emit("model_call", session_id, agent=role.name, step_id=step_id, payload={
         "round": 1, "model": config.model, "preset": config.preset,
         "delegated": True, "turns": body.get("num_turns"),
@@ -239,7 +261,7 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
                  payload={"path": path, "delegated": True})
 
     return {"text": text, "files_written": touched, "remit_violations": outside,
-            "usage": usage, "turns": int(body.get("num_turns") or 1)}
+            "usage": usage, "turns": turns}
 
 
 # ------------------------------------------------------------------ helpers
@@ -428,4 +450,10 @@ def _usage(raw: dict) -> dict:
     prompt = (int(raw.get("input_tokens") or 0)
               + int(raw.get("cache_creation_input_tokens") or 0)
               + int(raw.get("cache_read_input_tokens") or 0))
-    return {"prompt_tokens": prompt, "completion_tokens": int(raw.get("output_tokens") or 0)}
+    return {"prompt_tokens": prompt,
+            "completion_tokens": int(raw.get("output_tokens") or 0),
+            # Kept apart because they are not the same money: a cache read is
+            # about a tenth of a fresh token, and for a delegated step it is
+            # most of the number — the same conversation read back on every
+            # internal turn.
+            "cache_read_tokens": int(raw.get("cache_read_input_tokens") or 0)}

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import { StatsScreen } from "@/screens/StatsScreen";
 import { useUi } from "@/store/ui";
 import { fakeServer, renderWithQuery, stubWebSocket } from "./render";
@@ -18,7 +18,8 @@ const THIS_RUN = {
     { model: "Qwen3.6-llama.cpp", calls: 1924,
       input_tokens: 43_460_948, output_tokens: 700_057, total: 44_161_005 },
     { model: "claude-code", calls: 4,
-      input_tokens: 6_724_498, output_tokens: 96_050, total: 6_820_548 },
+      input_tokens: 6_724_498, output_tokens: 96_050, total: 6_820_548,
+      cache_read_tokens: 6_100_000 },
   ],
   total: 50_981_553,
   calls: 1928,
@@ -65,6 +66,20 @@ describe("the statistics page", () => {
     // 43.4M in against 700K out — the point of showing them apart.
     expect(screen.getByText("43.5M")).toBeInTheDocument();
     expect(screen.getByText("700k")).toBeInTheDocument();
+  });
+
+  it("says when a model's input was mostly cache re-reads", async () => {
+    // Measured live: claude-code averaged 427k input per call against 20-25k
+    // for every other backend, and ~90% of it was the same conversation
+    // re-read on every internal turn at a tenth of the price. Summed into one
+    // number that reads as 20x the spend it was.
+    serve();
+    renderWithQuery(<StatsScreen />);
+
+    expect((await screen.findAllByText("91% cached")).length).toBeGreaterThan(0);
+    // The honestly-fresh model gets no such note.
+    const qwen = screen.getAllByText("Qwen3.6-llama.cpp")[0]!.closest("tr")!;
+    expect(within(qwen).queryByText(/cached/)).toBeNull();
   });
 
   it("shows input per call, which is the context being re-sent", async () => {

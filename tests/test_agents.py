@@ -6846,7 +6846,7 @@ def test_usage_is_counted_per_model_definition(tmp_path):
     run = ledger.for_session("s1")
     assert [r["model"] for r in run] == ["local", "Sonnet"]      # biggest first
     assert run[1] == {"model": "Sonnet", "calls": 2, "input_tokens": 2000,
-                      "output_tokens": 450, "total": 2450}
+                      "output_tokens": 450, "cache_read_tokens": 0, "total": 2450}
 
     # Lifetime spans sessions; the run does not.
     assert ledger.lifetime()["Sonnet"]["total"] == 2460
@@ -6861,7 +6861,8 @@ def test_both_spellings_of_usage_are_understood(tmp_path):
     ledger.record("s", "a", {"prompt_tokens": 10, "completion_tokens": 2})
     ledger.record("s", "a", {"input_tokens": 30, "output_tokens": 4})
     assert ledger.lifetime()["a"] == {"calls": 2, "input_tokens": 40,
-                                      "output_tokens": 6, "total": 46}
+                                      "output_tokens": 6, "cache_read_tokens": 0,
+                                      "total": 46}
 
     # A call that reported nothing still happened.
     ledger.record("s", "a", {})
@@ -9507,3 +9508,109 @@ def test_a_generated_plan_arrives_with_the_agents_checks(tmp_path, monkeypatch):
 
     step = body["flow"]["steps"][0]
     assert step["checks"] == ["factchecker", "reviewer", "regression"]
+
+
+# ==================================== what a delegated step actually costs
+
+def test_cache_rereads_are_counted_apart_from_fresh_input():
+    """Measured on the live ledger: claude-code averaged 427k input per call
+    against 20-25k for every other backend — and most of it was the same
+    conversation re-read on every internal turn, billed at a tenth of a fresh
+    token. Summed into one number, that reads as 20x the spend it was."""
+    from trance.usage import Spend
+
+    spend = Spend()
+    spend.add({"prompt_tokens": 1_000_000, "completion_tokens": 20_000,
+               "cache_read_tokens": 900_000})
+    spend.add({"prompt_tokens": 25_000, "completion_tokens": 500})
+
+    held = spend.to_dict()
+    assert held["input_tokens"] == 1_025_000
+    assert held["cache_read_tokens"] == 900_000
+
+
+def test_claude_codes_usage_reports_the_cache_split():
+    from trance.agents.delegate import _usage
+
+    usage = _usage({"input_tokens": 1_000, "cache_creation_input_tokens": 40_000,
+                    "cache_read_input_tokens": 2_600_000, "output_tokens": 30_000})
+    assert usage["prompt_tokens"] == 2_641_000        # the raw count, still whole
+    assert usage["cache_read_tokens"] == 2_600_000    # and what most of it was
+
+
+def test_a_wandering_delegated_step_is_flagged_while_it_is_one_step(tmp_path, monkeypatch):
+    """64, 83 and 73 internal turns on consecutive retries of one step cost
+    6.5M input tokens in sixteen minutes. Nothing said so until the statistics
+    page, a day later."""
+    import json
+    import subprocess as subprocess_module
+
+    from trance.agents import delegate
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    body = {"result": "Fixed it.\n\nOUTCOME: SUCCESS", "num_turns": 83,
+            "usage": {"input_tokens": 5_000, "cache_creation_input_tokens": 60_000,
+                      "cache_read_input_tokens": 2_686_111, "output_tokens": 31_711},
+            "is_error": False, "duration_api_ms": 90_000, "total_cost_usd": 4.1}
+
+    class _Proc:
+        pid = 4242
+        returncode = 0
+        def communicate(self, timeout=None):
+            return json.dumps(body), ""
+
+    monkeypatch.setattr(delegate, "_binary", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(delegate.vcs, "head", lambda project: "abc123")
+    monkeypatch.setattr(delegate, "_touched", lambda project, before: [])
+    monkeypatch.setattr(delegate, "_indexed", lambda project: False)
+    monkeypatch.setattr(subprocess_module, "Popen", lambda *a, **k: _Proc())
+
+    bus = EventBus()
+    warned = []
+    bus.subscribe_sync(lambda e: warned.append(e.payload["message"])
+                       if e.type == "warning" else None)
+
+    out = delegate.run_delegated(
+        role=BUILTIN_ROLES["frontend"], task="fix the collisions", project=tmp_path,
+        config=ModelConfig(), bus=bus, session_id="s", step_id="st")
+
+    assert out["turns"] == 83
+    assert any("83 internal turns" in said and "retry" in said for said in warned)
+    # And a normal-sized step says nothing.
+    warned.clear()
+    body["num_turns"] = 12
+    delegate.run_delegated(
+        role=BUILTIN_ROLES["frontend"], task="small fix", project=tmp_path,
+        config=ModelConfig(), bus=bus, session_id="s", step_id="st")
+    assert not warned
+
+
+def test_restoring_the_shipped_prompt_keeps_the_users_wiring(tmp_path):
+    """Seen live: one click on "Restore shipped prompt" silently unassigned the
+    model and wiped the agent's checks, because reset copied the whole shipped
+    definition. The prompt and the remit are what go stale; the preset, the
+    checks and the retries are what the user set up, and were never the thing
+    being restored."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import RoleStore
+
+    store = RoleStore(tmp_path / "agents.json")
+    role = store.get("frontend")
+    role.system_prompt = "an old prompt with no test rules"
+    role.preset = "Qwen-local"
+    role.backup_preset = "claude-code"
+    role.checks = ["factchecker", "reviewer", "regression"]
+    role.tries = 3
+    store.upsert(role)
+
+    fresh = store.reset("frontend")
+
+    assert fresh.system_prompt == BUILTIN_ROLES["frontend"].system_prompt
+    assert fresh.preset == "Qwen-local"
+    assert fresh.backup_preset == "claude-code"
+    assert fresh.checks == ["factchecker", "reviewer", "regression"]
+    assert fresh.tries == 3
+    # And it is what the store now holds, not just what was returned.
+    assert store.get("frontend").checks == ["factchecker", "reviewer", "regression"]

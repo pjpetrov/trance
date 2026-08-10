@@ -27,6 +27,13 @@ class Spend:
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    #: Of the input, what was a cache re-read. Only backends that report it
+    #: (Claude Code, the Anthropic API) fill it in. It matters because a cache
+    #: read is billed at about a tenth of a fresh token: a delegated Claude
+    #: Code step re-reads its whole conversation every internal turn, so its
+    #: raw input count runs 20x every other backend while most of it is the
+    #: same tokens read back over and over.
+    cache_read_tokens: int = 0
 
     @property
     def total(self) -> int:
@@ -39,6 +46,8 @@ class Spend:
                                  or usage.get("input_tokens") or 0)
         self.output_tokens += int(usage.get("completion_tokens")
                                   or usage.get("output_tokens") or 0)
+        self.cache_read_tokens += int(usage.get("cache_read_tokens")
+                                      or usage.get("cache_read_input_tokens") or 0)
 
     def to_dict(self) -> dict:
         return {**asdict(self), "total": self.total}

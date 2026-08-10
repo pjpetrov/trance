@@ -286,7 +286,12 @@ def _usage(raw: dict) -> dict[str, Any]:
               + int(raw.get("cache_creation_input_tokens") or 0)
               + int(raw.get("cache_read_input_tokens") or 0))
     return {"prompt_tokens": prompt,
-            "completion_tokens": int(raw.get("output_tokens") or 0)}
+            "completion_tokens": int(raw.get("output_tokens") or 0),
+            # Kept apart because they are not the same money: a cache read is
+            # about a tenth of a fresh token, and for a delegated step it is
+            # most of the number — the same conversation read back on every
+            # internal turn.
+            "cache_read_tokens": int(raw.get("cache_read_input_tokens") or 0)}
 
 
 def _why(output: str, code: int) -> str:
