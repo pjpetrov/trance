@@ -989,16 +989,76 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     previews: dict[str, object] = {}
     app.state.previews = previews
 
+    @app.post("/api/sessions/{session_id}/preview/plan")
+    async def plan_preview(session_id: str):
+        """Ask the orchestrator how this project is started.
+
+        Reading the README rather than pattern-matching package.json: a dev
+        command is not always `npm run dev`, and a README that names a script
+        usually names it because the obvious one does not work.
+        """
+        session = _need(store, session_id)
+        try:
+            answer = await asyncio.to_thread(
+                orchestrator_agent.how_to_run, _project_of(session),
+                config=config.for_orchestrator(), bus=bus, session_id=session_id)
+        except BackendError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        if not answer["command"] and not answer["static_instead"]:
+            raise HTTPException(502, (
+                "the orchestrator could not work out how this project is started — "
+                "serve it as files, or add the command to the README."))
+        return answer
+
     @app.post("/api/sessions/{session_id}/preview")
-    def start_preview(request: Request, session_id: str, body: dict | None = None):
+    async def start_preview(request: Request, session_id: str, body: dict | None = None):
         """Serve the folder a page lives in, and hand back its URL."""
         session = _need(store, session_id)
         root = _project_of(session)
-        target = _inside(root, (body or {}).get("path") or "")
+        body = body or {}
+
+        # Running the project rather than serving its files. Asked for
+        # explicitly and with a command someone has seen: this starts a build
+        # on the machine trance is running on, which is not something a preview
+        # button should ever do by itself.
+        if (body.get("mode") or "") == "dev":
+            command = (body.get("command") or "").strip()
+            if not command:
+                raise HTTPException(400, "which command? ask /preview/plan first.")
+            where = _inside(root, body.get("dir") or "") or root
+            if not where.is_dir():
+                raise HTTPException(400, f"{body.get('dir')!r} is not a directory here.")
+            existing = previews.pop(session_id, None)
+            if existing is not None:
+                existing.stop()
+            try:
+                running = await asyncio.to_thread(
+                    preview.run_dev, where, command,
+                    log_dir=Path(session.project_dir).expanduser() / ".trance")
+            except preview.DevServerFailed as exc:
+                bus.emit("preview_failed", session_id, agent="you", payload={
+                    "command": command, "output": exc.output, "message": str(exc)})
+                raise HTTPException(502, f"{exc}\n\n{exc.output}"[:4000]) from exc
+            previews[session_id] = running
+            here = running.at(request.url.hostname)
+            bus.emit("preview", session_id, agent="you", payload={
+                "url": here, "root": running.root, "port": running.port,
+                "command": command,
+                "message": (f"`{command}` is serving {Path(running.root).name}/ "
+                            f"at {here}"),
+            })
+            shared = preview.public_url(running.port)
+            return {**running.to_dict(), "open": here,
+                    "network": running.url, "public": shared or "",
+                    "needs_build": False, "blocked_by": [], "build_command": "",
+                    "hint": (preview.allowed_hosts_note(Path(running.root), shared)
+                             if shared else "")}
+
+        target = _inside(root, body.get("path") or "")
         if target is None or not target.exists():
             raise HTTPException(404, "no such file")
 
-        web_root = preview.web_root_for(root, (body or {}).get("path") or "")
+        web_root = preview.web_root_for(root, body.get("path") or "")
         page = target.name if target.is_file() else ""
 
         existing = previews.get(session_id)
@@ -1084,12 +1144,17 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(502, str(exc)) from exc
 
         tunnels[session_id] = tunnel
+        # A tunnel to a dev server is refused by the dev server until its host
+        # is allowed — Vite answers "Blocked request", which reads as a broken
+        # tunnel. Said here, with the line to paste, rather than discovered.
+        hint = preview.allowed_hosts_note(Path(served.root), tunnel.url)
         bus.emit("preview", session_id, agent="you", payload={
             "url": tunnel.url, "root": served.root, "port": served.port,
             "message": (f"Sharing {Path(served.root).name}/ at {tunnel.url}"
-                        + ("" if policy else " — anyone with the link can open it.")),
+                        + ("" if policy else " — anyone with the link can open it.")
+                        + (f"\n\n{hint}" if hint else "")),
         })
-        return tunnel.to_dict()
+        return {**tunnel.to_dict(), "hint": hint}
 
     @app.delete("/api/sessions/{session_id}/share")
     def stop_share(session_id: str):

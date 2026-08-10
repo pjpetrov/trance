@@ -9,7 +9,8 @@
 
 import type {
   AgentRole, Approval, AppConfig, CommandLists, FileListing, Flow, Loop, ModelPreset,
-  MessageCommits, Planning, Preview, ReviewChanges, ReviewComment, Session, Step,
+  MessageCommits, Planning, Preview, ReviewChanges, ReviewComment, RunPlan,
+  Session, Step,
   TranceEvent, Usage,
 } from "./types";
 
@@ -226,9 +227,12 @@ export const api = {
       `/api/sessions/${id(sid)}/file`, { method: "PUT", body }),
 
   // ------------------------------------------------------------ preview
-  startPreview: (sid: string, body: { path?: string }) =>
-    request<Preview & { dev?: unknown; bare?: unknown[] }>(
-      `/api/sessions/${id(sid)}/preview`, { method: "POST", body }),
+  startPreview: (sid: string,
+                 body: { path?: string; mode?: "dev"; command?: string; dir?: string }) =>
+    request<Preview>(`/api/sessions/${id(sid)}/preview`, { method: "POST", body }),
+  /** Ask the orchestrator how this project is started. Reads the README. */
+  planPreview: (sid: string) =>
+    request<RunPlan>(`/api/sessions/${id(sid)}/preview/plan`, { method: "POST" }),
   preview: (sid: string) => request<Preview>(`/api/sessions/${id(sid)}/preview`),
   stopPreview: (sid: string) =>
     request<{ stopped: boolean }>(`/api/sessions/${id(sid)}/preview`, { method: "DELETE" }),

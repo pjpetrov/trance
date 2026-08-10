@@ -571,6 +571,110 @@ def _describe_project(project_dir: Path) -> str:
     return f"Existing files:\n{listing}"
 
 
+#: What the model may hand back for "how do I run this". A tool rather than
+#: prose, so the answer is a command trance can execute rather than a paragraph
+#: someone has to read and retype.
+def run_command_tool() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "how_to_run",
+            "description": "State the one command that starts this project's dev server.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description":
+                                "The command, exactly as it would be typed."},
+                    "dir": {"type": "string", "description":
+                            "Directory to run it in, relative to the project root. "
+                            "Empty for the root."},
+                    "why": {"type": "string", "description":
+                            "One sentence: where this came from — the README, a "
+                            "script in package.json, the framework's convention."},
+                    "static_instead": {"type": "boolean", "description":
+                                       "True when this project is plain files and "
+                                       "needs no server at all."},
+                },
+                "required": ["command", "why"],
+            },
+        },
+    }
+
+
+def how_to_run(project: Path, *, config: ModelConfig, bus: EventBus,
+               session_id: str = "") -> dict:
+    """Work out what starts this project, by reading what it says about itself.
+
+    A dev command is not always `npm run dev`: monorepos put it behind a
+    workspace filter, Python projects have no package.json at all, and plenty
+    of READMEs name a script that exists precisely because the obvious one does
+    not work. Detecting it from package.json alone gets the common case and
+    quietly gets the interesting ones wrong.
+
+    Proposed, never run: the answer comes back for a person to confirm, because
+    the one thing worse than not knowing the command is running the wrong one
+    on someone's machine.
+    """
+    readme = ""
+    for name in ("README.md", "readme.md", "README", "README.rst"):
+        found = project / name
+        if found.is_file():
+            try:
+                readme = found.read_text(encoding="utf8", errors="replace")[:6000]
+            except OSError:
+                readme = ""
+            break
+
+    manifest = ""
+    package = project / "package.json"
+    if package.is_file():
+        try:
+            manifest = package.read_text(encoding="utf8", errors="replace")[:3000]
+        except OSError:
+            manifest = ""
+
+    listing = ", ".join(sorted(entry.name for entry in list(project.iterdir())[:60]
+                               if not entry.name.startswith("."))) or "(empty)"
+
+    role = BUILTIN_ROLES["orchestrator"]
+    prompt = (
+        "How is this project's dev server started? Answer by calling how_to_run.\n\n"
+        f"Files at the root: {listing}\n\n"
+        + (f"README:\n{readme}\n\n" if readme else "There is no README.\n\n")
+        + (f"package.json:\n{manifest}\n\n" if manifest else "")
+        + "Give the command that serves the app for a browser to open — not the "
+          "build, not the tests. If the README names one, prefer it over anything "
+          "you infer: it is the one the author says works. If this is plain HTML "
+          "and JavaScript with no build step, set static_instead and say so."
+    )
+    messages = [{"role": "system", "content": role.system_prompt},
+                {"role": "user", "content": prompt}]
+    response = client_for(config).complete(messages, tools=[run_command_tool()])
+
+    proposal: dict = {}
+    for call in response.tool_calls or []:
+        if call.name == "how_to_run" and not call.malformed:
+            proposal = dict(call.arguments or {})
+            break
+
+    bus.emit("model_call", session_id or "preview", agent="orchestrator", payload={
+        "round": 1, "model": config.model, "preset": config.preset,
+        "base_url": config.base_url, "messages": messages,
+        "response_text": response.text, "reasoning": response.reasoning,
+        "tool_calls": [{"name": c.name, "arguments": c.arguments}
+                       for c in (response.tool_calls or [])],
+        "finish_reason": response.finish_reason, "usage": response.usage,
+        "asked": "how to run this project",
+    })
+    return {
+        "command": (proposal.get("command") or "").strip(),
+        "dir": (proposal.get("dir") or "").strip(),
+        "why": (proposal.get("why") or "").strip(),
+        "static_instead": bool(proposal.get("static_instead")),
+        "read_readme": bool(readme),
+    }
+
+
 def draft_agent_prompt(name: str, *, description: str = "", goal: str = "",
                        config: ModelConfig, bus: EventBus, session_id: str = "") -> str:
     """Write a system prompt for an agent, from its name and what it is for.

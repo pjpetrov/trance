@@ -489,6 +489,26 @@ export interface Preview {
   url: string;
   /** The public tunnel address, when one is running. */
   public: string;
+  /** Set when the project's own dev server is running rather than a static
+   *  server over its files. */
+  dev?: boolean;
+  command?: string;
+  /** Where the page is opened from — the host this browser reached trance on. */
+  open?: string;
+  /** What still has to be done by hand, if anything. Currently the one thing:
+   *  a Vite dev server refuses a tunnel until its host is allowed. */
+  hint?: string;
+  needs_build?: boolean;
+  build_command?: string;
+}
+
+/** The orchestrator's answer to "how is this project started". */
+export interface RunPlan {
+  command: string;
+  dir: string;
+  why: string;
+  static_instead: boolean;
+  read_readme: boolean;
 }
 
 export interface ModelSpend {

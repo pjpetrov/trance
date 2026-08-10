@@ -22,7 +22,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Confirm } from "@/components/ui/Confirm";
 import { CodeView, type LineComment } from "@/components/CodeView";
 import { toast } from "@/components/Toaster";
-import type { ProjectFile, ReviewComment, TreeNode } from "@/api/types";
+import type { ProjectFile, ReviewComment, RunPlan, TreeNode } from "@/api/types";
 
 /** Group a flat path list into folders. */
 export function buildTree(files: ProjectFile[]): TreeNode {
@@ -62,10 +62,14 @@ export function FilesScreen() {
   const listing = useFiles(sessionId);
   const session = useSession(sessionId);
   const preview = usePreview(sessionId);
-  const { start, share, stop } = usePreviewMutations(sessionId ?? "");
+  const { start, share, stop, plan, run } = usePreviewMutations(sessionId ?? "");
   const review = useReviewMutations(sessionId ?? "");
 
   const [general, setGeneral] = useState<string | null>(null);
+  // What the orchestrator says starts this project, waiting to be confirmed.
+  // Never run without that: it is a build on this machine, not a page.
+  const [proposal, setProposal] = useState<RunPlan | null>(null);
+  const [asking, setAsking] = useState<string | null>(null);
   const [finishing, setFinishing] = useState(false);
 
   const tree = useMemo(() => buildTree(listing.data?.files ?? []), [listing.data]);
@@ -100,11 +104,7 @@ export function FilesScreen() {
                 <Branch
                   key={node.path} node={node} depth={0} selected={filePath}
                   onOpen={openFile}
-                  onPreview={(path) => start.mutateAsync(path)
-                    .then((made) => {
-                      if (made?.port) window.open(`http://localhost:${made.port}/`, "_blank");
-                    })
-                    .catch((error) => toast.err(String(error)))}
+                  onPreview={(path) => setAsking(path)}
                 />
               ))
             : <Empty title="Nothing yet." hint="Files appear as the agents write them." />}
@@ -239,6 +239,77 @@ export function FilesScreen() {
           })
           .catch((error) => toast.err(String(error)))}
       />
+
+      {/* Two questions, in order: which kind of preview, then — if it is the
+          project's own server — the exact command, before it runs. Starting a
+          build on someone's machine is not something a play button may decide
+          on its own. */}
+      <Confirm
+        open={Boolean(asking) && !proposal}
+        title="How should this be served?"
+        confirmLabel="Serve the files"
+        busy={start.isPending || plan.isPending}
+        onClose={() => setAsking(null)}
+        onConfirm={() => {
+          const path = asking;
+          setAsking(null);
+          start.mutateAsync(path ?? undefined)
+            .then((made) => { if (made?.open) window.open(made.open, "_blank"); })
+            .catch((error) => toast.err(String(error)));
+        }}
+      >
+        <p>
+          <b>Serve the files</b> hands the folder to a plain static server. Instant,
+          and it starts nothing — but a page that imports bare module names, as a Vite
+          or webpack app does, will load and then fail on its first import.
+        </p>
+        <p>
+          <b>Run the project</b> asks the orchestrator to read the README and say what
+          starts it. You see that command before anything runs.
+        </p>
+        <Button
+          busy={plan.isPending}
+          onClick={() => plan.mutateAsync()
+            .then((answer) => {
+              if (!answer.static_instead) return setProposal(answer);
+              const path = asking;
+              setAsking(null);
+              toast.ok("The orchestrator says this needs no server — serving the files.");
+              return start.mutateAsync(path ?? undefined)
+                .then((made) => { if (made?.open) window.open(made.open, "_blank"); });
+            })
+            .catch((error) => toast.err(String(error)))}
+        >Run the project instead</Button>
+      </Confirm>
+
+      <Confirm
+        open={Boolean(proposal)}
+        title="Run this?"
+        confirmLabel="Run it"
+        busy={run.isPending}
+        onClose={() => { setProposal(null); setAsking(null); }}
+        onConfirm={() => {
+          const answer = proposal!;
+          setProposal(null); setAsking(null);
+          run.mutateAsync({ command: answer.command, dir: answer.dir })
+            .then((made) => {
+              if (made?.open) window.open(made.open, "_blank");
+              if (made?.hint) toast.ok(made.hint);
+            })
+            .catch((error) => toast.err(String(error)));
+        }}
+      >
+        <p>This runs on the machine trance is running on, and keeps running until you
+           press stop.</p>
+        <pre className="font-code overflow-x-auto rounded-[--radius] bg-bg/60 p-2 text-xs">
+          {proposal?.dir ? `cd ${proposal.dir} && ` : ""}{proposal?.command}
+        </pre>
+        <p className="text-muted">
+          {proposal?.why}
+          {proposal && !proposal.read_readme
+            && " (There is no README, so this is read off the project's files.)"}
+        </p>
+      </Confirm>
     </div>
   );
 }

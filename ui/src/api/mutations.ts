@@ -312,6 +312,15 @@ export function usePreviewMutations(sessionId: string) {
       mutationFn: (path?: string) => api.startPreview(sessionId, { path }),
       onSuccess: settle,
     }),
+    /** What starts this project, according to its own README. */
+    plan: useMutation({ mutationFn: () => api.planPreview(sessionId) }),
+    /** Run it, rather than serve its files. Deliberately separate: this starts
+     *  a build on the machine trance runs on. */
+    run: useMutation({
+      mutationFn: (plan: { command: string; dir: string }) =>
+        api.startPreview(sessionId, { mode: "dev", ...plan }),
+      onSuccess: settle,
+    }),
     share: useMutation({
       mutationFn: (stop?: boolean) => api.share(sessionId, { stop }),
       onSuccess: settle,

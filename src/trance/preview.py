@@ -110,6 +110,132 @@ class Preview:
             pass
 
 
+#: A dev server announces itself on stdout and then serves forever. These are
+#: the shapes vite, next, webpack and http-server print; the port is the only
+#: part trance needs, since the host it binds is not necessarily reachable.
+_ANNOUNCED = re.compile(r"https?://(?:[\w.\-\[\]]+):(\d{2,5})")
+
+
+@dataclass
+class DevServer:
+    """A dev command someone asked for, running until it is stopped.
+
+    Not a static server: this is the project's own tooling, with its own build
+    step, its own port and its own opinions about which hosts may reach it. All
+    trance does is start it where it was told to, watch its output for the port
+    it settled on, and keep the handle so it can be stopped again.
+    """
+
+    command: str
+    root: str
+    port: int
+    process: object
+    log: str
+
+    @property
+    def url(self) -> str:
+        return f"http://{lan_address()}:{self.port}/"
+
+    def at(self, host: str) -> str:
+        return f"http://{host or lan_address()}:{self.port}/"
+
+    def alive(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    def output(self, lines: int = 40) -> str:
+        try:
+            return "\n".join(Path(self.log).read_text(encoding="utf8",
+                                                      errors="replace").splitlines()[-lines:])
+        except OSError:
+            return ""
+
+    def to_dict(self) -> dict:
+        return {"root": self.root, "port": self.port, "url": self.url,
+                "local": f"http://localhost:{self.port}/",
+                "command": self.command, "dev": True, "alive": self.alive()}
+
+    def stop(self) -> None:
+        """Kill the whole group. A dev server is a tree — npm spawns node, node
+        spawns esbuild — and killing only the one trance started leaves the
+        rest holding the port."""
+        process = self.process
+        if process is None:
+            return
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+class DevServerFailed(RuntimeError):
+    """Started, and stopped or never announced a port. Carries what it said."""
+
+    def __init__(self, message: str, output: str = ""):
+        super().__init__(message)
+        self.output = output
+
+
+def run_dev(directory: Path, command: str, *, wait_s: float = 90.0,
+            log_dir: Path | None = None) -> DevServer:
+    """Start a dev command and wait for it to say which port it is on.
+
+    Waiting for the announcement rather than assuming 5173: the port a dev
+    server settles on is not the one in its config when that one is taken, and
+    a preview pointed at the configured port then shows someone else's app.
+    """
+    directory = Path(directory).resolve()
+    log_dir = Path(log_dir) if log_dir else directory
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log = log_dir / "dev-server.log"
+
+    handle = open(log, "w", encoding="utf8")                      # noqa: SIM115
+    process = subprocess.Popen(                                   # noqa: S602
+        command, shell=True, cwd=str(directory),
+        stdout=handle, stderr=subprocess.STDOUT,
+        start_new_session=True, text=True,
+    )
+
+    started = time.time()
+    while time.time() - started < wait_s:
+        if process.poll() is not None:
+            handle.close()
+            raise DevServerFailed(
+                f"`{command}` exited before it served anything "
+                f"(status {process.returncode}).",
+                _tail(log))
+        try:
+            said = log.read_text(encoding="utf8", errors="replace")
+        except OSError:
+            said = ""
+        found = _ANNOUNCED.search(said)
+        if found:
+            handle.close()
+            return DevServer(command=command, root=str(directory),
+                             port=int(found.group(1)), process=process, log=str(log))
+        time.sleep(0.25)
+
+    # Still running, still silent. Killing it is the honest end: a server whose
+    # port nobody knows is a process nobody can reach and nobody will reap.
+    output = _tail(log)
+    handle.close()
+    DevServer(command, str(directory), 0, process, str(log)).stop()
+    raise DevServerFailed(
+        f"`{command}` did not print an address within {int(wait_s)}s, so there is "
+        f"nothing to open. It has been stopped.", output)
+
+
+def _tail(log: Path, lines: int = 30) -> str:
+    try:
+        return "\n".join(log.read_text(encoding="utf8",
+                                       errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
 def lan_address() -> str:
     """This machine's address on the network it can actually reach.
 
@@ -286,6 +412,29 @@ def public_url(port: int, api: str = NGROK_API, timeout: float = 0.4) -> str:
         else:
             plain = plain or url
     return https or plain              # https for preference; both are offered
+
+
+def allowed_hosts_note(root: Path, public_url: str) -> str:
+    """What a Vite dev server needs before it will answer a tunnel.
+
+    Vite refuses requests whose Host header it does not recognise, so a tunnel
+    to a dev server returns "Blocked request" rather than the app — an error
+    about the config that reads like a broken tunnel. Only worth saying when
+    there is a Vite config to say it about.
+    """
+    root = Path(root)
+    config = next((root / name for name in ("vite.config.js", "vite.config.ts",
+                                            "vite.config.mjs")
+                   if (root / name).is_file()), None)
+    if config is None or not public_url:
+        return ""
+    host = public_url.split("://", 1)[-1].split("/", 1)[0]
+    return (f"Vite will answer this tunnel only once its host is allowed. In "
+            f"{config.name}, under `server`, add:\n\n"
+            f"    allowedHosts: ['{host}']\n\n"
+            f"(or `allowedHosts: true` while you are testing). Without it the "
+            f"page returns \"Blocked request\" and the tunnel looks broken when it "
+            f"is not.")
 
 
 class NoTunnelTool(RuntimeError):

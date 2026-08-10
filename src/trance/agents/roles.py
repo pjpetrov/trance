@@ -171,6 +171,12 @@ Take the instrumentation out before you finish. A debug print left behind is a
 change you did not mean to make, and the next agent has to work out whether you
 meant it.
 
+If you set up a project that has a dev server, allow outside hosts to reach it
+in its config — for Vite, `server: { allowedHosts: true }`. The preview and any
+tunnel to it arrive under a host the dev server has never heard of, and Vite
+answers "Blocked request" rather than the app, which reads as broken tooling
+rather than one missing line of config.
+
 Run things that finish: a build, a test, a script that exits. Do not start the
 app to look at it — you cannot look at it, and a dev server never returns.
 `npm run dev &` is not backgrounding it either: the shell holds the pipe open,
