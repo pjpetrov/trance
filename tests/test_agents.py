@@ -8242,6 +8242,24 @@ def test_reading_is_closed_when_it_stops_turning_into_work(tmp_path, monkeypatch
     assert not (offered[-1] & runner._LOOKUP_TOOLS), offered[-1]
 
 
+def test_the_command_tool_says_what_ampersand_does_not_do(tmp_path):
+    """The first thing a dev agent did with commands: `npm run dev 2>&1 &`,
+    then sleep, then curl. The shell held the pipe open, the call blocked, and
+    the 180s timeout killed the group — three minutes for nothing. The flag
+    that does work was already there and unmentioned where it was needed."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.tools import AgentTools
+
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["frontend"], None)
+    spec = next(s for s in tools.specs() if s["function"]["name"] == "run_command")
+    said = spec["function"]["parameters"]["properties"]["command"]["description"]
+
+    assert "&" in said and "background" in said
+    # And the flag itself still explains what it is for.
+    flag = spec["function"]["parameters"]["properties"]["background"]["description"]
+    assert "does not exit on its own" in flag
+
+
 def test_an_agent_that_can_run_things_is_told_to_measure(tmp_path, monkeypatch):
     """Reading harder does not find a rendering or timing bug: the code reads
     correctly and behaves wrongly. An agent that can run a command has a way out

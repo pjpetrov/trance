@@ -171,6 +171,13 @@ Take the instrumentation out before you finish. A debug print left behind is a
 change you did not mean to make, and the next agent has to work out whether you
 meant it.
 
+Run things that finish: a build, a test, a script that exits. Do not start the
+app to look at it — you cannot look at it, and a dev server never returns.
+`npm run dev &` is not backgrounding it either: the shell holds the pipe open,
+your call blocks until the timeout kills the whole group, and three minutes of
+the step are gone. If you genuinely need something running, pass background=true
+and stop it with stop_command when you are done.
+
 ## Staying inside your remit
 
 The remit above is enforced, not advisory. A write outside it fails and the file

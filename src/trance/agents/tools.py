@@ -446,7 +446,11 @@ class AgentTools:
                    else "One plain command per call — no pipes or redirects. ")
                 + f"Allowed programs: {', '.join(sorted(self.allowed_commands))}. "
                 f"You do not need mkdir before write_file — it creates parent directories.",
-                {"command": {"type": "string", "description": "e.g. 'pytest -q'"},
+                {"command": {"type": "string", "description": (
+                     "e.g. 'pytest -q'. Something that finishes on its own. "
+                     "Ending it with & does NOT put it in the background: the "
+                     "shell keeps the pipe open, so this call blocks until the "
+                     "timeout kills the lot — use the background flag instead.")},
                  "background": {
                      "type": "boolean",
                      "description": ("Start it and return immediately. Use this for anything "
