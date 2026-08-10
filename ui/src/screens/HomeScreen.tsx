@@ -1,7 +1,7 @@
 /** Where a session starts: pick one, or describe a new project to the
  *  orchestrator until it has enough to propose a plan. */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSession, useSessions, useWorkspace } from "@/api/queries";
 import { useChat, useSessionLifecycle } from "@/api/mutations";
 import { useUi } from "@/store/ui";
@@ -24,6 +24,15 @@ export function HomeScreen() {
   const session = useSession(sessionId);
   const { create, remove } = useSessionLifecycle();
   const chat = useChat(sessionId ?? "");
+
+  // A conversation is read from the bottom: the newest message is the one you
+  // came back for. It opened at the top, so a long conversation started on
+  // whatever was said first, weeks ago.
+  const bottom = useRef<HTMLDivElement>(null);
+  const conversation = session.data?.chat.length ?? 0;
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [conversation, sessionId]);
 
   return (
     <div className="grid h-full min-w-0 grid-cols-[16rem_minmax(0,1fr)] gap-3 p-3">
@@ -182,6 +191,7 @@ export function HomeScreen() {
                 + "itself. The more it asks, the better the plan, so let it."}
             />
           )}
+          <div ref={bottom} />
         </div>
 
         {session.data && (

@@ -32,7 +32,7 @@ const GENERATE =
   "Propose the plan now, based on everything we have discussed. Call propose_flow.";
 
 export function PlanScreen() {
-  const { sessionId, go, setOpenStep } = useUi();
+  const { sessionId, go } = useUi();
   const session = useSession(sessionId);
   const agents = useAgents(sessionId ?? "");
   const loops = useLoops(sessionId ?? "");
@@ -77,12 +77,11 @@ export function PlanScreen() {
   };
 
   const runIt = () => {
-    const pending = steps.find((step) => step.status === "pending");
+    // Just go there. The run page picks the step itself — whatever is running,
+    // else the last one that ran — and picking it here as well meant two places
+    // decided, with the first pending step winning over the one that started.
     start.mutateAsync()
-      .then(() => {
-        go("run");
-        if (pending) setOpenStep(pending.id);
-      })
+      .then(() => go("run"))
       .catch((error) => toast.err(String(error)));
   };
 

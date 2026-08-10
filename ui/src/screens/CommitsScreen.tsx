@@ -11,7 +11,9 @@
 import { useMessageCommits, useSession } from "@/api/queries";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
+import { useStartRun } from "@/api/mutations";
 import { CommitRow } from "@/components/Commits";
+import { toast } from "@/components/Toaster";
 import { stepTone } from "@/components/Shell";
 import { Badge, Button, Dot, Empty, Panel, PanelHeader, Spinner }
   from "@/components/ui/primitives";
@@ -19,22 +21,35 @@ import { Badge, Button, Dot, Empty, Panel, PanelHeader, Spinner }
 export function CommitsScreen() {
   const { sessionId, commitsFor, go } = useUi();
   const session = useSession(sessionId);
-  const answer = useMessageCommits(sessionId, commitsFor);
+  const asked = session.data?.chat ?? [];
 
-  if (!commitsFor) {
+  // Reached from a reply, or from the tab. Arriving by tab means no reply was
+  // chosen, so it opens on the most recent request that produced work — which
+  // is the one you would have clicked.
+  const latest = [...asked].reverse().find((message) => message.base)?.id ?? null;
+  const showing = commitsFor ?? latest;
+  const answer = useMessageCommits(sessionId, showing);
+  // Above the early return: hooks cannot be conditional, and this page has one
+  // — a session whose chat has not loaded renders the empty state first, then
+  // re-renders with a request to show.
+  const start = useStartRun(sessionId ?? "");
+
+  if (!showing) {
     return (
       <Empty
-        title="Nothing chosen yet."
-        hint="Open the chat and press “what came of this” on a reply that proposed work."
+        title="Nothing has been asked for yet."
+        hint="Describe a feature or a bug on the chat page. When the orchestrator turns it into a plan, what the run commits for it shows up here."
       />
     );
   }
 
   const data = answer.data;
-  const asked = session.data?.chat ?? [];
+  // Only the steps this request added — running is offered for its own work,
+  // not for whatever else is pending elsewhere in the plan.
+  const pending = (data?.steps ?? []).filter((step) => step.status === "pending");
   // The request is the message before the reply, and it is the thing you
   // actually recognise — the reply is the orchestrator agreeing with it.
-  const replyAt = asked.findIndex((message) => message.id === commitsFor);
+  const replyAt = asked.findIndex((message) => message.id === showing);
   const request = replyAt > 0 ? asked[replyAt - 1] : null;
 
   return (
@@ -46,12 +61,7 @@ export function CommitsScreen() {
             ? `${data.commits.length} commit(s)`
               + (data.still_to_run ? ` · ${data.still_to_run} step(s) still to run` : "")
             : "reading the history"}
-          actions={
-            <>
-              <Button size="sm" onClick={() => go("home")}>back to the chat</Button>
-              <Button size="sm" onClick={() => go("run")}>the run</Button>
-            </>
-          }
+          actions={<Button size="sm" onClick={() => go("home")}>back to the chat</Button>}
         />
 
         <div className="space-y-4 p-4">
@@ -86,19 +96,37 @@ export function CommitsScreen() {
 
           {data && data.steps.length > 0 && (
             <section>
-              <h3 className="mb-1 text-xs font-medium text-muted">
-                The steps it added
-              </h3>
-              <div className="space-y-1">
+              <div className="mb-1 flex items-baseline gap-2">
+                <h3 className="text-xs font-medium text-muted">The plan it produced</h3>
+                <div className="flex-1" />
+                {pending.length > 0 && (
+                  <Button
+                    size="sm" variant="primary" busy={start.isPending}
+                    title={`Start the run — ${pending.length} of these have not run yet`}
+                    onClick={() => start.mutateAsync()
+                      .then(() => go("run"))
+                      .catch((error) => toast.err(String(error)))}
+                  >Run {pending.length} pending</Button>
+                )}
+              </div>
+              {/* The steps are the plan; clicking them goes to the plan, where
+                  they can be edited. A list you can read but not act on is a
+                  dead end at exactly the moment you want to change something. */}
+              <button
+                onClick={() => go("plan")}
+                title="Open the plan"
+                className="w-full space-y-1 rounded-[--radius] border border-line p-2
+                           text-left transition-colors hover:bg-panel-2"
+              >
                 {data.steps.map((step) => (
-                  <div key={step.id} className="flex items-center gap-2 text-sm">
+                  <span key={step.id} className="flex items-center gap-2 text-sm">
                     <Dot tone={stepTone(step.status)}
                          pulse={step.status === "running"} />
                     <span className="min-w-0 flex-1 truncate">{step.task}</span>
                     <Badge>{step.status}</Badge>
-                  </div>
+                  </span>
                 ))}
-              </div>
+              </button>
             </section>
           )}
 

@@ -75,7 +75,7 @@ describe("steps that already ran", () => {
 });
 
 describe("running from the plan", () => {
-  it("starts the run and lands on the first pending step", async () => {
+  it("starts the run and goes to the run page", async () => {
     const user = userEvent.setup();
     const server = fakeServer(routes({
       "/api/sessions/s1": session({
@@ -92,7 +92,9 @@ describe("running from the plan", () => {
 
     await waitFor(() => expect(server.to("/api/sessions/s1/start")).toHaveLength(1));
     await waitFor(() => expect(useUi.getState().screen).toBe("run"));
-    expect(useUi.getState().openStep).toBe("b");
+    // Which step is open is the run page's decision — it picks whatever is
+    // running, else the last that ran. Deciding here too meant the first
+    // pending step won over the one that actually started.
   });
 
   it("will not run when nothing is pending", async () => {

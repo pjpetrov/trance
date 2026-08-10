@@ -58,12 +58,14 @@ describe("opening the run page", () => {
     await waitFor(() => expect(useUi.getState().openStep).toBe("st2"));
   });
 
-  it("leaves a step you already chose alone", async () => {
+  it("picks again each time you come back, not once per session", async () => {
+    // Returning to this page asks the same question again, and the answer has
+    // usually changed — the step you left open has finished and another is
+    // running. Within a visit it still never fights a click.
     useUi.setState({ openStep: "st1" });
     serve(plan(["st1", "done", 1], ["st2", "running", 4]));
     renderWithQuery(<RunScreen />);
-    await new Promise((done) => setTimeout(done, 50));
-    expect(useUi.getState().openStep).toBe("st1");
+    await waitFor(() => expect(useUi.getState().openStep).toBe("st2"));
   });
 
   it("keeps the open step open when you click it again", async () => {

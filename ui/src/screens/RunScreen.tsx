@@ -35,23 +35,26 @@ export function RunScreen() {
   // Opening a different step always shows that step's latest run.
   useEffect(() => { setPinnedRun(null); }, [openStep]);
 
-  // Arriving on this page means "show me the work", and the work is a step.
-  // With nothing selected the console fell back to the session-wide feed —
-  // lines from whichever agent was mid-sentence, with no way to tell which
-  // step they belonged to and the rail showing nothing as open. So the page
-  // picks: whatever is running, else the last step that has actually run.
-  // Once per session, so it never fights a deliberate deselect.
-  const picked = useRef<string | null>(null);
+  // Arriving on this page means "show me the work", and the work is a step:
+  // whatever is running, else the last step that actually ran, else the last
+  // step of the plan. With nothing selected the console fell back to a
+  // session-wide feed — lines from whichever agent was mid-sentence, with no
+  // way to tell which step they came from.
+  //
+  // Once per visit rather than once per session. Coming back to this page is
+  // asking the same question again, and the answer has usually changed: the
+  // step you opened it on ten minutes ago has finished and another is running.
+  // Within a visit it never fights you — clicking a step keeps that step.
+  const picked = useRef(false);
   useEffect(() => {
-    if (!sessionId || picked.current === sessionId) return;
-    if (openStep) { picked.current = sessionId; return; }
+    if (!sessionId || picked.current) return;
     const target = steps.find((step) => step.status === "running")
       ?? [...steps].reverse().find((step) => step.runs > 0)
       ?? steps[steps.length - 1];
     if (!target) return;                       // no plan yet; nothing to open
-    picked.current = sessionId;
+    picked.current = true;
     setOpenStep(target.id);
-  }, [sessionId, steps, openStep, setOpenStep]);
+  }, [sessionId, steps, setOpenStep]);
 
   if (!sessionId) return <Empty title="No session selected." />;
 
