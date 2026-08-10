@@ -11,7 +11,7 @@ import { screen, waitFor } from "@testing-library/react";
 import { RunScreen } from "@/screens/RunScreen";
 import { useUi } from "@/store/ui";
 import { fakeServer, renderWithQuery, stubWebSocket } from "./render";
-import { session, step } from "./fixtures";
+import { eventsRoute, session, step } from "./fixtures";
 import type { TranceEvent } from "@/api/types";
 
 const CONTEXT = {
@@ -38,7 +38,7 @@ const running = (events: TranceEvent[]) => fakeServer({
     status: "running",
     flow: { steps: [step({ status: "running" })], cursor: 0 },
   }),
-  "/api/sessions/s1/events": { events, total: events.length, shown: events.length },
+  "/api/sessions/s1/events": eventsRoute(events, events),
 });
 
 describe("the console header", () => {
@@ -127,7 +127,7 @@ describe("the console header", () => {
         status: "halted",
         flow: { steps: [step({ status: "failed" })], cursor: 0 },
       }),
-      "/api/sessions/s1/events": { events, total: 1, shown: 1 },
+      "/api/sessions/s1/events": eventsRoute(events, events),
     });
 
     renderWithQuery(<RunScreen />);
@@ -150,7 +150,7 @@ describe("the console header", () => {
         status: "halted",
         flow: { steps: [step({ id: "st1", status: "halted" })], cursor: 0 },
       }),
-      "/api/sessions/s1/events": events,
+      "/api/sessions/s1/events": eventsRoute(events, events),
     });
 
     renderWithQuery(<RunScreen />);
@@ -163,7 +163,8 @@ describe("the console header", () => {
   it("shows nothing at all before any model has been called", async () => {
     running([]);
     renderWithQuery(<RunScreen />);
-    await screen.findByText(/Start the run, or open a step/);
+    // The running step opens itself, so this is its console, and it is empty.
+    await screen.findByText(/Nothing was recorded for this step/);
     expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument();
     expect(screen.queryByText(/%$/)).not.toBeInTheDocument();
   });

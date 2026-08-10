@@ -39,6 +39,24 @@ export function RunScreen() {
   // Opening a different step always shows that step's latest run.
   useEffect(() => { setPinnedRun(null); }, [openStep]);
 
+  // Arriving on this page means "show me the work", and the work is a step.
+  // With nothing selected the console fell back to the session-wide feed —
+  // lines from whichever agent was mid-sentence, with no way to tell which
+  // step they belonged to and the rail showing nothing as open. So the page
+  // picks: whatever is running, else the last step that has actually run.
+  // Once per session, so it never fights a deliberate deselect.
+  const picked = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sessionId || picked.current === sessionId) return;
+    if (openStep) { picked.current = sessionId; return; }
+    const target = steps.find((step) => step.status === "running")
+      ?? [...steps].reverse().find((step) => step.runs > 0)
+      ?? steps[steps.length - 1];
+    if (!target) return;                       // no plan yet; nothing to open
+    picked.current = sessionId;
+    setOpenStep(target.id);
+  }, [sessionId, steps, openStep, setOpenStep]);
+
   if (!sessionId) return <Empty title="No session selected." />;
 
   return (
@@ -168,10 +186,20 @@ function StepRow(
   // Only the open step's history is fetched, and only when its run list is
   // asked for — a rail of twenty steps must not be twenty requests.
   const events = useStepEvents(sessionId, open ? step.id : null);
-  const runs = useMemo(() => splitIntoRuns(events.data ?? []), [events.data]);
+  const runs = useMemo(
+    () => splitIntoRuns(Array.isArray(events.data) ? events.data : []), [events.data]);
+
+  // A twelve-step plan is taller than the rail, and the step that is running is
+  // the one at the bottom. Selecting it without showing it is the same as not
+  // selecting it.
+  const row = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open) row.current?.scrollIntoView({ block: "nearest" });
+  }, [open]);
 
   return (
-    <div className={cn("rounded-[--radius] transition-colors",
+    <div ref={row}
+         className={cn("rounded-[--radius] transition-colors",
                        open ? "bg-panel-2 ring-1 ring-accent/40" : "hover:bg-panel-2")}>
       <button onClick={onSelect} className="flex w-full items-start gap-2 px-2 py-1.5 text-left">
         <span className="mt-1">
@@ -265,8 +293,12 @@ function Console(
   const stepEvents = useStepEvents(sessionId, stepId);
   const bottom = useRef<HTMLDivElement>(null);
 
+  // The step query answers with a bare list and the tail with an envelope, and
+  // splitting an envelope yields no runs at all — a console that is silently
+  // empty rather than wrong. Ask before iterating.
   const runs = useMemo(
-    () => splitIntoRuns(stepEvents.data ?? []), [stepEvents.data]);
+    () => splitIntoRuns(Array.isArray(stepEvents.data) ? stepEvents.data : []),
+    [stepEvents.data]);
 
   const shown: Run | null = useMemo(() => {
     if (!stepId) return null;

@@ -30,11 +30,15 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the run screen", () => {
-  it("fetches a step's history only when that step is opened", async () => {
+  it("fetches only the open step's history, not every step's", async () => {
     const user = userEvent.setup();
     const server = fakeServer({
       "/api/sessions/s1": session({
-        flow: { steps: [step({ id: "st1", task: "Build the maze renderer" })], cursor: 0 },
+        flow: {
+          steps: [step({ id: "st1", task: "Build the maze renderer" }),
+                  step({ id: "st2", task: "Test the maze renderer", runs: 1 })],
+          cursor: 0,
+        },
       }),
       "/api/sessions/s1/events": eventsRoute([]),
     });
@@ -42,8 +46,10 @@ describe("the run screen", () => {
     renderWithQuery(<RunScreen />);
     await screen.findByText(/Build the maze renderer/);
 
-    // Nothing has been opened, so nothing step-scoped has been asked for. This
-    // is the 13MB page load the old UI shipped by fetching every step up front.
+    // The page opens the last step that ran, and asks for that one alone.
+    // Fetching every step up front is the 13MB page load the old UI shipped.
+    await waitFor(() =>
+      expect(server.calls.some((call) => call.url.includes("step=st2"))).toBe(true));
     expect(server.calls.some((call) => call.url.includes("step=st1"))).toBe(false);
 
     await user.click(screen.getByText(/Build the maze renderer/));
@@ -52,14 +58,13 @@ describe("the run screen", () => {
   });
 
   it("says why a step with no trace is empty, rather than showing nothing", async () => {
-    const user = userEvent.setup();
     fakeServer({
       "/api/sessions/s1": session(),
       "/api/sessions/s1/events": eventsRoute([]),
     });
 
     renderWithQuery(<RunScreen />);
-    await user.click(await screen.findByText(/Build the maze renderer/));
+    await screen.findByText(/Build the maze renderer/);   // opens itself now
 
     // "No calls recorded" reads as a broken panel; the truth is that the events
     // were never written, and only sessions predating the on-disk trace differ.
@@ -70,10 +75,11 @@ describe("the run screen", () => {
   it("renders live events through the same component as the step history", async () => {
     fakeServer({
       "/api/sessions/s1": session(),
-      "/api/sessions/s1/events": eventsRoute([event({
-        kind: "screenshot", shot: "st1/001.png", question: "does it look right?",
-        checks: [], answer: "only one ghost is visible",
-      })]),
+      "/api/sessions/s1/events": eventsRoute(
+        [event({ kind: "screenshot", shot: "st1/001.png", question: "q",
+                 checks: [], answer: "only one ghost is visible" })],
+        [event({ kind: "screenshot", shot: "st1/001.png", question: "q",
+                 checks: [], answer: "only one ghost is visible" })]),
     });
 
     renderWithQuery(<RunScreen />);
@@ -343,7 +349,7 @@ describe("the run page's step actions", () => {
     });
 
     renderWithQuery(<RunScreen />);
-    await user.click(await screen.findByText(/Build the maze renderer/));
+    await screen.findByText(/Build the maze renderer/);   // opens itself now
 
     // Disabling this below two runs made it permanently dead for every step
     // recorded before run markers existed — which is all of them.
@@ -364,21 +370,20 @@ describe("the run page's step actions", () => {
     });
 
     renderWithQuery(<RunScreen />);
-    await user.click(await screen.findByText(/Build the maze renderer/));
+    await screen.findByText(/Build the maze renderer/);   // opens itself now
     await user.click(await screen.findByRole("button", { name: /history/ }));
     expect(await screen.findByText(/Nothing recorded for this step yet/))
       .toBeInTheDocument();
   });
 
   it("offers start on the step, not rerun, and no skip", async () => {
-    const user = userEvent.setup();
     fakeServer({
       "/api/sessions/s1": session(),
       "/api/sessions/s1/events": eventsRoute([]),
     });
 
     renderWithQuery(<RunScreen />);
-    await user.click(await screen.findByText(/Build the maze renderer/));
+    await screen.findByText(/Build the maze renderer/);   // opens itself now
     // "start" rather than "rerun": whether it has run before is not what you
     // are thinking about when you press it.
     await screen.findByRole("button", { name: "start" });

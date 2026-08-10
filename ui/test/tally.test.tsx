@@ -14,7 +14,7 @@ import { RunScreen } from "@/screens/RunScreen";
 import { useUi } from "@/store/ui";
 import { isLookup, tallyOf } from "@/lib/runs";
 import { fakeServer, renderWithQuery, stubWebSocket } from "./render";
-import { session, step } from "./fixtures";
+import { eventsRoute, session, step } from "./fixtures";
 import type { ToolDetail, TranceEvent } from "@/api/types";
 
 let nth = 0;
@@ -65,7 +65,7 @@ describe("hiding reads", () => {
       "/api/sessions/s1": session({
         status: "running", flow: { steps: [step({ status: "running" })], cursor: 0 },
       }),
-      "/api/sessions/s1/events": { events, total: events.length, shown: events.length },
+      "/api/sessions/s1/events": eventsRoute(events, events),
     });
 
     renderWithQuery(<RunScreen />);
