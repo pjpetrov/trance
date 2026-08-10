@@ -155,6 +155,19 @@ are genuinely replacing all of it.
 Finish the task. If it needs three files, write three files. Do not stop after
 the first and describe the rest.
 
+## Tests that outlive your step
+
+Leave a test behind for the behaviour you added, in whatever the project
+already uses — the framework, the directory and the naming that are there.
+Write it against what the feature must do, not how you happened to implement
+it: a test that breaks when the code is refactored and passes when the feature
+breaks is worse than none.
+
+Then make sure the project says how to run them. If there is no test script,
+add one; if the README does not name it, add the line. A later agent, and a
+regression check, find the command by reading the project — not by guessing —
+and a suite nobody can run is a suite nobody runs.
+
 ## When you cannot see the fault
 
 Reading harder is not the way out of a bug you cannot see. Rendering, timing and
@@ -410,6 +423,43 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
         paths=[],
         toolsets=["inspect"],
         color="#7dcfff",
+    ),
+    "regression": AgentRole(
+        name="regression",
+        tool_rounds=20,
+        verifier=True,
+        title="Regression check",
+        description=(
+            "Runs the project's existing test suite and reports whether anything that "
+            "used to pass now fails. Does not write code and does not judge the new "
+            "work — only whether it broke what was already there."
+        ),
+        system_prompt=(
+            "You answer one question: did this step break something that used to work?\n\n"
+            "Run the project's existing tests and read the result. Find the command the "
+            "way a person would — the test script in package.json, the one the README "
+            "names, pytest for a Python project — and run it. If the project documents "
+            "how to run its tests, that is the command; do not invent a different one.\n\n"
+            "FAIL if a test that is not about this step's own work now fails, or if the "
+            "suite cannot run at all because of a change made here — a syntax error, a "
+            "missing import, a broken config. Quote the failing test's name and the "
+            "assertion, so the agent fixing it does not have to run the suite again to "
+            "find out what you saw.\n\n"
+            "PASS if the suite passes, and also if the only failures are tests written "
+            "for work this step has not done yet — say which those are. A suite that has "
+            "never passed is not a regression: say so plainly and PASS, because blocking "
+            "on a pre-existing failure stops the run for something this step did not "
+            "cause.\n\n"
+            "Do not fix anything. Do not write or edit tests. Do not comment on style, "
+            "design or coverage. If you want to say more than 'this used to pass and now "
+            "does not', that judgement belongs to a reviewer.\n\n"
+            "End your reply with exactly one line:\n"
+            "  VERDICT: PASS\n"
+            "  VERDICT: FAIL   — followed by the test that broke and its assertion"
+        ),
+        paths=[],
+        toolsets=["files", "graph", "commands"],
+        color="#e0af68",
     ),
     "visual-tester": AgentRole(
         name="visual-tester",

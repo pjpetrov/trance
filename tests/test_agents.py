@@ -569,7 +569,8 @@ def test_an_inspect_only_agent_is_valid_without_a_remit():
 
 def test_only_inspection_capable_agents_are_verifiers():
     verifiers = {n for n, r in BUILTIN_ROLES.items() if r.verifier}
-    assert verifiers == {"tester", "reviewer", "factchecker", "visual-tester"}
+    assert verifiers == {"tester", "reviewer", "factchecker", "visual-tester",
+                         "regression"}
     # Every one of them can actually look at something before judging it.
     assert all(set(BUILTIN_ROLES[n].toolsets) & {"files", "inspect", "commands", "browser"}
                for n in verifiers)
@@ -994,7 +995,8 @@ def test_the_proposal_schema_only_offers_real_verifiers():
 
     props = (propose_flow_tool(_roles())["function"]["parameters"]
              ["properties"]["steps"]["items"]["properties"])
-    assert set(props["check"]["enum"]) == {"tester", "reviewer", "factchecker", "visual-tester"}
+    assert set(props["check"]["enum"]) == {"tester", "reviewer", "factchecker",
+                                           "visual-tester", "regression"}
     assert "orchestrator" not in props["role"]["enum"]     # it assigns work, not does it
     # No fixer here any more: bringing in a second agent on failure is what a
     # loop is, and offering both invited a plan the step editor cannot show.
@@ -7401,6 +7403,50 @@ def test_two_requests_do_not_claim_each_others_commits(tmp_path, monkeypatch):
     theirs = client.get(f"/api/sessions/{sid}/messages/{second.id}/commits").json()
     assert [c["subject"] for c in mine["commits"]] == ["frontend: the first thing"]
     assert [c["subject"] for c in theirs["commits"]] == ["frontend: the second thing"]
+
+
+def test_a_step_can_be_checked_by_more_than_one_agent(tmp_path):
+    """One step usually wants more than one kind of proof: that the files it
+    claimed exist, and that nothing which used to pass now fails. The engine
+    has always looped over a chain — it was only ever handed one name."""
+    from trance.flow import Step
+
+    step = Step.from_dict({"role": "backend", "task": "add the endpoint",
+                           "checks": ["factchecker", "regression"]})
+    assert step.checks == ["factchecker", "regression"]
+    # The singular accessor still answers, because a trace and a badge both
+    # say "the checker" and mean the one whose verdict decides the attempt.
+    assert step.checker == "factchecker"
+    assert Step.from_dict(step.to_dict()).checks == ["factchecker", "regression"]
+
+
+def test_a_plan_written_before_chains_still_verifies(tmp_path):
+    """Older plans say `check`, older ones than that say `gates` or
+    `verify_with`. All three still run the check they always ran."""
+    from trance.flow import Step
+
+    assert Step.from_dict({"role": "backend", "task": "t",
+                           "check": "factchecker"}).checks == ["factchecker"]
+    assert Step.from_dict({"role": "backend", "task": "t",
+                           "gates": ["reviewer"]}).checks == ["reviewer"]
+    assert Step.from_dict({"role": "backend", "task": "t",
+                           "verify_with": "tester"}).checks == ["tester"]
+    assert Step.from_dict({"role": "backend", "task": "t"}).checks == []
+
+
+def test_the_regression_check_can_run_the_tests_it_is_asked_about():
+    """A verifier with no way to run anything would return a verdict it had no
+    way to have reached — the failure the verifier flag exists to prevent."""
+    from trance.agents.roles import BUILTIN_ROLES
+
+    check = BUILTIN_ROLES["regression"]
+    assert check.verifier is True
+    assert "commands" in check.toolsets
+    assert check.paths == []                  # it reports, it does not fix
+    assert "VERDICT: PASS" in check.system_prompt
+    # A suite that never passed is not a regression, and blocking on one stops
+    # the run for something this step did not cause.
+    assert "never passed" in check.system_prompt
 
 
 def test_a_refused_request_is_not_reported_as_an_unreachable_model():

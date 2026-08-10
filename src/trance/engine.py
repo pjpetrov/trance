@@ -769,7 +769,10 @@ class FlowEngine:
         asking the reviewer to read code that does not work yet, and the
         feedback the worker gets should be about one thing.
         """
-        checks = [step.checker] if step.checker else []
+        # Every check, in order. The loop below has always been written for a
+        # chain; until now it was handed one name, because that is all a step
+        # could hold.
+        checks = list(step.checks)
         if not checks:
             self._emit("verification_skipped", agent=step.role, step_id=step.id, payload={
                 "message": ("No fact check on this step, so the agent's own report of "

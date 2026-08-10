@@ -18,7 +18,7 @@ import { Badge, Button, Empty, Panel, PanelHeader, Select, Textarea }
   from "@/components/ui/primitives";
 import { Modal } from "@/components/ui/Modal";
 import { toast } from "@/components/Toaster";
-import type { Step, StepStatus } from "@/api/types";
+import type { AgentRole, Step, StepStatus } from "@/api/types";
 
 const STATUS_TONE: Record<StepStatus, "neutral" | "accent" | "ok" | "err" | "warn"> = {
   pending: "neutral", running: "accent", done: "ok",
@@ -56,7 +56,7 @@ export function PlanScreen() {
     setSteps(next);
     save.mutateAsync(next.map((step) => ({
       id: step.id, role: step.role, task: step.task, loop: step.loop,
-      check: step.check, max_loops: step.max_loops,
+      check: step.check, checks: step.checks, max_loops: step.max_loops,
     }))).catch((error) => toast.err(`Could not save the plan — ${error}`));
   };
 
@@ -69,6 +69,9 @@ export function PlanScreen() {
 
   const firstAgent = agents.data?.agents.find((role) => role.name !== "orchestrator")?.name
     ?? "backend";
+  // Only agents that can actually inspect a result: one with no tools would
+  // return a verdict it had no way to have reached.
+  const verifiers = (agents.data?.agents ?? []).filter((role) => role.verifier);
 
   const addStep = () => {
     const next = [...steps, { ...blankStep(), id: `s_${Date.now().toString(36)}`,
@@ -221,6 +224,16 @@ export function PlanScreen() {
                     >Delete</Button>
                   </div>
 
+                  <Checks
+                    checks={step.checks ?? []}
+                    verifiers={verifiers}
+                    onChange={(checks) => {
+                      const next = [...steps];
+                      next[index] = { ...step, checks };
+                      persist(next);
+                    }}
+                  />
+
                   <Textarea
                     rows={5}
                     className="mt-2 text-sm"
@@ -292,6 +305,62 @@ export function PlanScreen() {
 
 function DropMarker() {
   return <div className="my-0.5 h-0.5 rounded-full bg-accent" />;
+}
+
+/** The checks that run after a step, as chips you can take off.
+ *
+ *  One step usually wants more than one kind of proof: that the files exist,
+ *  and that nothing which used to pass now fails. The engine has always run a
+ *  chain — the first FAIL sends the work back and the whole chain runs again
+ *  afterwards, so a fix that breaks an earlier check cannot slip through — but
+ *  a step could only ever name one.
+ */
+function Checks(
+  { checks, verifiers, onChange }:
+  { checks: string[]; verifiers: AgentRole[]; onChange: (checks: string[]) => void },
+) {
+  const spare = verifiers.filter((role) => !checks.includes(role.name));
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-xs text-muted">Checked by</span>
+      {checks.map((name) => (
+        <span
+          key={name}
+          className="flex items-center gap-1 rounded-[--radius] bg-accent-soft
+                     px-1.5 py-0.5 text-xs"
+        >
+          {name}
+          <button
+            title={`Stop running ${name} after this step`}
+            className="text-muted hover:text-err"
+            onClick={() => onChange(checks.filter((held) => held !== name))}
+          >✕</button>
+        </span>
+      ))}
+      {!checks.length && (
+        <span className="text-xs text-muted/70">
+          nothing — the agent's own report is taken at face value
+        </span>
+      )}
+      {spare.length > 0 && (
+        <Select
+          className="h-6 w-auto py-0 text-xs"
+          value=""
+          onChange={(event) => {
+            if (event.target.value) onChange([...checks, event.target.value]);
+          }}
+        >
+          <option value="">+ add a check</option>
+          {spare.map((role) => (
+            <option key={role.name} value={role.name} title={role.description}>
+              {role.name}
+            </option>
+          ))}
+        </Select>
+      )}
+    </div>
+  );
 }
 
 function blankStep(): Step {

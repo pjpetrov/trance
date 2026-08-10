@@ -89,6 +89,15 @@ class Step:
     #: Optional reality check run after the work. PASS lets the flow move on;
     #: anything else opens the block's internal loop.
     check: str | None = None
+    #: Every check to run after the work, in order — a chain, because one step
+    #: usually wants more than one kind of proof. A factchecker confirms the
+    #: files exist; a regression check confirms nothing that used to work
+    #: stopped. The first FAIL sends the step back and the whole chain runs
+    #: again afterwards, so a fix that breaks an earlier check cannot pass.
+    #:
+    #: The engine has always looped over a list here; it was only ever handed
+    #: one, because `check` held a single name.
+    checks_chain: list[str] = field(default_factory=list)
     #: Who tries to fix a failed check. Empty means this step's own role has
     #: another go. Either way the block then runs again.
     on_fail: str | None = None
@@ -137,8 +146,14 @@ class Step:
 
     @property
     def checker(self) -> str | None:
-        """The reality check, however it was configured."""
-        return self.check or (self.gates[0] if self.gates else None) or self.verify_with
+        """The first reality check, however it was configured.
+
+        Kept because a trace, a badge and half the API say "the checker" and
+        mean the one whose verdict decides the attempt.
+        """
+        return ((self.checks_chain[0] if self.checks_chain else None)
+                or self.check or (self.gates[0] if self.gates else None)
+                or self.verify_with)
 
     @property
     def fixer(self) -> str:
@@ -157,8 +172,15 @@ class Step:
 
     @property
     def checks(self) -> list[str]:
-        """Legacy accessor; the UI and traces now use `checker`."""
-        return [self.checker] if self.checker else []
+        """Every check this step runs, in order.
+
+        Falls back through the older shapes so a plan written before chains
+        existed still verifies the way it always did.
+        """
+        if self.checks_chain:
+            return [name for name in self.checks_chain if name]
+        one = self.checker
+        return [one] if one else []
 
     @property
     def runs_a_loop(self) -> bool:
@@ -181,10 +203,15 @@ class Step:
         # every finished step with no history and no record of what it cost.
         attempts = [Attempt.from_dict(a) for a in (data.pop("attempts", None) or [])
                     if isinstance(a, dict)]
-        for derived in ("checks", "checker", "fixer", "loop_limit", "runs_a_loop",
+        for derived in ("checker", "fixer", "loop_limit", "runs_a_loop",
                         "overrides_tries"):
             data.pop(derived, None)
         # Older shapes fold into `check`.
+        # A chain sent as `checks` is the real field now; the singular shapes
+        # below are what older plans and older clients say.
+        chain = [name for name in (data.pop("checks", None) or []) if name]
+        if chain:
+            data["checks_chain"] = chain
         if not data.get("check"):
             gates = data.get("gates") or []
             data["check"] = (gates[0] if gates else None) or data.get("verify_with")
