@@ -105,6 +105,11 @@ export function useSessionSocket(sessionId: string | null): SocketState {
               return [...current, event];
             });
         }
+        // A blocked agent is the one thing where a five-second poll is too
+        // slow to be the only way you hear about it.
+        if (event.type === "approval_requested" || event.type === "approval_resolved") {
+          void client.invalidateQueries({ queryKey: keys.approvals(sessionId) });
+        }
         if (event.type === "file_written" || event.type === "file_edited") {
           void client.invalidateQueries({ queryKey: keys.files(sessionId) });
         }

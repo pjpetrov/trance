@@ -8,7 +8,7 @@
  */
 
 import type {
-  AgentRole, AppConfig, CommandLists, FileListing, Flow, Loop, ModelPreset,
+  AgentRole, Approval, AppConfig, CommandLists, FileListing, Flow, Loop, ModelPreset,
   MessageCommits, Planning, Preview, ReviewChanges, ReviewComment, Session, Step,
   TranceEvent, Usage,
 } from "./types";
@@ -181,10 +181,12 @@ export const api = {
     request<Session>(`/api/sessions/${id(sid)}/steps/${id(stepId)}/skip`, { method: "POST" }),
 
   approvals: (sid: string) =>
-    request<{ pending: unknown[] }>(`/api/sessions/${id(sid)}/approvals`),
-  resolveApproval: (sid: string, requestId: string, body: { decision: string }) =>
-    request<unknown>(`/api/sessions/${id(sid)}/approvals/${id(requestId)}`,
-      { method: "POST", body }),
+    request<{ pending: Approval[]; enabled: boolean; timeout_s: number }>(
+      `/api/sessions/${id(sid)}/approvals`),
+  resolveApproval: (sid: string, requestId: string, decision: "once" | "always" | "deny") =>
+    request<Approval & { widened: boolean }>(
+      `/api/sessions/${id(sid)}/approvals/${id(requestId)}`,
+      { method: "POST", body: { decision } }),
 
   // ------------------------------------------------------------- events
   /** The console's own tail. Never the whole run: a finished session is tens of

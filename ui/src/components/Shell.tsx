@@ -19,6 +19,7 @@ import { RunScreen } from "@/screens/RunScreen";
 import { FilesScreen } from "@/screens/FilesScreen";
 import { ReviewsScreen } from "@/screens/ReviewsScreen";
 import { CommitsScreen } from "@/screens/CommitsScreen";
+import { ApprovalPrompt } from "@/components/ApprovalPrompt";
 import { Modals } from "@/modals/Modals";
 import type { SessionStatus, StepStatus } from "@/api/types";
 
@@ -103,6 +104,7 @@ export function Shell({ socket }: { socket: SocketState }) {
       </main>
 
       <Modals />
+      <ApprovalPrompt />
       {session.data?.error && (
         <div className="border-t border-err/40 bg-err-soft px-4 py-2 text-xs text-err">
           {session.data.error}

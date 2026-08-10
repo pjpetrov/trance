@@ -217,6 +217,20 @@ export interface Session {
   resolved_models: Record<string, ResolvedModel>;
 }
 
+/** A question the run is blocked on: an agent wants to do something its
+ *  permissions do not cover, and nothing happens until this is answered. */
+export interface Approval {
+  id: string;
+  kind: string;
+  agent: string;
+  step_id: string;
+  /** The command, or the path — what is actually being asked for. */
+  subject: string;
+  detail: { programs?: string[]; agent_has_own_list?: boolean; path?: string };
+  decision: string;
+  message?: string;
+}
+
 /** What one request turned into: the steps it added and the commits they made. */
 export interface MessageCommits {
   message: { id: string; role: string; content: string; ts: string };

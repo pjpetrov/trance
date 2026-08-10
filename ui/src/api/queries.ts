@@ -40,6 +40,7 @@ export const keys = {
   preview: (id: string) => ["preview", id] as const,
   reviews: (id: string) => ["reviews", id] as const,
   reviewChanges: (id: string) => ["review-changes", id] as const,
+  approvals: (id: string) => ["approvals", id] as const,
   messageCommits: (id: string, messageId: string) =>
     ["messageCommits", id, messageId] as const,
   commit: (id: string, sha: string) => ["commit", id, sha] as const,
@@ -231,6 +232,18 @@ export function useReviews(sessionId: string | null, enabled = true) {
 
 /** What one request turned into. Refetched while its steps are still running,
  *  because the commits arrive one per step as the run goes. */
+/** Questions the run is blocked on. Polled as well as pushed: an agent that
+ *  asks while the socket is reconnecting would otherwise sit there until it
+ *  timed out, with the page showing a run that had simply stopped. */
+export function useApprovals(sessionId: string | null) {
+  return useQuery({
+    queryKey: keys.approvals(sessionId ?? ""),
+    queryFn: () => api.approvals(sessionId!),
+    enabled: Boolean(sessionId),
+    refetchInterval: 5_000,
+  });
+}
+
 export function useMessageCommits(sessionId: string | null, messageId: string | null) {
   return useQuery({
     queryKey: keys.messageCommits(sessionId ?? "", messageId ?? ""),

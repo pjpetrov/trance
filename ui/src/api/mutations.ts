@@ -88,6 +88,20 @@ export function useStepActions(sessionId: string) {
   };
 }
 
+/** Answering the question that has the run stopped. */
+export function useApprovalDecision(sessionId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, decision }: { id: string; decision: "once" | "always" | "deny" }) =>
+      api.resolveApproval(sessionId, id, decision),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: keys.approvals(sessionId) });
+      // "always" widens the allowlist, and the commands screen shows it.
+      void client.invalidateQueries({ queryKey: keys.commands });
+    },
+  });
+}
+
 export function useSessionLifecycle() {
   const client = useQueryClient();
   return {
