@@ -8144,7 +8144,7 @@ def test_the_last_word_of_a_turn_still_carries_the_context_gauge(tmp_path, monke
                      session_id="s", step_id="st")
 
     calls = [e for e in seen if e.type == "model_call"]
-    assert calls[-1].payload["finish_reason"] == "max_rounds"
+    assert calls[-1].payload["out_of_rounds"] is True
     assert calls[-1].payload["context"]["window"] > 0
     # Every one of them, not just the last: the gauge should never go backwards
     # to nothing part-way through a run either.

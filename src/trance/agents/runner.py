@@ -821,7 +821,13 @@ def _run_agent(
             payload={"round": max_rounds + 1, "model": model_config.model,
                      "base_url": model_config.base_url, "messages": messages,
                      "response_text": response.text, "reasoning": response.reasoning,
-                     "tool_calls": [], "finish_reason": "max_rounds",
+                     # Why the round happened and how the reply ended are two
+                     # different facts, and writing one over the other cost an
+                     # afternoon: a reply cut off at the token limit was filed
+                     # as "ran out of rounds", so the console showed the reason
+                     # we asked and hid the reason there was no answer.
+                     "tool_calls": [], "out_of_rounds": True,
+                     "finish_reason": response.finish_reason or "max_rounds",
                      "usage": response.usage, "preset": model_config.preset,
                      "context": turn.context,
                      "summary": summarize_messages(messages)},
