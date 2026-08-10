@@ -430,13 +430,21 @@ function ModelCallBody({ event, sessionId }: { event: TranceEvent; sessionId: st
 
       {complete.response_text && <Code>{complete.response_text}</Code>}
 
-      {(complete.messages?.length ?? 0) > 0 && (
+      {/* A long run's prompts are hundreds of kilobytes each, so old events
+          keep a sentence in place of the value. That sentence arrives in the
+          same field, which is why this asks what it is holding rather than
+          assuming — assuming it was an array took the whole page down. */}
+      {typeof complete.messages === "string" && complete.messages && (
+        <p className="text-xs text-muted">{complete.messages}</p>
+      )}
+
+      {Array.isArray(complete.messages) && complete.messages.length > 0 && (
         <details>
           <summary className="cursor-pointer text-xs text-muted">
-            the full context it was sent ({complete.messages!.length} messages)
+            the full context it was sent ({complete.messages.length} messages)
           </summary>
           <div className="mt-1 space-y-1">
-            {complete.messages!.map((message, index) => (
+            {complete.messages.map((message, index) => (
               <div key={index}>
                 <div className="text-[11px] uppercase tracking-wide text-muted">
                   {message.role}

@@ -77,3 +77,27 @@ describe("a model call", () => {
       .toBeInTheDocument();
   });
 });
+
+describe("an event whose prompt was not kept on disk", () => {
+  it("says so instead of crashing the page", async () => {
+    // A long run's prompts are hundreds of kilobytes each, so the server keeps
+    // a sentence in place of the value — in the same field. The console read it
+    // as an array and called .map on a string, which took the whole page down:
+    // "Uncaught TypeError: y.messages.map is not a function".
+    const note = "[187,001 bytes not kept on disk — the full value was available live.]";
+    const event: TranceEvent = {
+      id: "m1", type: "model_call", session_id: "s1", step_id: "st1",
+      ts: "2026-08-10T09:00:00Z", agent: "frontend",
+      payload: {
+        round: 25, preset: "Qwen", response_text: "done", finish_reason: "stop",
+        messages: note, truncated_on_disk: ["messages"],
+      },
+    };
+
+    fakeServer({ "/api/sessions/s1/events/m1": { payload: event.payload } });
+    renderWithQuery(<EventLine event={event} sessionId="s1" defaultOpen />);
+
+    expect(await screen.findByText(note)).toBeInTheDocument();
+    expect(screen.queryByText(/the full context it was sent/)).not.toBeInTheDocument();
+  });
+});

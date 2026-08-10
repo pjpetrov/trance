@@ -304,7 +304,12 @@ export interface EventPayload {
   preset?: string;
   base_url?: string;
   duration_ms?: number;
-  messages?: ChatMessage[];
+  /** The prompt, or — for an event whose big fields were not kept on disk — a
+   *  string saying so. Reading this as an array crashed the console: it is one
+   *  or the other, and only the server knows which. */
+  messages?: ChatMessage[] | string;
+  /** Fields the event carries as a note rather than a value. */
+  truncated_on_disk?: string[];
   response_text?: string;
   reasoning?: string;
   tool_calls?: { name: string; arguments: Record<string, unknown> }[];
