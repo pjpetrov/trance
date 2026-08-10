@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useConfig, useSessions } from "@/api/queries";
 import { useSessionSocket } from "@/hooks/useSessionSocket";
+import { useFollowHarness } from "@/hooks/useFollowHarness";
 import { useUi } from "@/store/ui";
 import { Shell } from "@/components/Shell";
 import { Toaster } from "@/components/Toaster";
@@ -44,6 +45,9 @@ function Bootstrap() {
   // Live updates for whichever session is open. One socket, and it writes into
   // the query cache rather than into components.
   const socket = useSessionSocket(sessionId);
+
+  // And the screen follows what those updates say is happening.
+  useFollowHarness(sessionId);
 
   // Land on something rather than an empty screen: the most recent session is
   // almost always the one being worked on.
