@@ -9564,7 +9564,6 @@ def test_a_wandering_delegated_step_is_flagged_while_it_is_one_step(tmp_path, mo
     monkeypatch.setattr(delegate, "_binary", lambda: "/usr/bin/claude")
     monkeypatch.setattr(delegate.vcs, "head", lambda project: "abc123")
     monkeypatch.setattr(delegate, "_touched", lambda project, before: [])
-    monkeypatch.setattr(delegate, "_indexed", lambda project: False)
     monkeypatch.setattr(subprocess_module, "Popen", lambda *a, **k: _Proc())
 
     bus = EventBus()
@@ -9614,3 +9613,75 @@ def test_restoring_the_shipped_prompt_keeps_the_users_wiring(tmp_path):
     assert fresh.tries == 3
     # And it is what the store now holds, not just what was returned.
     assert store.get("frontend").checks == ["factchecker", "reviewer", "regression"]
+
+
+def test_a_check_is_handed_the_diff_it_is_judging(tmp_path):
+    """Measured on a delegated review: thirty internal turns and 355k input
+    tokens, nearly all spent rediscovering by exploration what one `git show`
+    already knew. With the diff in the prompt a checker reads instead of
+    wandering — on every backend, not only the one where wandering costs."""
+    from trance import vcs
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.session import Session
+
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "app.js").write_text("let x = 1\n")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+    (project / "src" / "app.js").write_text("let x = 2\n")
+    made = vcs.commit_all(project, "the step's change")
+
+    session = Session(id="s1", name="p", project_dir=str(project))
+    step = Step(role="frontend", task="bump x")
+    step.summary = "changed x"
+    session.flow = Flow(steps=[step])
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+
+    attempt = Attempt(n=1)
+    attempt.commit = vcs.head(project)
+    attempt.files_written = ["src/app.js"]
+    task = engine._gate_task(step, attempt, BUILTIN_ROLES["reviewer"], 0, ["reviewer"])
+
+    assert "```diff" in task
+    assert "-let x = 1" in task and "+let x = 2" in task
+
+    # And with no commit to show, nothing is promised.
+    bare = engine._gate_task(step, Attempt(n=2), BUILTIN_ROLES["reviewer"], 0, ["reviewer"])
+    assert "```diff" not in bare
+
+
+def test_a_huge_diff_is_clipped_and_says_so(tmp_path):
+    from trance import vcs
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.session import Session
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "big.txt").write_text("start\n")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+    (project / "big.txt").write_text(
+        "\n".join(f"line {n} of something long" for n in range(2000)))
+    vcs.commit_all(project, "a huge change")
+
+    session = Session(id="s1", name="p", project_dir=str(project))
+    step = Step(role="frontend", task="t")
+    session.flow = Flow(steps=[step])
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+
+    attempt = Attempt(n=1)
+    attempt.commit = vcs.head(project)
+    task = engine._gate_task(step, attempt, BUILTIN_ROLES["reviewer"], 0, ["reviewer"])
+
+    body = task[task.index("```diff"):]
+    assert len(body) < engine.GATE_DIFF_CHARS + 200
+    assert "clipped" in task

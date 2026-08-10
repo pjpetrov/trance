@@ -89,6 +89,10 @@ export function AgentsEditor() {
 
   if (agents.isLoading) return <Empty title="Loading agents…" />;
   const browserOn = draft?.toolsets.includes("browser");
+  // The preset this agent would run delegated — the main or the backup.
+  const delegatedPreset = [draft?.preset, draft?.backup_preset].find((name) =>
+    name && presets.data?.some((held) =>
+      held.name === name && held.kind === "claudecode"));
   const isNew = draft ? library.isNew(draft.name) : false;
 
   return (
@@ -145,6 +149,23 @@ export function AgentsEditor() {
                        onChange={(e) => library.edit({ tries: Number(e.target.value) || 1 })} />
               </Field>
             </div>
+
+            {delegatedPreset && (
+              // Not a blocker — the trade can be worth it — but the person
+              // making it should know it is a trade. Every other backend's
+              // writes are refused at the remit as they happen; this one's
+              // are judged from the git diff after the step finishes.
+              <p className="rounded-[--radius] border border-warn/40 bg-warn/10
+                            px-3 py-2 text-xs text-warn">
+                {delegatedPreset} runs steps inside Claude Code, with its own
+                tools. Control is checked after the fact, not enforced live:
+                writes outside the remit fail the step from the diff once it
+                ends, and commands run under Claude Code's permission rules
+                shaped from the allowlist. Cheapest for small, well-scoped
+                steps and reviews — every internal turn re-sends the whole
+                conversation, and a retry pays the entire step again.
+              </p>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <Field

@@ -874,6 +874,11 @@ class FlowEngine:
         attempt.feedback = ""
         return attempt.verdict
 
+    #: How much of the step's diff a check is handed. Big enough for any
+    #: ordinary step; a diff past this is clipped and says so, with the file
+    #: list still there to go look at.
+    GATE_DIFF_CHARS = 16_000
+
     def _gate_task(self, step: Step, attempt: Attempt, gate, index: int, checks: list) -> str:
         earlier = [g for g in attempt.gate_results if g.verdict == "PASS"]
         passed = (f"\n\nAlready passed: {', '.join(g.gate for g in earlier)}."
@@ -883,7 +888,28 @@ class FlowEngine:
             f"{step.task}\n\n"
             f"What they reported:\n{step.summary}\n\n"
             f"Files they changed: {', '.join(attempt.files_written) or 'none'}{passed}"
+            f"{self._gate_diff(attempt)}"
         )
+
+    def _gate_diff(self, attempt: Attempt) -> str:
+        """The change itself, in the checker's prompt.
+
+        Measured on a delegated review before this existed: thirty internal
+        turns and 355k input tokens, nearly all of them spent rediscovering by
+        exploration what one `git show` already knew. With the diff in front of
+        it a checker reads instead of wandering — and that holds for every
+        backend, not only the one where wandering is expensive.
+        """
+        if not attempt.commit:
+            return ""
+        patch = (vcs.show(self.project, attempt.commit) or {}).get("diff", "")
+        if not patch.strip():
+            return ""
+        clipped = len(patch) > self.GATE_DIFF_CHARS
+        shown = patch[:self.GATE_DIFF_CHARS]
+        return ("\n\nThe change itself:\n```diff\n" + shown + "\n```"
+                + ("\n(clipped — the full change is in the files listed above)"
+                   if clipped else ""))
 
     def _verify(self, step: Step, attempt: Attempt) -> str | None:
         """Backwards-compatible entry point."""

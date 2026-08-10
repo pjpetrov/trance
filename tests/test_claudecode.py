@@ -326,12 +326,16 @@ def fake_delegate(monkeypatch, result: str, *, num_turns: int = 3,
     return delegate
 
 
-def test_a_delegated_step_runs_in_the_project_with_edits_allowed(tmp_path, monkeypatch):
-    """One call, its own loop, its own tools — because this CLI will not answer
-    round by round, and a run is five or more calls a step."""
+def test_a_delegated_writer_runs_with_its_own_tools_and_a_shaped_bash(tmp_path, monkeypatch):
+    """One call, its own loop, its own tools. The MCP bridge that used to sit
+    here was never the cost and its live enforcement bought little the git diff
+    does not prove better — so a writer gets edit permission and a Bash
+    allowlist shaped from the same command list every other agent answers to,
+    and the remit is judged from the diff when it finishes."""
     from trance import vcs
     from trance.agents.roles import BUILTIN_ROLES
     from trance.config import ModelConfig
+    from trance.events import EventBus
 
     seen: dict = {}
     delegate = fake_delegate(monkeypatch, "did it\n\nOUTCOME: SUCCESS", capture=seen)
@@ -342,8 +346,6 @@ def test_a_delegated_step_runs_in_the_project_with_edits_allowed(tmp_path, monke
     vcs.ensure_repo(project)
     vcs.commit_all(project, "start")
 
-    from trance.events import EventBus
-
     delegate.run_delegated(
         role=BUILTIN_ROLES["frontend"], task="add stop()", project=project,
         config=ModelConfig(kind="claudecode", model="opus"), bus=EventBus(),
@@ -352,14 +354,46 @@ def test_a_delegated_step_runs_in_the_project_with_edits_allowed(tmp_path, monke
     command = seen["command"]
     assert seen["cwd"] == str(project)              # it works where the project is
     assert command[command.index("--permission-mode") + 1] == "acceptEdits"
-    # trance's tools, not Claude Code's: its own are switched off entirely.
-    assert command[command.index("--tools") + 1] == ""
-    assert "mcp__trance__write_file" in command and "mcp__trance__read_file" in command
-    assert not any(t in command for t in ("Edit", "Write", "Bash"))
+    # Its own tools now — no MCP server, no tool switch-off.
+    assert "--mcp-config" not in command and "--tools" not in command
+    # Hermetic: a step is about this project.
+    at = command.index("--disallowedTools")
+    assert command[at + 1:at + 3] == ["WebSearch", "WebFetch"]
+    # Bash shaped from the allowlist, in Claude Code's own permission syntax.
+    bash = [c for c in command if c.startswith("Bash(")]
+    assert bash and all(c.endswith(":*)") for c in bash)
+    assert any(c.startswith("Bash(npm") for c in bash)
     prompt = command[command.index("-p") + 1]
     assert "add stop()" in prompt and "a web app" in prompt
     assert "OUTCOME: SUCCESS" in prompt              # it is told how to report
     assert "src/**" in prompt                        # ...and what it may change
+    assert "checked from the git diff" in prompt     # ...and how that is enforced
+
+
+def test_a_read_only_role_gets_read_only_tools(tmp_path, monkeypatch):
+    """A reviewer or checker may write nothing, enforced the only way this
+    backend can enforce anything: by not handing over the tools that write."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    seen: dict = {}
+    delegate = fake_delegate(monkeypatch, "VERDICT: PASS", capture=seen)
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    delegate.run_delegated(
+        role=BUILTIN_ROLES["reviewer"], task="review the change", project=project,
+        config=ModelConfig(kind="claudecode"), bus=EventBus(),
+        session_id="s", step_id="st")
+
+    command = seen["command"]
+    assert command[command.index("--tools") + 1] == "Read,Grep,Glob"
+    assert "--permission-mode" not in command
+    assert "--mcp-config" not in command
+    assert not any(c.startswith("Bash(") for c in command)
+    prompt = command[command.index("-p") + 1]
+    assert "read-only tools" in prompt and "judgement" in prompt
 
 
 def test_what_it_touched_is_read_from_git_not_from_its_report(tmp_path, monkeypatch):
@@ -450,66 +484,6 @@ def test_only_this_backend_is_delegated():
         assert delegate.delegated(other) is False
 
 
-def test_the_delegated_agent_is_handed_the_graph(tmp_path, monkeypatch):
-    """The one thing delegating would otherwise lose. Claude Code brings grep
-    and read-the-whole-file; the index is right there and it cannot see it —
-    unless it is offered as an MCP server, which is what MCP is actually for."""
-    from trance import vcs
-    from trance.agents.roles import BUILTIN_ROLES
-    from trance.config import ModelConfig
-    from trance.db import GraphDB
-    from trance.events import EventBus
-    from trance.indexer.service import default_db_path, index_repo
-
-    project = tmp_path / "shop"
-    (project / "src").mkdir(parents=True)
-    (project / "src" / "cart.js").write_text("export function total(i){ return 1; }\n")
-    index_repo(project, GraphDB(default_db_path(project)))
-    vcs.ensure_repo(project)
-    vcs.commit_all(project, "start")
-
-    seen: dict = {}
-    delegate = fake_delegate(monkeypatch, "OUTCOME: SUCCESS", capture=seen)
-    delegate.run_delegated(role=BUILTIN_ROLES["frontend"], task="t", project=project,
-                           config=ModelConfig(kind="claudecode"), bus=EventBus(),
-                           session_id="s", step_id="st")
-
-    command = seen["command"]
-    config = json.loads(command[command.index("--mcp-config") + 1])
-    server = config["mcpServers"]["trance"]
-    assert server["args"][:2] == ["-m", "trance.mcp_server"]
-    assert server["args"][2] == str(project)
-    assert "--strict-mcp-config" in command      # only ours, not the user's own
-    assert "mcp__trance__get_definition" in command
-    prompt = command[command.index("-p") + 1]
-    assert "call graph" in prompt and "get_callers" in prompt
-
-
-def test_an_unindexed_project_gets_the_tools_but_not_the_graph(tmp_path, monkeypatch):
-    """The file tools always come from trance — that is what makes it a trance
-    step. The graph is offered only when there is one: tools that answer "there
-    is no index" waste a turn."""
-    from trance import vcs
-    from trance.agents.roles import BUILTIN_ROLES
-    from trance.config import ModelConfig
-    from trance.events import EventBus
-
-    project = tmp_path / "fresh"
-    project.mkdir()
-    vcs.ensure_repo(project)
-
-    seen: dict = {}
-    delegate = fake_delegate(monkeypatch, "OUTCOME: SUCCESS", capture=seen)
-    delegate.run_delegated(role=BUILTIN_ROLES["frontend"], task="t", project=project,
-                           config=ModelConfig(kind="claudecode"), bus=EventBus(),
-                           session_id="s", step_id="st")
-
-    command = seen["command"]
-    assert "mcp__trance__write_file" in command       # its tools, always
-    assert "mcp__trance__get_definition" not in command
-    assert "call graph" not in command[command.index("-p") + 1]
-
-
 def test_stop_kills_a_delegated_step(tmp_path, monkeypatch):
     """Stop aborts every model call a session has open by shutting its socket.
     A delegated step is not a socket, it is a process that runs for minutes —
@@ -580,135 +554,6 @@ def test_stop_kills_a_delegated_step(tmp_path, monkeypatch):
     assert "stopped" in outcome, outcome
 
 
-def test_a_delegated_steps_graph_lookups_are_reported(tmp_path, monkeypatch):
-    """"How do I know it is working?" — for minutes, you could not. What it
-    asked the graph comes back through trance, so it is shown."""
-    import json as _json
-
-    from trance import vcs
-    from trance.agents.roles import BUILTIN_ROLES
-    from trance.config import ModelConfig
-    from trance.db import GraphDB
-    from trance.events import Event, EventBus
-    from trance.indexer.service import default_db_path, index_repo
-    from trance.mcp_server import CALL_LOG
-
-    project = tmp_path / "shop"
-    (project / "src").mkdir(parents=True)
-    (project / "src" / "cart.js").write_text("export function total(i){ return 1; }\n")
-    index_repo(project, GraphDB(default_db_path(project)))
-    vcs.ensure_repo(project)
-    vcs.commit_all(project, "start")
-
-    # One lookup from an earlier step: it must not be reported again.
-    log = project / ".trance" / CALL_LOG
-    log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text(_json.dumps({"name": "search_symbols", "arguments": {"pattern": "old"},
-                                "hit": True, "chars": 10}) + "\n")
-
-    def lookups():
-        with log.open("a", encoding="utf8") as handle:
-            handle.write(_json.dumps({"name": "get_callers",
-                                      "arguments": {"symbol": "total"},
-                                      "hit": True, "chars": 200}) + "\n")
-
-    delegate = fake_delegate(monkeypatch, "OUTCOME: SUCCESS", side_effect=lookups)
-    seen: list[Event] = []
-    bus = EventBus()
-    bus.subscribe_sync(seen.append)
-
-    delegate.run_delegated(role=BUILTIN_ROLES["frontend"], task="t", project=project,
-                           config=ModelConfig(kind="claudecode"), bus=bus,
-                           session_id="s", step_id="st")
-
-    graph_calls = [e for e in seen if e.type == "tool_call"
-                   and (e.payload.get("detail") or {}).get("via") == "mcp"]
-    assert len(graph_calls) == 1, "only this step's lookups belong to this step"
-    assert graph_calls[0].payload["name"] == "get_callers"
-    assert graph_calls[0].payload["arguments"] == {"symbol": "total"}
-    assert graph_calls[0].payload["ok"] is True
-
-
-def test_a_delegated_edit_carries_its_diff(tmp_path, monkeypatch):
-    """The console showed that a file had been edited without showing the edit:
-    the tool outcome's detail — the diff, a command's exit code and output —
-    was being dropped on the way out of the tool server."""
-    import io
-    import json as _json
-
-    from trance.agents.delegate import _lookups_logged, _report_calls
-    from trance.agents.roles import BUILTIN_ROLES
-    from trance.events import Event, EventBus
-    from trance.mcp_server import serve
-
-    project = tmp_path / "app"
-    (project / "src").mkdir(parents=True)
-    (project / "src" / "a.js").write_text("const PORT = 3000;\nstart();\n")
-
-    serve(project, role=BUILTIN_ROLES["frontend"], stdout=io.StringIO(),
-          stdin=io.StringIO(_json.dumps({
-              "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-              "params": {"name": "edit_file", "arguments": {
-                  "path": "src/a.js", "find": "const PORT = 3000;",
-                  "replace": "const PORT = process.env.PORT || 3000;"}}})))
-
-    rows = _lookups_logged(project)
-    assert rows and rows[-1]["detail"]["diff"].startswith("--- a/src/a.js")
-
-    seen: list[Event] = []
-    bus = EventBus()
-    bus.subscribe_sync(seen.append)
-    _report_calls(rows, bus, "s", "st", "frontend")
-
-    call = next(e for e in seen if e.type == "tool_call")
-    detail = call.payload["detail"]
-    assert detail["kind"] == "write"                  # not flattened to "delegated"
-    assert detail["via"] == "mcp"
-    assert "+const PORT = process.env.PORT" in detail["diff"]
-    assert detail["added"] == 1 and detail["removed"] == 1
-
-    # ...and the file it wrote is announced, as any other agent's would be.
-    wrote = [e for e in seen if e.type == "file_written"]
-    assert [e.payload["path"] for e in wrote] == ["src/a.js"]
-
-
-def test_a_delegated_command_carries_its_output(tmp_path):
-    """It should read like any other command in the console: what was run, what
-    it exited with, and what it printed."""
-    import io
-    import json as _json
-
-    from trance.agents.delegate import _lookups_logged, _report_calls
-    from trance.agents.roles import BUILTIN_ROLES
-    from trance.events import Event, EventBus
-    from trance.mcp_server import serve
-
-    project = tmp_path / "app"
-    project.mkdir()
-    (project / "only.txt").write_text("here\n")
-
-    serve(project, role=BUILTIN_ROLES["tester"], stdout=io.StringIO(),
-          stdin=io.StringIO(_json.dumps({
-              "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-              "params": {"name": "run_command", "arguments": {"command": "ls -1"}}})))
-
-    seen: list[Event] = []
-    bus = EventBus()
-    bus.subscribe_sync(seen.append)
-    _report_calls(_lookups_logged(project), bus, "s", "st", "tester")
-
-    call = next(e for e in seen if e.type == "tool_call")
-    detail = call.payload["detail"]
-    assert detail["kind"] == "command"          # the console's command renderer
-    assert detail["command"] == "ls -1"
-    assert detail["exit_code"] == 0
-    assert "only.txt" in detail["output"]
-
-    # The live pair, so a long command shows as running rather than as nothing.
-    kinds = [e.type for e in seen]
-    assert "command_started" in kinds and "command_finished" in kinds
-
-
 def test_a_delegated_step_gets_a_whole_steps_worth_of_time(tmp_path, monkeypatch):
     """600s bounds a model call — a question and an answer. A delegated step is
     the whole step, with its own loop of reads, edits and test runs inside it,
@@ -754,5 +599,5 @@ def test_a_delegated_step_gets_a_whole_steps_worth_of_time(tmp_path, monkeypatch
     said = str(raised.value)
     assert "60 minutes" in said
     # It says what it managed, not only that it stopped.
-    assert "tool call(s)" in said and "checkpoint" in said
+    assert "file(s)" in said and "checkpoint" in said
     assert "re-run the step" in said

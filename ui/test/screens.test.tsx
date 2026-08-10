@@ -30,6 +30,40 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the agents editor", () => {
+  it("says what is traded when an agent runs on Claude Code", async () => {
+    // Not a blocker — the person should just know it is a trade: control is
+    // post-hoc (the diff judges the remit after the step), and cost scales
+    // with step size because every internal turn re-sends the conversation.
+    fakeServer({
+      "/api/agents": {
+        agents: [role({ name: "frontend", preset: "claude-code" })],
+        verifiers: [], toolsets: [],
+      },
+      "/api/presets": { presets: [
+        preset({ name: "claude-code", kind: "claudecode" }),
+        preset({ name: "Qwen", kind: "llamacpp" }),
+      ] },
+      "/api/config": config(),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    expect(await screen.findByText(/Control is checked after the fact/)).toBeInTheDocument();
+    expect(screen.getByText(/retry pays the entire step again/)).toBeInTheDocument();
+  });
+
+  it("keeps quiet about Claude Code for agents that do not use it", async () => {
+    fakeServer({
+      "/api/agents": { agents: [role({ name: "frontend", preset: "Qwen" })],
+                       verifiers: [], toolsets: [] },
+      "/api/presets": { presets: [preset({ name: "Qwen", kind: "llamacpp" })] },
+      "/api/config": config(),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await screen.findByDisplayValue("frontend");
+    expect(screen.queryByText(/Control is checked after the fact/)).toBeNull();
+  });
+
   it("offers the settings that decide what happens when an agent fails", async () => {
     // Backup model, tries, and tries-on-the-backup were editable only by hand
     // in agents.json — so a backup nobody set meant a step failed twice and
