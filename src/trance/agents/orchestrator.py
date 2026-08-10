@@ -353,7 +353,8 @@ def chat(
         if call.malformed:
             truncated_call = True
             continue
-        proposal = ensure_checks(_normalize(call.arguments, roles), roles=roles)
+        proposal = ensure_checks(_normalize(call.arguments, roles), roles=roles,
+                                 project=project_dir)
         proposal["requirements"] = [
             str(item).strip()
             for item in (call.arguments.get("requirements") or [])
@@ -447,9 +448,41 @@ def _normalize(arguments: dict, roles: list) -> dict:
 #: The cheapest check there is: it only asks whether the files an agent claimed
 #: to write exist and have content. It cannot judge quality and does not try.
 DEFAULT_CHECK = "factchecker"
+#: Added alongside it once the project has a suite to run. "Did this step break
+#: something that used to work" is the question nobody remembers to ask until
+#: something is already broken, and asking it by hand on every step of a
+#: twenty-step plan is how it stops being asked.
+REGRESSION_CHECK = "regression"
 
 
-def ensure_checks(proposal: dict, *, roles=None) -> dict:
+def has_tests(project: Path | None) -> bool:
+    """Whether there is a suite for a regression check to run.
+
+    Nothing to regress against on the step that creates the project, and a
+    check that answers "there are no tests" after every step is a model call
+    spent saying so. It starts applying once tests exist.
+    """
+    if project is None:
+        return False
+    project = Path(project)
+    if any((project / name).is_dir() for name in ("tests", "test", "__tests__", "spec")):
+        return True
+    manifest = project / "package.json"
+    if manifest.is_file():
+        try:
+            import json as _json
+            scripts = (_json.loads(manifest.read_text(encoding="utf8"))
+                       .get("scripts") or {})
+        except (OSError, ValueError):
+            scripts = {}
+        if "test" in scripts:
+            return True
+    return any((project / name).is_file()
+               for name in ("pytest.ini", "tox.ini", "vitest.config.ts",
+                            "vitest.config.js", "jest.config.js"))
+
+
+def ensure_checks(proposal: dict, *, roles=None, project: Path | None = None) -> dict:
     """Put a fact check on every step that produces files.
 
     An agent reporting SUCCESS is the one thing in this system with no
@@ -462,8 +495,10 @@ def ensure_checks(proposal: dict, *, roles=None) -> dict:
     checker = by_name.get(DEFAULT_CHECK)
     if checker is None or not checker.verifier:
         return proposal
+    regression = by_name.get(REGRESSION_CHECK)
 
     added = []
+    wants_regression = False
     for step in proposal.get("steps") or []:
         if step.get("loop") or step.get("check"):
             continue                     # a loop carries its own wiring
@@ -471,7 +506,15 @@ def ensure_checks(proposal: dict, *, roles=None) -> dict:
         # Nothing to fact-check where nothing is written.
         if role is None or "files" not in role.toolsets:
             continue
+        chain = [DEFAULT_CHECK]
+        # And, where there is a suite, whether this step broke it. Both run in
+        # order after the work; the first FAIL sends it back and the whole
+        # chain runs again, so a fix that breaks the earlier one cannot pass.
+        if regression is not None and regression.verifier and has_tests(project):
+            chain.append(REGRESSION_CHECK)
         step["check"] = DEFAULT_CHECK
+        step["checks"] = chain
+        wants_regression = wants_regression or REGRESSION_CHECK in chain
         added.append(step.get("task", ""))
 
     if added:
@@ -479,6 +522,8 @@ def ensure_checks(proposal: dict, *, roles=None) -> dict:
         team = list(proposal.get("team") or [])
         if DEFAULT_CHECK not in team:
             team.append(DEFAULT_CHECK)
+        if wants_regression and REGRESSION_CHECK not in team:
+            team.append(REGRESSION_CHECK)
         proposal["team"] = team
     return proposal
 

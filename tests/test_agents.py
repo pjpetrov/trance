@@ -7405,6 +7405,56 @@ def test_two_requests_do_not_claim_each_others_commits(tmp_path, monkeypatch):
     assert [c["subject"] for c in theirs["commits"]] == ["frontend: the second thing"]
 
 
+def test_the_regression_check_is_added_once_there_is_a_suite(tmp_path):
+    """"After each step, make sure nothing broke" is the question nobody
+    remembers to ask until something is already broken — and asking it by hand
+    on every step of a twenty-step plan is how it stops being asked."""
+    from trance.agents.orchestrator import ensure_checks
+    from trance.agents.roles import BUILTIN_ROLES
+
+    roles = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"],
+             BUILTIN_ROLES["regression"]]
+    proposal = {"steps": [{"role": "frontend", "task": "add the level select"}],
+                "team": ["frontend"]}
+
+    (tmp_path / "tests").mkdir()                       # the project has a suite
+    done = ensure_checks(dict(proposal), roles=roles, project=tmp_path)
+    assert done["steps"][0]["checks"] == ["factchecker", "regression"]
+    assert "regression" in done["team"]
+
+
+def test_nothing_regresses_against_a_project_with_no_tests(tmp_path):
+    """On the step that creates the project there is nothing to regress
+    against, and a check that answers "there are no tests" after every step is
+    a model call spent saying so."""
+    from trance.agents.orchestrator import ensure_checks
+    from trance.agents.roles import BUILTIN_ROLES
+
+    roles = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"],
+             BUILTIN_ROLES["regression"]]
+    done = ensure_checks({"steps": [{"role": "frontend", "task": "start it"}],
+                          "team": ["frontend"]}, roles=roles, project=tmp_path)
+
+    assert done["steps"][0]["checks"] == ["factchecker"]
+    assert "regression" not in done["team"]
+
+
+def test_a_suite_is_recognised_however_the_project_keeps_it(tmp_path):
+    from trance.agents.orchestrator import has_tests
+
+    assert has_tests(tmp_path) is False
+    assert has_tests(None) is False
+
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest run"}}',
+                                           encoding="utf8")
+    assert has_tests(tmp_path) is True
+
+    other = tmp_path / "python-one"
+    other.mkdir()
+    (other / "pytest.ini").write_text("[pytest]", encoding="utf8")
+    assert has_tests(other) is True
+
+
 def test_a_step_can_be_checked_by_more_than_one_agent(tmp_path):
     """One step usually wants more than one kind of proof: that the files it
     claimed exist, and that nothing which used to pass now fails. The engine
