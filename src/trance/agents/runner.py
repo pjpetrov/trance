@@ -575,12 +575,24 @@ def _run_agent(
             stopped_reading = True
             specs = [spec for spec in specs
                      if spec["function"]["name"] not in _LOOKUP_TOOLS]
+            # An agent that can run something has a way out that reading never
+            # gave it: make the code say what it is doing. One that cannot is
+            # only told to decide, because telling it to measure would be
+            # telling it to use a tool it does not have.
+            can_run = any(spec["function"]["name"] == "run_command" for spec in specs)
             messages.append({"role": "user", "content": (
                 f"You have used {round_n - 1} of your {max_rounds} tool rounds and "
                 f"have not written anything yet. The tools that only look things up "
                 f"are withdrawn for the rest of this attempt.\n\n"
-                f"Make the smallest change that addresses the task, using what you "
-                f"already know. If what you know is not enough to fix it properly, "
+                + ("You have read the code and it has not told you where the fault "
+                   "is. Stop reading and make it tell you: add a temporary print or "
+                   "assertion where you suspect the problem, or write a small "
+                   "throwaway script that exercises just that path, and run it with "
+                   "run_command. Read what it actually says, then fix what it shows "
+                   "you and take the instrumentation out.\n\n"
+                   if can_run else "")
+                + f"Otherwise make the smallest change that addresses the task with "
+                f"what you already know. If that is not enough to fix it properly, "
                 f"write the part you are sure of and say what is left — a partial "
                 f"fix that names its own gap is worth more to the next agent than "
                 f"a complete description of the problem.")})

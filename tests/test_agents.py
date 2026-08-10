@@ -370,11 +370,11 @@ def test_permissions_brief_matches_what_is_enforced():
 def test_brief_states_the_absence_of_permissions_too():
     from trance.agents.tools import permissions_brief
 
-    backend = permissions_brief(BUILTIN_ROLES["backend"])
-    assert "may NOT run commands" in backend       # no `commands` toolset
-    assert "pytest" not in backend                 # so no allowlist is advertised
-
+    # The reviewer reads and judges; it runs nothing and writes nothing, which
+    # is the pair of absences worth stating outright.
     reviewer = permissions_brief(BUILTIN_ROLES["reviewer"])
+    assert "may NOT run commands" in reviewer      # no `commands` toolset
+    assert "pytest" not in reviewer                # so no allowlist is advertised
     assert "may NOT write any file" in reviewer    # files toolset, empty remit
 
     planner = permissions_brief(BUILTIN_ROLES["planner"])
@@ -414,7 +414,10 @@ def test_the_brief_is_in_every_agent_prompt(monkeypatch, tmp_path):
     user_message = captured["messages"][1]["content"]
     assert "## Your permissions (enforced by the system)" in user_message
     assert "backend/**" in user_message
-    assert "may NOT run commands" in user_message
+    # It runs commands now — the brief has to say which, since an agent that
+    # tries a program it was never granted burns a round finding out.
+    assert "You may run commands" in user_message
+    assert "pytest" in user_message
 
 
 def test_reset_restores_a_builtin(tmp_path):
@@ -8201,6 +8204,74 @@ def test_reading_is_closed_when_it_stops_turning_into_work(tmp_path, monkeypatch
     assert "read_file" in offered[0] and "write_file" in offered[0]
     assert "write_file" in offered[-1]
     assert not (offered[-1] & runner._LOOKUP_TOOLS), offered[-1]
+
+
+def test_an_agent_that_can_run_things_is_told_to_measure(tmp_path, monkeypatch):
+    """Reading harder does not find a rendering or timing bug: the code reads
+    correctly and behaves wrongly. An agent that can run a command has a way out
+    that reading never gave it — make the code say what it is doing."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    said = []
+    bus = EventBus()
+
+    class _OnlyReads:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            said.append(messages[-1].get("content") or "")
+            if any(spec["function"]["name"] == "read_file" for spec in (tools or [])):
+                return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                    ToolCall(id=f"c{len(said)}", name="read_file",
+                             arguments={"path": "README.md"})])
+            return ChatResponse(text="Fixed.\n\nOUTCOME: SUCCESS")
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf8")
+    monkeypatch.setattr(runner, "client_for", lambda config: _OnlyReads())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=10,
+                     session_id="s", step_id="st")
+
+    told = next(m for m in said if "withdrawn" in m)
+    assert "run_command" in told
+    assert "take the instrumentation out" in told.lower()
+
+
+def test_an_agent_with_nothing_to_run_is_not_told_to_run_it(tmp_path, monkeypatch):
+    """Telling an agent to measure when it has no way to run anything is
+    telling it to use a tool it does not have, which costs it a round to find
+    out and reads as the harness not knowing what it granted."""
+    from trance.agents.roles import AgentRole
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    said = []
+    bus = EventBus()
+    role = AgentRole(name="scribe", title="Scribe", description="", system_prompt="p",
+                     paths=["docs/**"], toolsets=["files"])
+
+    class _OnlyReads:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            said.append(messages[-1].get("content") or "")
+            if any(spec["function"]["name"] == "read_file" for spec in (tools or [])):
+                return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                    ToolCall(id=f"c{len(said)}", name="read_file",
+                             arguments={"path": "README.md"})])
+            return ChatResponse(text="Wrote it.\n\nOUTCOME: SUCCESS")
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf8")
+    monkeypatch.setattr(runner, "client_for", lambda config: _OnlyReads())
+    runner.run_agent(role=role, task="t", project=tmp_path,
+                     config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=10,
+                     session_id="s", step_id="st")
+
+    told = next(m for m in said if "withdrawn" in m)
+    assert "run_command" not in told
+    assert "smallest change" in told
 
 
 def test_an_agent_that_is_writing_is_left_alone(tmp_path, monkeypatch):

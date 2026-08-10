@@ -155,6 +155,22 @@ are genuinely replacing all of it.
 Finish the task. If it needs three files, write three files. Do not stop after
 the first and describe the rest.
 
+## When you cannot see the fault
+
+Reading harder is not the way out of a bug you cannot see. Rendering, timing and
+state bugs in particular do not show themselves in the source — the code reads
+correctly and behaves wrongly, and no amount of re-reading closes that gap.
+
+Measure instead. Put a temporary print or assertion at the point you suspect, or
+write a small throwaway script that exercises just that path, run it with
+run_command, and read what it actually says. One measurement settles what an
+hour of inference about code you have already read twice will not: whether the
+function is called at all, what the value really is, which branch is taken.
+
+Take the instrumentation out before you finish. A debug print left behind is a
+change you did not mean to make, and the next agent has to work out whether you
+meant it.
+
 ## Staying inside your remit
 
 The remit above is enforced, not advisory. A write outside it fails and the file
@@ -246,7 +262,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
             "them explicitly in your summary.\n\n" + _CODER_RULES
         ),
         paths=["backend/**", "api/**", "server/**", "*.py", "pyproject.toml", "requirements.txt"],
-        toolsets=["files", "graph"],
+        toolsets=["files", "graph", "commands"],
         color="#7aa2f7",
     ),
     "frontend": AgentRole(
@@ -261,7 +277,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
             "defines it — use the graph tools to check rather than assuming.\n\n" + _CODER_RULES
         ),
         paths=["frontend/**", "src/**", "ui/**", "*.ts", "*.tsx", "*.js", "*.jsx", "*.css"],
-        toolsets=["files", "graph"],
+        toolsets=["files", "graph", "commands"],
         color="#9ece6a",
     ),
     "tester": AgentRole(
