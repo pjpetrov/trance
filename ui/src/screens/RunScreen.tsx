@@ -67,7 +67,10 @@ export function RunScreen() {
       </div>
       <StepRail
         steps={steps} selected={openStep}
-        onSelect={(id) => setOpenStep(id === openStep ? null : id)}
+        // Clicking the open step used to close it, which left the console
+        // showing a session-wide feed nobody asked for. One step is always
+        // open; picking a different one is the only thing a click does.
+        onSelect={setOpenStep}
         pinnedRun={pinnedRun} onPickRun={setPinnedRun}
       />
       <Console stepId={openStep} pinnedRun={pinnedRun} onPickRun={setPinnedRun} />

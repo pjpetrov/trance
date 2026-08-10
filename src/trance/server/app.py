@@ -2086,7 +2086,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 event = await queue.get()
                 if event.session_id != session_id:
                     continue
-                await ws.send_text(json.dumps(event.to_dict()))
+                # Slimmed like the list is. A model_call carries its whole
+                # prompt — 187KB is normal — and the console never shows it
+                # until a line is opened, which fetches the event in full.
+                # Sending it to every socket on every call is the same
+                # megabytes the history panel was taught not to ask for.
+                await ws.send_text(json.dumps(_slim(event.to_dict())))
                 # Anything that changes the flow is followed by the flow. A
                 # review adds a step and said only "review_sent", so the plan
                 # screen never heard that it had a new step in it.

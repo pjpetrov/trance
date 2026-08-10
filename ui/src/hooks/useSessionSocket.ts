@@ -85,11 +85,25 @@ export function useSessionSocket(sessionId: string | null): SocketState {
         });
 
         // A step's own history is fetched per step and cached; when that step
-        // does something new, the cached copy is now short by one.
+        // does something new, the cached copy is short by exactly this event —
+        // so add it, rather than asking for the whole thing again. Measured on
+        // a live step: that history was 3.9MB and took 0.45s to fetch, and
+        // invalidating it on every event asked for it faster than it could
+        // land. The console froze thirteen minutes behind a spinner while the
+        // model answered query after query, and only a page reload — one clean
+        // fetch, nothing to cancel it — caught it up.
         if (event.step_id) {
-          void client.invalidateQueries({
-            queryKey: keys.stepEvents(sessionId, event.step_id),
-          });
+          client.setQueryData<TranceEvent[]>(
+            keys.stepEvents(sessionId, event.step_id),
+            (current) => {
+              // Undefined means nobody has opened that step: seeding it with
+              // live events alone would pass off a tail as the whole history.
+              if (!current) return current;
+              // A fetch that lands after the socket delivered the same event
+              // would otherwise show it twice, under one React key.
+              if (current.some((held) => held.id === event.id)) return current;
+              return [...current, event];
+            });
         }
         if (event.type === "file_written" || event.type === "file_edited") {
           void client.invalidateQueries({ queryKey: keys.files(sessionId) });

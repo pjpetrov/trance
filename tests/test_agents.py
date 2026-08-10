@@ -7286,6 +7286,42 @@ def test_the_socket_carries_what_happens_next_not_what_already_did(tmp_path):
     assert body["events"][-1]["payload"]["name"] == f"call_{app_module.CONSOLE_TAIL + 49}"
 
 
+def test_a_live_console_is_not_sent_the_prompts_either(tmp_path):
+    """The list learned not to ship them; the socket was still sending every
+    model_call in full to every connected page, 187KB of prompt at a time, for
+    a panel that shows one line until you open it — and opening it fetches the
+    event in full anyway."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    project = tmp_path / "proj"
+    project.mkdir()
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    prompt = [{"role": "user", "content": "x" * 40_000}]
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        assert ws.receive_json()["type"] == "snapshot"
+        app.state.bus.emit("model_call", sid, agent="backend", step_id="st1",
+                           payload={"round": 1, "messages": prompt,
+                                    "reasoning": "y" * 9_000,
+                                    "response_text": "done", "tool_calls": []})
+        live = ws.receive_json()
+
+    assert "messages" not in live["payload"]
+    assert "reasoning" not in live["payload"]
+    # And it says what it dropped, which is what makes the line offer to fetch
+    # the rest when you open it.
+    assert live["payload"]["_omitted"]["messages"] > 40_000
+    assert live["payload"]["response_text"] == "done"     # the line itself survives
+
+
 def test_a_history_panel_is_not_sent_the_prompts(tmp_path):
     """One step of a long run is 13MB of JSON and three quarters of it is the
     prompts — which a panel listing what happened never shows. Shipping them is

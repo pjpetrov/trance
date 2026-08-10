@@ -9,6 +9,7 @@
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RunScreen } from "@/screens/RunScreen";
 import { useUi } from "@/store/ui";
@@ -65,14 +66,16 @@ describe("opening the run page", () => {
     expect(useUi.getState().openStep).toBe("st1");
   });
 
-  it("does not re-open a step you deliberately closed", async () => {
+  it("keeps the open step open when you click it again", async () => {
+    // It used to toggle, and closing it dropped the console back to a
+    // session-wide feed — a state nobody chose and nothing announced.
+    const user = userEvent.setup();
     serve(plan(["st1", "done", 1], ["st2", "running", 4]));
     renderWithQuery(<RunScreen />);
     await waitFor(() => expect(useUi.getState().openStep).toBe("st2"));
 
-    useUi.setState({ openStep: null });          // clicking the open step closes it
-    await new Promise((done) => setTimeout(done, 50));
-    expect(useUi.getState().openStep).toBeNull();
+    await user.click(screen.getAllByText(/Build the maze renderer/)[1]!);
+    expect(useUi.getState().openStep).toBe("st2");
   });
 
   it("waits for the plan rather than giving up on an empty one", async () => {

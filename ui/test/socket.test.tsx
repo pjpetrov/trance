@@ -89,16 +89,53 @@ describe("the session socket", () => {
     expect(held).toHaveLength(LIVE_TAIL);
   });
 
-  it("marks a step's own history stale when that step does something", () => {
+  it("adds a step's new event to its history instead of refetching it", () => {
+    // Measured on a live step: its history was 3.9MB and took 0.45s to fetch,
+    // and this used to invalidate it on every event — asking for the lot faster
+    // than it could arrive. The console froze thirteen minutes behind a spinner
+    // while the model answered query after query.
     const invalidate = vi.spyOn(client, "invalidateQueries");
+    const already = event({ kind: "memory", note: "before", stored: true },
+                          { step_id: "st7", id: "e0" });
+    client.setQueryData(keys.stepEvents("s1", "st7"), [already]);
+
+    renderHook(() => useSessionSocket("s1"), { wrapper });
+    act(() => { FakeSocket.latest().onopen?.(); });
+    invalidate.mockClear();
+
+    const fresh = event({ kind: "memory", note: "after", stored: true },
+                        { step_id: "st7", id: "e1" });
+    act(() => FakeSocket.latest().deliver(fresh));
+
+    expect(client.getQueryData(keys.stepEvents("s1", "st7")))
+      .toEqual([already, fresh]);
+    expect(invalidate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: keys.stepEvents("s1", "st7") }));
+  });
+
+  it("does not deliver the same event twice", () => {
+    // A fetch that lands after the socket delivered the same event would
+    // otherwise show it twice, under one React key.
+    const one = event({ kind: "memory", note: "x", stored: true },
+                      { step_id: "st7", id: "e1" });
+    client.setQueryData(keys.stepEvents("s1", "st7"), [one]);
+    renderHook(() => useSessionSocket("s1"), { wrapper });
+    act(() => { FakeSocket.latest().onopen?.(); });
+
+    act(() => FakeSocket.latest().deliver(one));
+    expect(client.getQueryData(keys.stepEvents("s1", "st7"))).toHaveLength(1);
+  });
+
+  it("does not invent a history for a step nobody has opened", () => {
+    // Seeding an unfetched step with live events alone would pass off a tail
+    // as the whole history, and it would look complete.
     renderHook(() => useSessionSocket("s1"), { wrapper });
     act(() => { FakeSocket.latest().onopen?.(); });
 
     act(() => FakeSocket.latest().deliver(
-      event({ kind: "memory", note: "x", stored: true }, { step_id: "st7" })));
+      event({ kind: "memory", note: "x", stored: true }, { step_id: "st9" })));
 
-    expect(invalidate).toHaveBeenCalledWith(
-      expect.objectContaining({ queryKey: keys.stepEvents("s1", "st7") }));
+    expect(client.getQueryData(keys.stepEvents("s1", "st9"))).toBeUndefined();
   });
 
   it("refetches the console tail on reconnect rather than duplicating it", async () => {
