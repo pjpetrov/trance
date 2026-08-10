@@ -106,6 +106,16 @@ export function splitIntoRuns(events: TranceEvent[]): Run[] {
   }
   close();
 
+  // Only the last run can still be going. A run with no outcome recorded is
+  // not necessarily unfinished — a step halted mid-block never gets one — and
+  // treating it as live made an eight-event run from an hour ago outrank the
+  // 550-event one after it: opening the step showed four lines and a timer
+  // counting up the hour since it died. Being followed by another run is proof
+  // enough that this one ended.
+  runs.forEach((run, index) => {
+    if (index < runs.length - 1) run.running = false;
+  });
+
   // Anything before the first boundary is a run too — a step that only ever
   // ran under an older trance would otherwise have no history at all.
   if (runs.length && runs[0]!.events[0] && !isBoundary(runs[0]!.events[0])) {
@@ -115,9 +125,14 @@ export function splitIntoRuns(events: TranceEvent[]): Run[] {
   return runs;
 }
 
-/** The run to show when a step is opened: the one still going, else the last. */
+/** The run to show when a step is opened: the last one.
+ *
+ *  It used to be the first one still going, which is the same thing right up
+ *  until a run ends without recording an outcome — then it is a dead run from
+ *  hours ago, shown in place of everything that happened since.
+ */
 export function currentRun(runs: Run[]): Run | null {
-  return runs.find((run) => run.running) ?? runs[runs.length - 1] ?? null;
+  return runs[runs.length - 1] ?? null;
 }
 
 /** One line for a folded block: what the agent said it did, or why it failed. */

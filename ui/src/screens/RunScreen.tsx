@@ -291,7 +291,11 @@ function Console(
   // The newest event, but only while something is actually going: a finished
   // run whose last event happens to be a waiting one must not sit there
   // counting up the hours since it stopped.
-  const going = stepId ? Boolean(shown?.running) : session.data?.status === "running";
+  // Nothing is waiting for a model unless the session is actually running. The
+  // run's own "still going" is about its events, and events cannot know the
+  // engine stopped.
+  const going = session.data?.status === "running"
+    && (stepId ? Boolean(shown?.running) : true);
   const liveId = going && events.length ? events[events.length - 1]!.id : null;
 
   // Two different scrolls. Arriving at a run puts you at its end, because the
@@ -317,7 +321,7 @@ function Console(
         title="Console"
         subtitle={stepId
           ? (shown
-            ? `${shown.label}${shown.running ? " — still going" : ""}` +
+            ? `${shown.label}${going ? " — still going" : ""}` +
               (shown.startedAt ? ` · started ${timeOf(shown.startedAt)}` : "")
             : "nothing recorded for this step")
           : "everything the agents have done"}

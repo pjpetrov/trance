@@ -136,6 +136,30 @@ describe("the console header", () => {
     expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument();
   });
 
+  it("does not count on a halted step, however its events ended", async () => {
+    // What the screenshot showed: a halted session, the console still saying
+    // "still going", and the header counting 3602s — an hour since the engine
+    // stopped — because the run's last event happened to be a waiting one.
+    useUi.setState({ openStep: "st1" });
+    const events = [
+      event("step_run_started", { run: 2 }),
+      event("model_waiting", { preset: "Qwen", round: 1, context: CONTEXT }),
+    ];
+    fakeServer({
+      "/api/sessions/s1": session({
+        status: "halted",
+        flow: { steps: [step({ id: "st1", status: "halted" })], cursor: 0 },
+      }),
+      "/api/sessions/s1/events": events,
+    });
+
+    renderWithQuery(<RunScreen />);
+    await screen.findByText(/Build the maze renderer/);
+    await waitFor(() =>
+      expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument());
+    expect(screen.queryByText(/still going/)).not.toBeInTheDocument();
+  });
+
   it("shows nothing at all before any model has been called", async () => {
     running([]);
     renderWithQuery(<RunScreen />);

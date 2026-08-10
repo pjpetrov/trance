@@ -19,7 +19,10 @@ interface UiStore {
   /** The step whose detail panel is open, if any. */
   openStep: string | null;
   /** Console filters. Reads are the bulk of the traffic and the least of the
-   *  interest, so they are hidden by default. */
+   *  interest — but the switch that was supposed to hide them never did, so
+   *  they have always been shown. It works now; making it default to hiding
+   *  them at the same time would take away what people are used to reading,
+   *  and the button is right there. */
   showReads: boolean;
   hideFinished: boolean;
   /** Scope the console to one step, or null for the whole run. */
@@ -42,7 +45,7 @@ export const useUi = create<UiStore>((set) => ({
   screen: "home",
   modal: null,
   openStep: null,
-  showReads: false,
+  showReads: true,
   hideFinished: false,
   consoleStep: null,
   filePath: null,

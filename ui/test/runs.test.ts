@@ -163,3 +163,34 @@ describe("folding a run into agent blocks", () => {
     expect(blocks[0]!.label).toMatch(/before the first agent/);
   });
 });
+
+describe("a run that never recorded an outcome", () => {
+  // Measured on a real halted step: run 1 had 649 events and FAILED, run 2 had
+  // 8 and was cut off mid-block with no outcome, run 3 had 550 and FAILED.
+  // Opening the step showed run 2 — four lines, and a timer counting the hour
+  // since it died — while 550 events sat one click away and unmentioned.
+  const at = (n: number, type: string, payload: Record<string, unknown> = {}) => ({
+    id: `${type}-${n}-${Math.random()}`, type, session_id: "s1", step_id: "st1",
+    ts: `2026-08-10T0${n}:00:00Z`, agent: "visual-tester", payload,
+  });
+  const stream = [
+    at(1, "step_run_started", { run: 1 }),
+    at(1, "loop_node", { visit: 1, of: 8 }),
+    at(1, "step_outcome", { outcome: "FAILED", reason: "no" }),
+    at(2, "step_run_started", { run: 2 }),
+    at(2, "loop_node", { visit: 1, of: 8 }),          // halted here, no outcome
+    at(3, "step_run_started", { run: 3 }),
+    at(3, "loop_node", { visit: 1, of: 8 }),
+    at(3, "step_outcome", { outcome: "FAILED", reason: "still no" }),
+  ];
+
+  it("is not still going once another run has started", () => {
+    const runs = splitIntoRuns(stream);
+    expect(runs.map((run) => run.n)).toEqual([1, 2, 3]);
+    expect(runs[1]!.running).toBe(false);
+  });
+
+  it("does not outrank the run that came after it", () => {
+    expect(currentRun(splitIntoRuns(stream))?.n).toBe(3);
+  });
+});
