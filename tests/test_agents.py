@@ -7403,6 +7403,80 @@ def test_two_requests_do_not_claim_each_others_commits(tmp_path, monkeypatch):
     assert [c["subject"] for c in theirs["commits"]] == ["frontend: the second thing"]
 
 
+def test_a_refused_request_is_not_reported_as_an_unreachable_model():
+    """"unsloth/Qwen3.6-27B could not be reached" was printed about a server
+    that answered in the same millisecond, with the reason in its response: the
+    conversation had two assistant turns at the end. That line reads as a
+    network fault and sends whoever is watching to look in the wrong place."""
+    from trance.engine import endpoint_failure
+    from trance.providers import BackendError
+
+    refused, said = endpoint_failure(
+        "unsloth/Qwen3.6-27B-GGUF:IQ4_XS",
+        BackendError('http://localhost:12345/v1/chat/completions returned 400: '
+                     '{"error":{"message":"Cannot have 2 or more assistant messages"}}'),
+        backup="Sonnet", on_backup=False)
+    assert refused is True
+    assert "refused the request" in said
+    assert "could not be reached" not in said
+    # The reason travels with it rather than only into the log.
+    assert "2 or more assistant messages" in said
+
+    # A server that genuinely is not there still reads the way it always did.
+    down, said = endpoint_failure(
+        "unsloth/Qwen3.6-27B-GGUF:IQ4_XS",
+        BackendError("cannot reach http://localhost:12345 ([Errno 111] Connection refused)"),
+        backup="Sonnet", on_backup=False)
+    assert down is False
+    assert "could not be reached. Trying Sonnet next." in said
+
+
+def test_a_cut_off_call_leaves_a_conversation_that_can_be_sent(tmp_path, monkeypatch):
+    """Measured on a real step: a write_file cut off at the 8,000-token limit,
+    then the next request rejected with
+
+        400 Cannot have 2 or more assistant messages at the end of the list.
+
+    which the harness read as the model being unreachable, so a tester with a
+    perfectly healthy local model was sent to its backup — and the backup 400d
+    on billing. The step died in the same second it was cut off."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    sent = []
+    bus = EventBus()
+
+    class _AlwaysCutOff:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            sent.append([dict(m) for m in messages])
+            if len(sent) <= 2:                       # two truncations in a row
+                call = ToolCall(id=f"c{len(sent)}", name="write_file", arguments={})
+                call.malformed = True
+                return ChatResponse(text="", finish_reason="length", tool_calls=[call])
+            return ChatResponse(text="Wrote it in pieces.\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _AlwaysCutOff())
+    runner.run_agent(role=BUILTIN_ROLES["tester"], task="t", project=tmp_path,
+                     config=ModelConfig(preset="Qwen", max_tokens=8000), bus=bus,
+                     max_rounds=6, session_id="s", step_id="st")
+
+    # Every request must be a conversation the server will accept: never two
+    # assistant turns running, least of all at the end.
+    for conversation in sent:
+        roles = [m["role"] for m in conversation]
+        assert roles[-1] != "assistant", roles[-3:]
+        pairs = list(zip(roles, roles[1:]))
+        assert ("assistant", "assistant") not in pairs, roles
+
+    # And the instruction reached the model rather than only the console.
+    told = [m for m in sent[-1] if m["role"] == "user" and "cut off" in str(m["content"])]
+    assert told, "the model was never told why the call did not run"
+    assert "append_file" in told[-1]["content"]
+
+
 def test_lifetime_usage_survives_the_model_being_deleted(tmp_path):
     """"What have I spent on this model" is a question about the past. A total
     assembled from the presets that still exist quietly drops the ones you have

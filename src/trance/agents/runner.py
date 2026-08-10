@@ -858,7 +858,7 @@ def _run_agent(
                 seen_lookups[key] = tool_message
 
         if cut_short:
-            _drop_unfinished_call(messages, cut_short)
+            _drop_unfinished_call(messages, cut_short, model_config.max_tokens)
     else:
         # Out of rounds: force a final answer with tools withheld.
         messages.append({
@@ -1069,7 +1069,8 @@ def _answer_or_retry_without_thinking(response, *, client, messages, specs, conf
     return retried, True
 
 
-def _drop_unfinished_call(messages: list[dict], cut_short: list) -> None:
+def _drop_unfinished_call(messages: list[dict], cut_short: list,
+                          max_tokens: int = 0) -> None:
     """Take a half-written tool call back out of the conversation.
 
     A call cut off at the output limit leaves arguments that are not JSON. Left
@@ -1104,6 +1105,32 @@ def _drop_unfinished_call(messages: list[dict], cut_short: list) -> None:
     # A tool result with no call to belong to is rejected by strict endpoints.
     messages[:] = [m for m in messages
                    if not (m.get("role") == "tool" and m.get("tool_call_id") in ids)]
+
+    # And then say what went wrong, in a message the model will actually get.
+    #
+    # The instruction — do not retry the same call, write the file in sections
+    # — used to travel as the tool result for the call that was cut, and the
+    # line above deletes exactly those. So the one thing that would have
+    # stopped it making the same mistake was the one thing thrown away: it
+    # appeared in the console, was read by the person watching, and never
+    # reached the model.
+    #
+    # A user turn rather than an assistant one, because the assistant turn is
+    # already the last message. Two in a row are refused outright — llama.cpp
+    # answers "Cannot have 2 or more assistant messages at the end of the
+    # list" with a 400, which reads as the model being unreachable and sends
+    # the step to its backup for a fault that has nothing to do with the model.
+    messages.append({"role": "user", "content": (
+        f"Your {names} call was cut off at the "
+        + (f"{max_tokens}-token " if max_tokens else "")
+        + "output limit partway through its arguments, so it could not be parsed "
+          "and nothing ran.\n\n"
+          "Do not retry the same call — it will be cut off again. Write the file "
+          "in smaller pieces: one file per call, and split a large file across "
+          "calls by writing the first section with write_file and appending the "
+          "rest with append_file. If you are changing an existing file, edit_file "
+          "or replace_symbol costs the size of the edit rather than the size of "
+          "the file.")})
 
 
 def _malformed_call_outcome(call, truncated: bool, max_tokens: int):

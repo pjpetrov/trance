@@ -38,6 +38,26 @@ from .agents.tools import stop_background
 from .worker.tools import ContextTools, project_map
 
 
+def endpoint_failure(model: str, exc, backup: str, on_backup: bool) -> tuple[bool, str]:
+    """Whether the endpoint refused the request, and what to say about it.
+
+    A server that answers with a status was reached. Reporting a 400 as "could
+    not be reached" sent a person looking at the network for a fault that was
+    in the request — measured once: a conversation with two assistant turns at
+    the end, refused in the same millisecond, reported as an unreachable model
+    and escalated to a backup that could not have helped.
+
+    Returns (refused, message).
+    """
+    refused = "returned 4" in str(exc)
+    what = "refused the request" if refused else "could not be reached"
+    next_step = (f"Trying {backup} next." if backup and not on_backup else "Trying again.")
+    # The reason travels with it when there is one: an endpoint that refuses
+    # says why, and that sentence is the whole diagnosis.
+    detail = f" ({str(exc)[:160]})" if refused else ""
+    return refused, f"{model} {what}. {next_step}{detail}"
+
+
 def check_project_dir(raw: str) -> tuple[str | None, str]:
     """Validate a project directory before anything is created.
 
@@ -430,12 +450,12 @@ class FlowEngine:
                 attempt.outcome_reason = f"the model endpoint failed: {exc}"
                 feedback = attempt.outcome_reason
                 backup = getattr(role, "backup_preset", "") or ""
+                refused, note = endpoint_failure(
+                    model_config.model, exc, backup, on_backup)
                 self._emit("model_unreachable", agent=role.name, step_id=step.id, payload={
                     "error": str(exc), "model": model_config.model,
-                    "attempt": loop, "of": limit, "backup": backup,
-                    "message": (f"{model_config.model} could not be reached. "
-                                + (f"Trying {backup} next." if backup and not on_backup
-                                   else "Trying again.")),
+                    "attempt": loop, "of": limit, "backup": backup, "refused": refused,
+                    "message": note,
                 })
                 self.on_change()
                 if loop >= limit:

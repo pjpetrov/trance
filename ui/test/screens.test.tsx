@@ -60,9 +60,15 @@ describe("the agents editor", () => {
 
     // Field wraps its input in the label, so the accessible name carries the
     // hint too — query on the part of it that is unique.
-    expect(screen.getByLabelText(/Attempts on the model above/)).toHaveValue(2);
+    expect(screen.getByLabelText(/Attempts on that model before the backup/)).toHaveValue(2);
     // The backup's own tries are meaningless until a backup is chosen.
     expect(screen.getByLabelText(/Ignored without a backup model/)).toBeDisabled();
+    // Name, title, then the model and what happens when it fails — reading
+    // down the left column is one sentence.
+    const labels = [...document.querySelectorAll("label > span:first-child")]
+      .map((node) => node.textContent);
+    expect(labels.slice(0, 6)).toEqual(
+      ["Name", "Title", "Model", "Retries", "Backup model", "Backup retries"]);
     // And a model cannot be its own backup.
     const backup = screen.getByLabelText(/retries on the same model/) as HTMLSelectElement;
     expect([...backup.options].map((option) => option.value)).toEqual(["", "Sonnet"]);

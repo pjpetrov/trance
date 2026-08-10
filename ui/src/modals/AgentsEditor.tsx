@@ -95,6 +95,8 @@ export function AgentsEditor() {
 
         {draft && (
           <div className="min-h-0 space-y-4 overflow-y-auto p-4">
+            {/* Who it is, then what it runs on and what happens when that
+                fails — read down the left column and it is one sentence. */}
             <div className="grid grid-cols-2 gap-3">
               <Field
                 label="Name"
@@ -106,6 +108,13 @@ export function AgentsEditor() {
                   onChange={(event) => library.replace({ ...draft, name: event.target.value })}
                 />
               </Field>
+              <Field label="Title">
+                <Input value={draft.title}
+                       onChange={(e) => library.edit({ title: e.target.value })} />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
               <Field label="Model">
                 <Select value={draft.preset ?? ""}
                         onChange={(e) => library.edit({ preset: e.target.value || null })}>
@@ -115,28 +124,17 @@ export function AgentsEditor() {
                   ))}
                 </Select>
               </Field>
+              <Field label="Retries" hint="Attempts on that model before the backup takes over.">
+                <Input type="number" min={1} value={draft.tries || 1}
+                       onChange={(e) => library.edit({ tries: Number(e.target.value) || 1 })} />
+              </Field>
             </div>
 
-            <Field label="Title">
-              <Input value={draft.title}
-                     onChange={(e) => library.edit({ title: e.target.value })} />
-            </Field>
-
-            <Field label="Description" hint="The orchestrator reads this when assigning work.">
-              <Input value={draft.description}
-                     onChange={(e) => library.edit({ description: e.target.value })} />
-            </Field>
-
-            {/* The three settings that decide what happens when this agent
-                fails: how many goes it gets, what it falls back to, and how
-                many goes it gets on that. They were only editable by hand in
-                agents.json, which is where a backup model nobody set meant a
-                step just failed twice and stopped. */}
             <div className="grid grid-cols-2 gap-3">
               <Field
                 label="Backup model"
                 hint={draft.backup_preset
-                  ? "Used after the tries below are spent. The one thing a retry otherwise never changes."
+                  ? "Used once the retries above are spent — the one thing a retry otherwise never changes."
                   : "None — it retries on the same model, which usually fails the same way."}
               >
                 <Select value={draft.backup_preset ?? ""}
@@ -149,24 +147,10 @@ export function AgentsEditor() {
                 </Select>
               </Field>
               <Field
-                label="Tool rounds"
-                hint="Reads, writes or commands per attempt before it must report. 0 uses the default."
-              >
-                <Input type="number" min={0} value={draft.tool_rounds || ""}
-                       onChange={(e) => library.edit({ tool_rounds: Number(e.target.value) || 0 })} />
-              </Field>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Tries" hint="Attempts on the model above before the backup takes over.">
-                <Input type="number" min={1} value={draft.tries || 1}
-                       onChange={(e) => library.edit({ tries: Number(e.target.value) || 1 })} />
-              </Field>
-              <Field
-                label="Tries on the backup"
+                label="Backup retries"
                 hint={draft.backup_preset
                   ? "Attempts on the backup after that."
-                  : "Ignored without a backup model — the agent simply gets the tries above."}
+                  : "Ignored without a backup model — the agent simply gets the retries above."}
               >
                 <Input type="number" min={0} disabled={!draft.backup_preset}
                        value={draft.backup_tries ?? 0}
@@ -174,6 +158,14 @@ export function AgentsEditor() {
                          backup_tries: Number(e.target.value) || 0 })} />
               </Field>
             </div>
+
+            <Field
+              label="Tool rounds"
+              hint="Reads, writes or commands per attempt before it must report. 0 uses the default."
+            >
+              <Input type="number" min={0} className="w-28" value={draft.tool_rounds || ""}
+                     onChange={(e) => library.edit({ tool_rounds: Number(e.target.value) || 0 })} />
+            </Field>
 
             <section className="space-y-1">
               <div className="text-xs font-medium text-muted">Capabilities</div>
@@ -224,6 +216,14 @@ export function AgentsEditor() {
               checked={draft.verifier}
               onChange={(event) => library.edit({ verifier: event.target.checked })}
             />
+
+            <Field
+              label="Description"
+              hint="One line. The orchestrator reads exactly this when deciding which agent gets a step — it never sees the system prompt below."
+            >
+              <Input value={draft.description}
+                     onChange={(e) => library.edit({ description: e.target.value })} />
+            </Field>
 
             <Field label="System prompt">
               <Textarea rows={12} className="font-code" value={draft.system_prompt}
