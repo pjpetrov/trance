@@ -1331,6 +1331,47 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             })
         return {"reviews": out}
 
+    @app.get("/api/sessions/{session_id}/messages/{message_id}/commits")
+    def commits_for_message(session_id: str, message_id: str):
+        """What came of one thing the orchestrator said it would do.
+
+        A request becomes a plan, the plan becomes a run, and the run becomes
+        commits — and until now the only way back from the last to the first
+        was to remember. The reply records where the code stood when it was
+        written; the range ends at the next reply that proposed something, so
+        two requests in one session do not claim each other's work.
+        """
+        session = _need(store, session_id)
+        message = next((m for m in session.chat if m.id == message_id), None)
+        if message is None:
+            raise HTTPException(404, "no such message")
+
+        root = Path(session.project_dir).expanduser()
+        proposals = [m for m in session.chat if m.base]
+        after = ""
+        for earlier, later in zip(proposals, proposals[1:]):
+            if earlier.id == message_id:
+                after = later.base
+                break
+        head = vcs.head(root) if vcs.is_repo(root) else ""
+        after = after or head
+
+        steps = [step.to_dict() for step in session.flow.steps
+                 if step.id in (message.steps or [])]
+        pending = [s for s in steps if s["status"] not in Flow.TERMINAL]
+        return {
+            "message": {"id": message.id, "role": message.role,
+                        "content": message.content, "ts": message.ts},
+            "base": message.base,
+            "after": after,
+            "steps": steps,
+            "still_to_run": len(pending),
+            "commits": (vcs.commits_between(root, message.base, after)
+                        if message.base and after else []),
+            "files": (vcs.changed_between(root, message.base, after)
+                      if message.base and after else []),
+        }
+
     @app.get("/api/sessions/{session_id}/commit/{sha}")
     def show_commit(session_id: str, sha: str):
         """One commit of this project: its message, its stat, its patch."""
@@ -1748,8 +1789,17 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             # to delete every finished step and its history with it — the
             # orchestrator is proposing what to do next, not editing what
             # already happened.
+            was = {step.id for step in session.flow.steps}
             change = session.flow.keep_finished(
                 [Step.from_dict(s) for s in proposal["steps"]])
+            # Pin the reply to the code as it stands. Everything committed from
+            # here until the next proposal is what this answer turned into, so
+            # "show me what came of this" is a range rather than a guess.
+            reply = session.chat[-1]
+            reply.steps = [step.id for step in session.flow.steps
+                           if step.id not in was]
+            root = Path(session.project_dir).expanduser()
+            reply.base = vcs.head(root) if vcs.is_repo(root) else ""
             # Not while it is running. The orchestrator can propose more work
             # in the middle of a run, and saying "ready" then told the page
             # nothing was running: it offered Start, and Start answered 409

@@ -18,8 +18,9 @@ import { PlanScreen } from "@/screens/PlanScreen";
 import { RunScreen } from "@/screens/RunScreen";
 import { FilesScreen } from "@/screens/FilesScreen";
 import { ReviewsScreen } from "@/screens/ReviewsScreen";
+import { CommitsScreen } from "@/screens/CommitsScreen";
 import { Modals } from "@/modals/Modals";
-import type { SessionStatus } from "@/api/types";
+import type { SessionStatus, StepStatus } from "@/api/types";
 
 const SCREENS: { id: Screen; label: string }[] = [
   { id: "home", label: "Chat" },
@@ -31,6 +32,19 @@ const SCREENS: { id: Screen; label: string }[] = [
 
 /** One place deciding what a status looks like, so the dot in the picker and
  *  the badge in the bar can never disagree. */
+/** A step's status has its own set of words, and reading one map against the
+ *  other silently gives every pending step the colour of an error. */
+export function stepTone(status: StepStatus | undefined): Tone {
+  switch (status) {
+    case "running": return "accent";
+    case "done": return "ok";
+    case "failed":
+    case "halted": return "err";
+    case "skipped": return "warn";
+    default: return "neutral";
+  }
+}
+
 export function statusTone(status: SessionStatus | undefined): Tone {
   switch (status) {
     case "running": return "accent";
@@ -84,6 +98,7 @@ export function Shell({ socket }: { socket: SocketState }) {
           : screen === "plan" ? <PlanScreen />
           : screen === "run" ? <RunScreen />
           : screen === "reviews" ? <ReviewsScreen />
+          : screen === "commits" ? <CommitsScreen />
           : <FilesScreen />}
       </main>
 

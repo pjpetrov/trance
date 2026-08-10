@@ -9,7 +9,8 @@
 
 import type {
   AgentRole, AppConfig, CommandLists, FileListing, Flow, Loop, ModelPreset,
-  Planning, Preview, ReviewChanges, ReviewComment, Session, Step, TranceEvent, Usage,
+  MessageCommits, Planning, Preview, ReviewChanges, ReviewComment, Session, Step,
+  TranceEvent, Usage,
 } from "./types";
 
 export class ApiError extends Error {
@@ -244,6 +245,9 @@ export const api = {
     request<{ reviews: ReviewRound[] }>(`/api/sessions/${id(sid)}/reviews`),
   reviewChanges: (sid: string) =>
     request<ReviewChanges>(`/api/sessions/${id(sid)}/review/changes`),
+  messageCommits: (sid: string, messageId: string) =>
+    request<MessageCommits>(
+      `/api/sessions/${id(sid)}/messages/${id(messageId)}/commits`),
   commit: (sid: string, sha: string) =>
     request<Commit & { stat: string; diff: string; clipped: boolean }>(
       `/api/sessions/${id(sid)}/commit/${id(sha)}`),

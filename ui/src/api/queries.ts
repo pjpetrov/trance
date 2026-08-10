@@ -40,6 +40,8 @@ export const keys = {
   preview: (id: string) => ["preview", id] as const,
   reviews: (id: string) => ["reviews", id] as const,
   reviewChanges: (id: string) => ["review-changes", id] as const,
+  messageCommits: (id: string, messageId: string) =>
+    ["messageCommits", id, messageId] as const,
   commit: (id: string, sha: string) => ["commit", id, sha] as const,
 };
 
@@ -224,6 +226,16 @@ export function useReviews(sessionId: string | null, enabled = true) {
     queryKey: keys.reviews(sessionId ?? ""),
     queryFn: async () => (await api.reviews(sessionId!)).reviews,
     enabled: Boolean(sessionId) && enabled,
+  });
+}
+
+/** What one request turned into. Refetched while its steps are still running,
+ *  because the commits arrive one per step as the run goes. */
+export function useMessageCommits(sessionId: string | null, messageId: string | null) {
+  return useQuery({
+    queryKey: keys.messageCommits(sessionId ?? "", messageId ?? ""),
+    queryFn: () => api.messageCommits(sessionId!, messageId!),
+    enabled: Boolean(sessionId && messageId),
   });
 }
 

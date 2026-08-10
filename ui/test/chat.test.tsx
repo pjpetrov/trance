@@ -69,7 +69,7 @@ describe("the chat composer", () => {
   it("shows screenshots that came back with the conversation", async () => {
     fakeServer(routes({
       "/api/sessions/s1": session({
-        chat: [{ role: "user", content: "look at this",
+        chat: [{ id: "m1", role: "user", content: "look at this",
                  images: ["chat/abc123.png"] }],
       }),
     }));

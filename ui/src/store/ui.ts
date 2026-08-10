@@ -8,7 +8,7 @@
 
 import { create } from "zustand";
 
-export type Screen = "home" | "plan" | "run" | "files" | "reviews";
+export type Screen = "home" | "plan" | "run" | "files" | "reviews" | "commits";
 export type Modal =
   | "settings" | "agents" | "models" | "loops" | "commands" | "memory" | null;
 
@@ -34,6 +34,10 @@ interface UiStore {
   consoleStep: string | null;
   /** The file open in the Files screen. */
   filePath: string | null;
+  /** The orchestrator reply whose commits the Commits screen is showing. A
+   *  request leads to a plan, a run and then commits, and this is the thread
+   *  back: it is set by pressing "what came of this" on the reply itself. */
+  commitsFor: string | null;
 
   selectSession: (id: string | null) => void;
   go: (screen: Screen) => void;
@@ -44,6 +48,7 @@ interface UiStore {
   toggleReads: () => void;
   toggleHideFinished: () => void;
   openFile: (path: string | null) => void;
+  showCommitsFor: (messageId: string) => void;
 }
 
 export const useUi = create<UiStore>((set) => ({
@@ -56,12 +61,14 @@ export const useUi = create<UiStore>((set) => ({
   hideFinished: false,
   consoleStep: null,
   filePath: null,
+  commitsFor: null,
 
   // Switching session must drop everything scoped to the old one. Leaving the
   // open file and console scope behind is how the Files pane used to show the
   // previous project's code under the new project's name.
   selectSession: (id) => set({
     sessionId: id, openStep: null, consoleStep: null, filePath: null,
+    commitsFor: null,
   }),
   go: (screen) => set({ screen }),
   openModal: (modal) => set({ modal }),
@@ -71,4 +78,5 @@ export const useUi = create<UiStore>((set) => ({
   toggleReads: () => set((s) => ({ showReads: !s.showReads })),
   toggleHideFinished: () => set((s) => ({ hideFinished: !s.hideFinished })),
   openFile: (filePath) => set({ filePath }),
+  showCommitsFor: (commitsFor) => set({ commitsFor, screen: "commits" }),
 }));

@@ -16,7 +16,7 @@ import { Badge, Button, Dot, Empty, Field, Input, Panel, PanelHeader, Textarea }
 import { toast } from "@/components/Toaster";
 
 export function HomeScreen() {
-  const { sessionId, selectSession, go } = useUi();
+  const { sessionId, selectSession, go, showCommitsFor } = useUi();
   const [removing, setRemoving] = useState<{ id: string; name: string;
                                              dir: string } | null>(null);
   const [alsoFiles, setAlsoFiles] = useState(false);
@@ -148,6 +148,15 @@ export function HomeScreen() {
                 {message.role === "user" ? "you" : "orchestrator"}
               </div>
               <p className="whitespace-pre-wrap">{message.content}</p>
+              {/* Only a reply that proposed work has a base, and only that has
+                  anything to show: the commits between it and the next
+                  request. */}
+              {message.base && (
+                <Button
+                  size="sm" className="mt-2"
+                  onClick={() => showCommitsFor(message.id)}
+                >what came of this →</Button>
+              )}
               {(message.images ?? []).length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {message.images!.map((shot) => (

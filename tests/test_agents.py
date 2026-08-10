@@ -7290,6 +7290,119 @@ def test_the_socket_carries_what_happens_next_not_what_already_did(tmp_path):
     assert body["events"][-1]["payload"]["name"] == f"call_{app_module.CONSOLE_TAIL + 49}"
 
 
+def test_a_reply_carries_the_work_it_turned_into(tmp_path, monkeypatch):
+    """A request becomes a plan, the plan becomes a run, the run becomes
+    commits — and the only way back from the last to the first was to remember
+    which conversation had caused what."""
+    import subprocess
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+    from trance.agents import orchestrator as orchestrator_agent
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    def git(*args):
+        subprocess.run(["git", *args], cwd=project, check=True,
+                       capture_output=True)
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (project / "a.txt").write_text("one")
+    git("add", "-A")
+    git("commit", "-qm", "before the request")
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    monkeypatch.setattr(orchestrator_agent, "chat", lambda **_kw: {
+        "text": "I will add the level select.",
+        "proposal": {"summary": "a game", "team": ["frontend"], "requirements": [],
+                     "steps": [{"role": "frontend", "task": "add level select"}]},
+    })
+    client.post(f"/api/sessions/{sid}/chat", json={"message": "add a level select"})
+
+    session = app.state.store.get(sid)
+    reply = session.chat[-1]
+    assert reply.role == "orchestrator"
+    assert reply.base                      # where the code stood when it said so
+    assert len(reply.steps) == 1           # and what it asked for
+
+    # The run happens: one commit per step, as the engine writes them.
+    (project / "a.txt").write_text("two")
+    git("add", "a.txt")          # not -A: .trance is trance's, not the project's
+    git("commit", "-qm", "frontend: add level select")
+
+    body = client.get(f"/api/sessions/{sid}/messages/{reply.id}/commits").json()
+    assert [c["subject"] for c in body["commits"]] == ["frontend: add level select"]
+    assert body["files"] == ["a.txt"]
+    assert body["still_to_run"] == 1       # the step has not run yet in this test
+    assert body["message"]["content"] == "I will add the level select."
+
+
+def test_two_requests_do_not_claim_each_others_commits(tmp_path, monkeypatch):
+    """Both ranges end where the next request begins. Without that, the first
+    reply in a long session would claim every commit that followed it."""
+    import subprocess
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+    from trance.agents import orchestrator as orchestrator_agent
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    def git(*args):
+        subprocess.run(["git", *args], cwd=project, check=True, capture_output=True)
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (project / "a.txt").write_text("one")
+    git("add", "-A")
+    git("commit", "-qm", "start")
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(project)}).json()["id"]
+
+    def proposing(task):
+        return lambda **_kw: {"text": f"I will {task}.", "proposal": {
+            "summary": "a game", "team": ["frontend"], "requirements": [],
+            "steps": [{"role": "frontend", "task": task}]}}
+
+    monkeypatch.setattr(orchestrator_agent, "chat", proposing("do the first thing"))
+    client.post(f"/api/sessions/{sid}/chat", json={"message": "first"})
+    session = app.state.store.get(sid)
+    first = session.chat[-1]
+
+    (project / "a.txt").write_text("two")
+    git("add", "-A")
+    git("commit", "-qm", "frontend: the first thing")
+
+    monkeypatch.setattr(orchestrator_agent, "chat", proposing("do the second thing"))
+    client.post(f"/api/sessions/{sid}/chat", json={"message": "second"})
+    second = session.chat[-1]
+
+    (project / "a.txt").write_text("three")
+    git("add", "-A")
+    git("commit", "-qm", "frontend: the second thing")
+
+    mine = client.get(f"/api/sessions/{sid}/messages/{first.id}/commits").json()
+    theirs = client.get(f"/api/sessions/{sid}/messages/{second.id}/commits").json()
+    assert [c["subject"] for c in mine["commits"]] == ["frontend: the first thing"]
+    assert [c["subject"] for c in theirs["commits"]] == ["frontend: the second thing"]
+
+
 def test_pressing_start_says_so_at_once(tmp_path):
     """The console only draws events that carry a message, and run_started did
     not — so pressing Start printed nothing, and the first line arrived whenever

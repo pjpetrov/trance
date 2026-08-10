@@ -170,9 +170,16 @@ export interface Progress {
 // --------------------------------------------------------------- session
 
 export interface ChatMessage {
+  /** Addressable, so a reply can be pointed at from elsewhere. */
+  id: string;
   role: "user" | "orchestrator" | string;
   content: string;
   ts?: string;
+  /** On an orchestrator reply that proposed work: where the code stood when it
+   *  said so. Its presence is what makes "show me what came of this" offerable. */
+  base?: string;
+  /** The steps that reply added, by id. */
+  steps?: string[];
   /** Screenshots attached to this message, as paths under .trance/shots. */
   images?: string[];
 }
@@ -208,6 +215,17 @@ export interface Session {
   progress: Progress;
   /** Keyed by role name. */
   resolved_models: Record<string, ResolvedModel>;
+}
+
+/** What one request turned into: the steps it added and the commits they made. */
+export interface MessageCommits {
+  message: { id: string; role: string; content: string; ts: string };
+  base: string;
+  after: string;
+  steps: Step[];
+  still_to_run: number;
+  commits: { sha: string; short: string; subject: string; when: string; who: string }[];
+  files: string[];
 }
 
 // ---------------------------------------------------------------- events

@@ -29,6 +29,15 @@ class ChatMessage:
     #: describing one in words is work the user should not have to do.
     images: list[str] = field(default_factory=list)
     ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    #: Addressable, so a reply can be pointed at from elsewhere — the commits
+    #: its plan produced, for one.
+    id: str = field(default_factory=lambda: f"m_{uuid.uuid4().hex[:10]}")
+    #: For an orchestrator reply that proposed work: where the code stood when
+    #: it said so. Everything committed after this, up to the next proposal, is
+    #: what that reply turned into.
+    base: str = ""
+    #: The steps that reply added, by id.
+    steps: list[str] = field(default_factory=list)
 
 
 @dataclass

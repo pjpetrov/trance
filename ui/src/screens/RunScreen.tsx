@@ -17,15 +17,11 @@ import { currentRun, isLookup, splitIntoBlocks, splitIntoRuns, tallyOf, type Blo
   from "@/lib/runs";
 import { EventLine } from "@/components/EventLine";
 import { ContextGauge } from "@/components/ContextGauge";
-import { Badge, Button, Dot, Empty, Input, Panel, PanelHeader, Spinner, type Tone }
+import { Badge, Button, Dot, Empty, Input, Panel, PanelHeader, Spinner }
   from "@/components/ui/primitives";
+import { stepTone } from "@/components/Shell";
 import { toast } from "@/components/Toaster";
-import type { Step, StepStatus, TranceEvent } from "@/api/types";
-
-const STEP_TONE: Record<StepStatus, Tone> = {
-  pending: "neutral", running: "accent", done: "ok",
-  failed: "err", halted: "err", skipped: "warn",
-};
+import type { Step, TranceEvent } from "@/api/types";
 
 export function RunScreen() {
   const { sessionId, openStep, setOpenStep } = useUi();
@@ -206,7 +202,7 @@ function StepRow(
                        open ? "bg-panel-2 ring-1 ring-accent/40" : "hover:bg-panel-2")}>
       <button onClick={onSelect} className="flex w-full items-start gap-2 px-2 py-1.5 text-left">
         <span className="mt-1">
-          <Dot tone={STEP_TONE[step.status]} pulse={step.status === "running"} />
+          <Dot tone={stepTone(step.status)} pulse={step.status === "running"} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs text-muted">
