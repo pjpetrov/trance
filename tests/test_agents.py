@@ -8151,6 +8151,66 @@ def test_the_last_word_of_a_turn_still_carries_the_context_gauge(tmp_path, monke
     assert all(call.payload.get("context") for call in calls)
 
 
+def test_the_history_says_which_calls_had_thinking_on(tmp_path, monkeypatch):
+    """Reading an empty reply and working out whether thinking was even on meant
+    finding a thinking_overran event some rounds earlier and assuming it still
+    held. It is one boolean; record it on the calls it describes."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    calls, seen = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _Thinker:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            calls.append(extra_body)
+            if len(calls) == 1:
+                return ChatResponse(text="", finish_reason="length", reasoning="…at length")
+            return ChatResponse(text="Done.\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _Thinker())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(kind="llamacpp", max_tokens=600), bus=bus,
+                     session_id="s", step_id="st")
+
+    waiting = [e for e in seen if e.type == "model_waiting"]
+    assert waiting[0].payload["thinking"] is True          # the first try, as normal
+    assert "thinking off" not in waiting[0].payload["message"]
+    # The call that answered is the retry, and it had thinking off.
+    assert [e for e in seen if e.type == "model_call"][-1].payload["thinking"] is False
+
+
+def test_a_backend_we_do_not_set_thinking_on_does_not_claim_a_state(tmp_path, monkeypatch):
+    """Only llama.cpp and vLLM take the toggle. Reporting "thinking: on" for
+    Anthropic would be inventing a setting nobody chose."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+
+    class _Cloud:
+        def complete(self, messages, tools=None, cancel_token="", **_kw):
+            return ChatResponse(text="Done.\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda config: _Cloud())
+    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+                     config=ModelConfig(kind="anthropic"), bus=bus,
+                     session_id="s", step_id="st")
+
+    for event in seen:
+        if event.type in ("model_call", "model_waiting"):
+            assert "thinking" not in event.payload
+
+
 def test_the_thinking_that_was_paid_for_is_kept(tmp_path, monkeypatch):
     """It is the most useful record of why the round went the way it did."""
     from trance.agents.roles import BUILTIN_ROLES

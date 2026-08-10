@@ -85,7 +85,12 @@ function describe(event: TranceEvent, sessionId: string): Rendered {
       iconTone: "text-purple",
       label: (
         <span>
-          <span className="text-muted">thinking</span>{" "}
+          {/* The word was hard-coded, which made every call look like a
+              thinking one — including the ones sent with thinking off to
+              recover a round it had spent entirely on reasoning. */}
+          {payload.thinking === false
+            ? <span className="text-warn/80">no thinking</span>
+            : <span className="text-muted">thinking</span>}{" "}
           {wants
             ? <>→ <span className="text-accent">{wants}</span></>
             : <span className="text-fg/80">{clip(payload.response_text, 90)}</span>}
@@ -367,6 +372,11 @@ function ModelCallBody({ event, sessionId }: { event: TranceEvent; sessionId: st
           ["out", payload.usage?.completion_tokens],
           ["ms", payload.duration_ms],
           ["finish", payload.finish_reason],
+          // Absent on backends whose thinking we do not set, rather than
+          // reported as "on" for a setting nobody chose.
+          ...(payload.thinking === undefined
+            ? []
+            : [["thinking", payload.thinking ? "on" : "off"] as [string, unknown]]),
         ]}
       />
 

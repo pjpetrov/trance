@@ -19,8 +19,11 @@ const CONTEXT = {
   percent: 32, estimated: true,
 };
 
+// Unique per event: React drops children that share a key, so a fixture that
+// hands out one id can quietly render fewer lines than the test asked for.
+let nth = 0;
 const event = (type: string, payload: Record<string, unknown>): TranceEvent => ({
-  id: `${type}-1`, type, session_id: "s1", step_id: "st1",
+  id: `${type}-${(nth += 1)}`, type, session_id: "s1", step_id: "st1",
   ts: new Date().toISOString(), agent: "frontend", payload,
 });
 
@@ -78,6 +81,22 @@ describe("the console header", () => {
     renderWithQuery(<RunScreen />);
     await waitFor(() => expect(screen.getByText("32%")).toBeInTheDocument());
     expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument();
+  });
+
+  it("marks the calls that went out with thinking off", async () => {
+    running([
+      event("model_call", { preset: "Qwen", round: 1, thinking: true,
+                            tool_calls: [{ name: "read_file", arguments: {} }] }),
+      event("model_call", { preset: "Qwen", round: 2, thinking: false,
+                            response_text: "Right, done." }),
+      event("model_call", { preset: "Qwen", round: 3, response_text: "no toggle here" }),
+    ]);
+
+    renderWithQuery(<RunScreen />);
+    // Every call used to read "thinking", including the ones sent without it.
+    expect(await screen.findByText("no thinking")).toBeInTheDocument();
+    // And a backend whose thinking trance does not set is not called either way.
+    expect(screen.getAllByText("thinking")).toHaveLength(2);
   });
 
   it("shows nothing at all before any model has been called", async () => {

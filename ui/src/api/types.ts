@@ -309,6 +309,11 @@ export interface EventPayload {
   reasoning?: string;
   tool_calls?: { name: string; arguments: Record<string, unknown> }[];
   finish_reason?: string;
+  /** True when the call went out with thinking on. Absent on backends whose
+   *  thinking trance does not set — an unset toggle is not an off one. */
+  thinking?: boolean;
+  /** The round happened because the tool rounds ran out. */
+  out_of_rounds?: boolean;
   usage?: CallUsage;
   summary?: { message_count?: number; est_tokens?: number };
   /** model_waiting: the gauge, sized before the answer exists */

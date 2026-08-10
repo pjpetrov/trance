@@ -555,12 +555,15 @@ def _run_agent(
         # one generation and emits nothing while it does, so the console went
         # quiet and there was no way to tell working from stuck. The matching
         # model_call arrives when it answers.
+        thinking = _thinking_state(model_config, stopped_thinking)
         bus.emit("model_waiting", session_id, agent=role.name, step_id=step_id, payload={
             "round": round_n,
             "model": model_config.model,
             "preset": model_config.preset,
             "context": turn.context or context_usage(messages, None, model_config),
-            "message": f"waiting for {model_config.preset or model_config.model}",
+            "message": (f"waiting for {model_config.preset or model_config.model}"
+                        + ("" if thinking.get("thinking", True) else " · thinking off")),
+            **thinking,
         })
         try:
             response = client.complete(
@@ -611,6 +614,7 @@ def _run_agent(
                 # The same gauge the waiting event carried, now with the count
                 # the model reported rather than an estimate of it.
                 "context": turn.context,
+                **_thinking_state(model_config, stopped_thinking),
                 "summary": summarize_messages(messages),
             },
         )
@@ -830,6 +834,7 @@ def _run_agent(
                      "finish_reason": response.finish_reason or "max_rounds",
                      "usage": response.usage, "preset": model_config.preset,
                      "context": turn.context,
+                     **_thinking_state(model_config, stopped_thinking),
                      "summary": summarize_messages(messages)},
         )
         turn.model_event_ids.append(event.id)
@@ -875,6 +880,7 @@ def _run_agent(
             "tool_calls": [], "finish_reason": follow_up.finish_reason,
             "usage": follow_up.usage, "preset": model_config.preset,
             "context": turn.context,
+            **_thinking_state(model_config, stopped_thinking),
             "summary": summarize_messages(messages),
             "asked_for_outcome": True,
         })
@@ -907,6 +913,19 @@ def _run_agent(
 #: Backends whose chat template takes `enable_thinking`. Only these can be
 #: asked to stop, and only these get the retry below.
 THINKING_TOGGLE_KINDS = ("llamacpp", "vllm")
+
+
+def _thinking_state(config, stopped_thinking: bool) -> dict:
+    """Whether this call went out with thinking on — for the backends we set it.
+
+    Recorded because it is the first thing you want when a reply comes back
+    empty, and reconstructing it from a `thinking_overran` event several rounds
+    earlier is guesswork. Absent for the rest: reporting a state we never set
+    would be worse than saying nothing.
+    """
+    if (getattr(config, "kind", "") or "") not in THINKING_TOGGLE_KINDS:
+        return {}
+    return {"thinking": not stopped_thinking}
 
 
 def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_id,
