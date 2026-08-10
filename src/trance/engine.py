@@ -836,6 +836,7 @@ class FlowEngine:
                 goal=self.session.goal, requirements=self.session.requirements,
                 approve=self.approve, reindex=self._reindex,
                 steering_inbox=step.take_steering,
+                verdict_required=True,
             )
             verdict = turn.verdict or "UNKNOWN"
             result = GateResult(

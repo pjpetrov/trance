@@ -9363,3 +9363,138 @@ def test_a_loop_node_is_checked_by_what_the_node_names(tmp_path, monkeypatch):
     engine._run_check(step, Attempt(n=1), chain=["factchecker"])
 
     assert asked == ["factchecker"]
+
+
+# ================================ a check's verdict survives the turn it is in
+
+def test_the_memory_nudge_does_not_swallow_the_verdict(tmp_path, monkeypatch):
+    """Measured on a real run: a regression check ran the suite, wrote
+    VERDICT: PASS, was then asked whether anything had to be remembered, and
+    the answer to *that* became the turn's report. Eighty-seven green tests
+    were filed as a step nobody could verify."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    replies = iter([
+        ChatResponse(text="", finish_reason="tool_calls",
+                     tool_calls=[ToolCall(id="c1", name="list_files", arguments={})]),
+        ChatResponse(text="All 87 tests pass.\n\nVERDICT: PASS", finish_reason="stop"),
+        ChatResponse(text="No new facts to record.\n\nOUTCOME: SUCCESS",
+                     finish_reason="stop"),
+    ])
+
+    class Model:
+        def complete(self, messages, tools=None, **kwargs):
+            return next(replies)
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    # A worker, so the nudge is offered at all.
+    worker = AgentRole(name="builder", title="Builder", description="d",
+                       system_prompt="p", paths=["**"], toolsets=["files"])
+    turn = run_agent(role=worker, task="t", project=project, config=ModelConfig(),
+                     bus=EventBus(), session_id="s", step_id="st")
+
+    assert turn.verdict == "PASS"
+    assert "All 87 tests pass." in turn.text
+
+
+def test_a_check_is_not_asked_to_remember_anything(tmp_path, monkeypatch):
+    """It made no decisions — it read someone else's work. The nudge costs a
+    model call to be told "nothing to record", and its reply is what used to
+    land where the verdict should be."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    calls = {"n": 0}
+
+    class Model:
+        def complete(self, messages, tools=None, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return ChatResponse(text="", finish_reason="tool_calls", tool_calls=[
+                    ToolCall(id="c1", name="list_files", arguments={})])
+            return ChatResponse(text="Suite is green.\n\nVERDICT: PASS",
+                                finish_reason="stop")
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    gate = AgentRole(name="regression", title="Regression check", description="d",
+                     system_prompt="p", paths=[], toolsets=["files"], verifier=True)
+    turn = run_agent(role=gate, task="check it", project=project, config=ModelConfig(),
+                     bus=EventBus(), session_id="s", step_id="st", verdict_required=True)
+
+    assert turn.verdict == "PASS"
+    assert calls["n"] == 2          # the tool round and the answer. No nudge.
+
+
+def test_a_check_with_no_verdict_is_asked_for_one(tmp_path, monkeypatch):
+    """The same one short question that a missing OUTCOME already gets. An
+    unreadable check blocks the step, which is the weight of work that failed —
+    too much to spend on a model that ended with the wrong word."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = {}
+    replies = iter([
+        ChatResponse(text="Everything looks fine.\n\nOUTCOME: SUCCESS", finish_reason="stop"),
+        ChatResponse(text="VERDICT: PASS", finish_reason="stop"),
+    ])
+
+    class Model:
+        def complete(self, messages, tools=None, **kwargs):
+            seen["last"] = messages[-1]["content"]
+            return next(replies)
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    gate = AgentRole(name="factchecker", title="Fact check", description="d",
+                     system_prompt="p", paths=[], toolsets=["files"], verifier=True)
+    turn = run_agent(role=gate, task="check it", project=project, config=ModelConfig(),
+                     bus=EventBus(), session_id="s", step_id="st", verdict_required=True)
+
+    assert "VERDICT: PASS" in seen["last"] or "verdict line" in seen["last"]
+    assert turn.verdict == "PASS"
+
+
+def test_a_worker_is_not_asked_for_a_verdict(tmp_path, monkeypatch):
+    """It is not checking anything. Asking would teach it to end with a line
+    the engine reads as a check on somebody else's work."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    calls = {"n": 0}
+
+    class Model:
+        def complete(self, messages, tools=None, **kwargs):
+            calls["n"] += 1
+            return ChatResponse(text="Wrote the file.\n\nOUTCOME: SUCCESS",
+                                finish_reason="stop")
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    run_agent(role=AgentRole(name="b", title="B", description="d", system_prompt="p",
+                             paths=["**"], toolsets=["files"]),
+              task="t", project=project, config=ModelConfig(), bus=EventBus(),
+              session_id="s", step_id="st")
+    assert calls["n"] == 1

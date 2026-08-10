@@ -433,6 +433,11 @@ def _run_agent(
     approve=None,
     reindex=None,
     steering_inbox=None,
+    #: This turn is a check on someone else's work, so its answer is a VERDICT
+    #: line. Two things follow: it is not asked to record decisions — it made
+    #: none — and a reply without a verdict is worth one short question rather
+    #: than an unverified step.
+    verdict_required: bool = False,
     _opened: list | None = None,
 ) -> AgentTurn:
     model_config = config
@@ -535,6 +540,8 @@ def _run_agent(
     turn = AgentTurn(text="")
     totals = {"input_tokens": 0, "output_tokens": 0}
     asked_to_remember = False
+    #: The answer given just before the memory nudge, until the turn ends.
+    report = ""
     #: Lookup key -> the tool message holding its result, so a repeat can point
     #: at it instead of duplicating it.
     seen_lookups: dict[tuple, dict] = {}
@@ -735,18 +742,33 @@ def _run_agent(
             # whether anything it just did has to reach the next agent — asking
             # after the step is over is too late, and asking every round would
             # train it to say no.
-            if _should_ask_to_remember(turn, role, asked_to_remember):
+            if not verdict_required and _should_ask_to_remember(
+                    turn, role, asked_to_remember):
                 asked_to_remember = True
+                # The report it just gave, kept. The nudge produces another
+                # reply, and taking the last one as the answer threw away the
+                # first: a regression check that had written VERDICT: PASS came
+                # back "No new facts to record", so 87 green tests were filed as
+                # a step nobody could verify.
+                report = response.text
+                # Not the reply again. Echoing it printed the agent's answer
+                # twice in the console, once under the model's name and once
+                # under the preset's, which reads as two calls.
                 bus.emit("model_call", session_id, agent=role.name, step_id=step_id,
                          payload={"round": round_n, "model": model_config.model,
-                                  "asked_to_remember": True,
-                                  "messages": [], "response_text": response.text,
+                                  "preset": model_config.preset,
+                                  "asked_to_remember": True, "messages": [],
+                                  "response_text": ("(asked whether anything here has "
+                                                    "to reach the next agent)"),
                                   "tool_calls": [], "usage": {}, "summary": {}})
                 messages.append(response.replay())
                 messages.append({"role": "user",
                                  "content": _remember_prompt(turn, memory)})
                 continue
             turn.stop_reason = response.finish_reason
+            if report and response.text.strip() != report.strip():
+                turn.text = f"{report}\n\n{response.text}".strip()
+                report = ""
             break
 
         # A provider that returned no assistant message would otherwise put an
@@ -966,6 +988,47 @@ def _run_agent(
                 if silent else
                 "\n\nOUTCOME: FAILED — the agent was asked twice and never stated "
                 "SUCCESS or FAILED, so there is no readable result for this step.")
+
+    # A check whose verdict cannot be read is a step nobody can sign off, and
+    # the engine records that as blocked — the same weight as work that failed.
+    # One short question is cheaper than a person going to read the transcript.
+    if turn.stop_reason not in ("cancelled",) and verdict_required and turn.verdict is None:
+        messages.append({
+            "role": "user",
+            "content": (
+                "You did not end with a verdict line. You are checking someone else's "
+                "work, so that line is the whole answer. Reply with exactly one line "
+                "and nothing else:\n"
+                "  VERDICT: PASS\n"
+                "  VERDICT: FAIL — <what is wrong>\n"
+                "OUTCOME is not it: that is for the agent doing the work. If what you "
+                "found was fine, that is PASS."),
+        })
+        messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
+        try:
+            answer, stopped_thinking = _ask_without_tools(
+                client, messages, config=model_config, bus=bus, session_id=session_id,
+                role=role, step_id=step_id, round_n=turn.rounds + 2,
+                stopped_thinking=stopped_thinking)
+        except Cancelled:
+            turn.stop_reason = "cancelled"
+            return turn
+        totals["input_tokens"] += answer.usage.get("prompt_tokens", 0)
+        totals["output_tokens"] += answer.usage.get("completion_tokens", 0)
+        turn.context = context_usage(messages, answer, model_config)
+        bus.emit("model_call", session_id, agent=role.name, step_id=step_id, payload={
+            "round": turn.rounds + 2, "model": model_config.model,
+            "base_url": model_config.base_url, "messages": messages,
+            "response_text": answer.text, "reasoning": answer.reasoning,
+            "tool_calls": [], "finish_reason": answer.finish_reason,
+            "usage": answer.usage, "preset": model_config.preset,
+            "context": turn.context,
+            **_thinking_state(model_config, stopped_thinking),
+            "summary": summarize_messages(messages),
+            "asked_for_verdict": True,
+        })
+        if answer.text.strip():
+            turn.text = f"{turn.text}\n\n{answer.text.strip()}"
 
     turn.usage = totals
     return turn
