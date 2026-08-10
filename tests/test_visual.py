@@ -1026,3 +1026,71 @@ def test_numbering_stays_readable_across_turns(tmp_path):
     VisualSession(tmp_path, step_id="st1").save(b"b")
     third = VisualSession(tmp_path, step_id="st1").save(b"c")
     assert third.endswith("003.png"), third
+
+
+# ------------------------------------------------------------------- film
+
+def test_watch_is_offered_beside_look(tmp_path):
+    tools = AgentTools(tmp_path, _role())
+    names = {s["function"]["name"] for s in tools.specs()}
+    assert "watch" in names
+    brief = permissions_brief(_role())
+    assert "watch" in brief and "motion" in brief
+
+
+def test_a_film_reaches_the_vision_model_whole_and_the_ui_as_paths(tmp_path, monkeypatch):
+    """The point of the burst is that the model sees every frame — not the two
+    endpoints — and that the console can play the same frames back."""
+    from trance.agents import tools as tools_module
+
+    filmed = {"pngs": [b"png1", b"png2", b"png3"],
+              "shots": ["st/001.png", "st/002.png", "st/003.png"],
+              "frames": 120, "asked_frames": 120, "frames_between": 60,
+              "clipped": True, "motion": [0.2, 0.0], "moving": True}
+    sent = {}
+
+    class _Visual:
+        def film(self, frames, shots):
+            sent["asked"] = (frames, shots)
+            return dict(filmed)
+
+    def _sequence(pngs, question, config, *, checks, frames_between, cancel_token=""):
+        sent["pngs"] = list(pngs)
+        sent["question"] = question
+        return {"answer": "The sprite moves smoothly right. All frames consistent.",
+                "prompt": "p", "model": "m", "preset": "vlm", "usage": {"total_tokens": 9}}
+
+    monkeypatch.setattr("trance.vision.look_sequence", _sequence)
+    tools = AgentTools(tmp_path, _role(), vision_config=ModelConfig())
+    tools._visual = _Visual()
+
+    out = tools.call("watch", {"question": "does the player move right?",
+                               "frames": 120, "shots": 3})
+
+    assert out.ok is True
+    assert sent["pngs"] == [b"png1", b"png2", b"png3"]      # every frame, in order
+    assert out.detail["kind"] == "film"
+    assert out.detail["shots"] == ["st/001.png", "st/002.png", "st/003.png"]
+    assert out.detail["answer"].startswith("The sprite moves")
+    # The measured motion is stated even though a model also answered.
+    assert "changed in 1 of 2 intervals" in out.text
+
+
+def test_a_film_without_a_vision_model_still_reports_what_it_measured(tmp_path):
+    """No model is not no answer: the frames and the diffs are facts, and the
+    commonest question — did anything move at all — needs no model."""
+    class _Visual:
+        def film(self, frames, shots):
+            return {"pngs": [b"a", b"b"], "shots": ["st/001.png", "st/002.png"],
+                    "frames": 60, "asked_frames": 60, "frames_between": 60,
+                    "clipped": True, "motion": [0.0], "moving": False}
+
+    tools = AgentTools(tmp_path, _role(), vision_config=None)
+    tools._visual = _Visual()
+    out = tools.call("watch", {"question": "does it flicker?"})
+
+    assert out.ok is True
+    assert out.detail["kind"] == "film"
+    assert out.detail["moving"] is False
+    assert "No vision model" in out.text
+    assert "changed in 0 of 1 intervals" in out.text

@@ -9471,3 +9471,39 @@ def test_a_step_added_to_the_plan_comes_back_with_its_checks(tmp_path):
     body = client.put(f"/api/sessions/{sid}/flow",
                       json={"steps": [{"role": "frontend", "task": "add the level select"}]})
     assert body.json()["steps"][0]["checks"] == ["factchecker", "regression"]
+
+
+def test_a_generated_plan_arrives_with_the_agents_checks(tmp_path, monkeypatch):
+    """Generate walks a third path into the plan — the chat handler — and it
+    emits the proposed flow on the socket before any read. Seen live: an agent
+    carrying factchecker, reviewer, regression got a proposed step showing
+    factchecker alone until the page was reloaded."""
+    from fastapi.testclient import TestClient
+
+    from trance.agents import orchestrator
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/agents/frontend?session={sid}",
+               json={"checks": ["factchecker", "reviewer", "regression"]})
+
+    def _proposed(**kwargs):
+        return {"text": "here is the plan", "truncated": False, "proposal": {
+            "summary": "s", "team": ["frontend"], "requirements": [],
+            "steps": [{"role": "frontend", "loop": "", "task": "sync the sprite rotation",
+                       "check": "factchecker", "checks": ["factchecker"], "on_fail": None,
+                       "max_loops": 0, "points": 2}],
+        }}
+
+    monkeypatch.setattr(orchestrator, "chat", _proposed)
+    body = client.post(f"/api/sessions/{sid}/chat", json={"message": "fix the sprite"}).json()
+
+    step = body["flow"]["steps"][0]
+    assert step["checks"] == ["factchecker", "reviewer", "regression"]

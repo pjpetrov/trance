@@ -1906,6 +1906,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             was = {step.id for step in session.flow.steps}
             change = session.flow.keep_finished(
                 [Step.from_dict(s) for s in proposal["steps"]])
+            # The third door into the plan, and the one Generate walks through.
+            # The read and the edit already seed; without this the proposed
+            # steps go out on the socket carrying only the floor check, and the
+            # plan screen shows that until a full reload — which reads as the
+            # agent's checks being ignored.
+            seed_checks(session.flow, checks_for(session))
             # Pin the reply to the code as it stands. Everything committed from
             # here until the next proposal is what this answer turned into, so
             # "show me what came of this" is a range rather than a guess.

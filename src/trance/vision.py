@@ -94,6 +94,82 @@ def question_prompt(question: str, checks: list[str] | None = None) -> str:
     return "\n".join(parts)
 
 
+SEQUENCE_PREAMBLE = """You are inspecting a sequence of screenshots of a running web application, \
+taken in order at a fixed interval. Together they show how the screen changed \
+over time — motion, flicker, things appearing or disappearing.
+
+Answer in exactly this order:
+
+1. DESCRIBE — what is on screen, and what *changes* across the frames: what
+   moved, how far, anything that appears, disappears or flickers between
+   consecutive frames.
+2. CHECKS — answer each question below with YES or NO, and after each one state
+   which frames show the evidence.
+3. ANSWER — one or two sentences summarising whether what you see is acceptable.
+
+Judge only what the frames show. If something cannot be determined from these
+frames, say so."""
+
+
+def look_sequence(pngs: list[bytes], question: str, config: ModelConfig, *,
+                  checks: list[str] | None = None, frames_between: int = 0,
+                  cancel_token: str = "") -> dict:
+    """Send a run of screenshots as one question.
+
+    One image cannot show motion, and describing two endpoints to a model is
+    not the same as letting it see the five frames in between — a sprite that
+    flickers or drifts is invisible at the endpoints and obvious in the run.
+    """
+    kind = getattr(config, "kind", "") or "llamacpp"
+    if kind not in VISION_KINDS:
+        raise VisionUnavailable(
+            f"this agent's model ({config.preset or config.model}) speaks {kind!r}, which "
+            "cannot be sent an image. Give the agent a multimodal model to use the "
+            "browser toolset's look tool.")
+    pngs = [png for png in pngs if png]
+    if not pngs:
+        raise VisionUnavailable("there are no screenshots to look at")
+
+    spacing = (f"about {frames_between} animation frames"
+               f" (~{frames_between / 60:.2f}s) apart" if frames_between else "evenly spaced")
+    parts = [SEQUENCE_PREAMBLE, "",
+             f"{len(pngs)} frames follow, in order, {spacing}.", "",
+             "The question you are answering:", question.strip()]
+    if checks:
+        parts += ["", "Check each of these specifically:"]
+        parts += [f"  {n}. {check}" for n, check in enumerate(checks, 1)]
+    prompt = "\n".join(parts)
+
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for n, png in enumerate(pngs, 1):
+        content.append({"type": "text", "text": f"Frame {n} of {len(pngs)}:"})
+        content.append(image_block(png, kind))
+
+    if config.max_tokens < MIN_ANSWER_TOKENS:
+        config = replace(config, max_tokens=MIN_ANSWER_TOKENS)
+    client = client_for(config)
+    extra = dict(NO_THINKING) if kind in THINKING_TOGGLE_KINDS else None
+    kwargs = {"cancel_token": cancel_token}
+    if extra:
+        kwargs["extra_body"] = extra
+    response = client.complete([{"role": "user", "content": content}], **kwargs)
+    text = (response.text or "").strip()
+    if not text:
+        raise VisionUnavailable(
+            "the vision model returned an empty answer"
+            + (f" (finish_reason={response.finish_reason})" if response.finish_reason else "")
+            + (". Its whole output budget went to reasoning — raise max_tokens on this "
+               "model, or use one that can be told not to think."
+               if response.finish_reason == "length" else ""))
+    return {
+        "answer": text,
+        "prompt": prompt,
+        "model": config.model,
+        "preset": config.preset,
+        "usage": dict(getattr(response, "usage", None) or {}),
+    }
+
+
 def look(png: bytes, question: str, config: ModelConfig, *, checks: list[str] | None = None,
          cancel_token: str = "") -> dict:
     """Send one screenshot and one question. Returns the answer and what it cost."""

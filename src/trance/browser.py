@@ -519,6 +519,28 @@ class Browser:
                 "stalled": ran < frames, "probe": after,
                 "png_before": shot_before, "png_after": self._safe_shot(after)}
 
+    def film(self, frames: int = 180, shots: int = 8,
+             max_edge: int = MAX_SHOT_EDGE) -> dict:
+        """A run of screenshots spread evenly over `frames` animation frames.
+
+        One picture cannot show motion, and two show only its endpoints — a
+        sprite that flickers, a character that moves and snaps back, a scroll
+        that judders all look identical at either end. A short evenly-spaced
+        run is the cheapest thing that shows *how* the screen got from one to
+        the other.
+        """
+        shots = max(2, min(int(shots), 24))
+        frames = max(shots, int(frames))
+        clip = self.canvas_clip()          # one clip for all: frames that line up
+        step = frames // (shots - 1)
+        pngs = [self.screenshot(clip, max_edge=max_edge)]
+        advanced = 0
+        for _ in range(shots - 1):
+            advanced += self.wait_frames(step)
+            pngs.append(self.screenshot(clip, max_edge=max_edge))
+        return {"pngs": pngs, "frames": advanced, "asked_frames": frames,
+                "frames_between": step, "clipped": bool(clip)}
+
     def press(self, key: str, times: int = 1, settle_frames: int = PRESS_SETTLE_FRAMES,
               hold_frames: int = HOLD_FRAMES) -> dict:
         """Send a key the way a keyboard would, and report what came of it.

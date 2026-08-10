@@ -110,38 +110,25 @@ describe("running from the plan", () => {
 });
 
 describe("generating a plan", () => {
-  it("asks whether to keep what is there before asking the orchestrator", async () => {
+  it("appends straight away, with nothing to confirm and nothing cleared", async () => {
+    // The old button opened a modal whose real offer was "discard everything
+    // first". Appending never destroys — run steps are untouched and proposals
+    // matching finished work are skipped server-side — so there is nothing to
+    // ask permission for, and the destructive branch is gone with the modal.
     const user = userEvent.setup();
     const server = fakeServer(routes({
       "/api/sessions/s1/chat": { session: session() },
     }));
 
     renderWithQuery(<PlanScreen />);
-    await user.click(await screen.findByRole("button", { name: "Generate" }));
-    await user.click(await screen.findByRole("button", { name: "Keep what is here" }));
+    await user.click(await screen.findByRole("button", { name: "Regenerate last request" }));
 
+    expect(screen.queryByText("Ask the orchestrator for a plan")).toBeNull();
     await waitFor(() => {
       const asked = server.to("/api/sessions/s1/chat").at(-1);
       expect((asked?.body as { message: string }).message).toMatch(/propose_flow/);
     });
-    // Keeping means the flow is not touched on the way.
+    // Nothing was cleared on the way.
     expect(server.to("/api/sessions/s1/flow")).toHaveLength(0);
-  });
-
-  it("clears the plan first when starting fresh", async () => {
-    const user = userEvent.setup();
-    const server = fakeServer(routes({
-      "/api/sessions/s1/chat": { session: session() },
-    }));
-
-    renderWithQuery(<PlanScreen />);
-    await user.click(await screen.findByRole("button", { name: "Generate" }));
-    await user.click(await screen.findByRole("button", { name: /Discard and start fresh/ }));
-
-    await waitFor(() => {
-      const cleared = server.to("/api/sessions/s1/flow").at(-1);
-      expect((cleared?.body as { steps: unknown[] }).steps).toEqual([]);
-    });
-    await waitFor(() => expect(server.to("/api/sessions/s1/chat")).toHaveLength(1));
   });
 });

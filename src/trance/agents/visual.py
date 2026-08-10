@@ -198,6 +198,27 @@ class VisualSession:
             "errors": self.browser.errors.to_dict(),
         }
 
+    def film(self, frames: int = 180, shots: int = 8) -> dict:
+        """A burst of screenshots over a span of time, saved where the UI reads.
+
+        Returns the saved paths, the raw PNGs (for a vision model), and how
+        much of the screen changed between consecutive pictures — measured, so
+        a caller with no vision model still learns whether anything moved and
+        when it stopped.
+        """
+        self._needs_a_page()
+        made = self.browser.film(frames=frames, shots=shots)
+        pngs = made.pop("pngs")
+        made["shots"] = [self.save(png) for png in pngs]
+        steps = []
+        for before, after in zip(pngs, pngs[1:]):
+            diff = imagediff.compare(before, after)
+            steps.append(round(diff.fraction, 4))
+        made["motion"] = steps               # fraction changed, frame to frame
+        made["moving"] = any(f > 0 for f in steps)
+        made["pngs"] = pngs
+        return made
+
     def capture(self, whole_page: bool = False, max_edge: int = MAX_SHOT_EDGE) -> tuple[bytes, dict]:
         """A PNG plus what it is a picture of."""
         self._needs_a_page()

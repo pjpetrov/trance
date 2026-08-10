@@ -292,8 +292,13 @@ export type ToolDetail =
       usage?: CallUsage; clipped?: boolean; page?: string; url?: string;
       region?: { x: number; y: number; width: number; height: number };
       error?: string }
+  | { kind: "film"; shots: string[]; question: string; checks: string[];
+      answer: string; frames: number; frames_between: number;
+      /** Fraction of the picture that changed between consecutive frames. */
+      motion: number[]; moving: boolean; prompt?: string; model?: string;
+      preset?: string; usage?: CallUsage; error?: string }
   | { kind: "page_failed" | "canvas_failed" | "key_failed" | "look_failed"
-        | "wait_failed"; error: string };
+        | "wait_failed" | "watch_failed"; error: string };
 
 export interface ImageDiff {
   identical: boolean;

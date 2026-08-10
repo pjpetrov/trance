@@ -16,7 +16,6 @@ import { cn } from "@/lib/cn";
 import { clip } from "@/lib/format";
 import { Badge, Button, Empty, Panel, PanelHeader, Select, Textarea }
   from "@/components/ui/primitives";
-import { Modal } from "@/components/ui/Modal";
 import { toast } from "@/components/Toaster";
 import { Checks } from "@/components/Checks";
 // The same map as the run screen's dots: a second copy of it here is how
@@ -44,7 +43,6 @@ export function PlanScreen() {
   const [dragging, setDragging] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
   const [showDone, setShowDone] = useState(false);
-  const [generating, setGenerating] = useState(false);
 
   // The server is the source of truth; local edits are a draft on top of it.
   useEffect(() => {
@@ -87,12 +85,13 @@ export function PlanScreen() {
       .catch((error) => toast.err(String(error)));
   };
 
-  const generate = (fresh: boolean) => {
-    setGenerating(false);
-    const ask = fresh ? persist([]) : Promise.resolve();
-    Promise.resolve(ask)
-      .then(() => chat.mutateAsync({ message: GENERATE }))
-      .then(() => toast.ok("Asked the orchestrator for a plan."))
+  // Always additive. Steps that already ran are never touched and proposals
+  // matching finished work are skipped server-side, so there is nothing to
+  // ask before doing it — the confirm screen this used to open only existed
+  // to offer "discard everything first", and Delete on a step is that.
+  const generate = () => {
+    chat.mutateAsync({ message: GENERATE })
+      .then(() => toast.ok("Asked the orchestrator to plan the last request again."))
       .catch((error) => toast.err(String(error)));
   };
 
@@ -110,7 +109,8 @@ export function PlanScreen() {
           actions={
             <>
               <Button size="sm" busy={chat.isPending}
-                      onClick={() => setGenerating(true)}>Generate</Button>
+                      title="Ask the orchestrator to plan the last chat request again — new steps are appended, nothing is discarded"
+                      onClick={generate}>Regenerate last request</Button>
               <Button size="sm" onClick={addStep}>Add a step</Button>
               <Button
                 size="sm" variant="primary" busy={start.isPending}
@@ -273,47 +273,13 @@ export function PlanScreen() {
               title={done.length ? "Nothing pending." : "No steps yet."}
               hint={done.length
                 ? "Every step has run. Add one, or open the finished ones above to reuse."
-                : "Describe the project on the Chat page and press Generate, or add a step yourself."}
+                : "Describe the project on the Chat page, or add a step yourself."}
               action={<Button className="mt-2" onClick={addStep}>Add a step</Button>}
             />
           )}
         </div>
       </Panel>
 
-      <Modal
-        open={generating}
-        onClose={() => setGenerating(false)}
-        title="Ask the orchestrator for a plan"
-        subtitle="It reads the whole conversation from the Chat page and proposes the work."
-        footer={
-          <>
-            <Button onClick={() => setGenerating(false)}>Cancel</Button>
-            <Button onClick={() => generate(true)} variant="danger">
-              Discard and start fresh
-            </Button>
-            <Button variant="primary" onClick={() => generate(false)}>
-              Keep what is here
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-2 p-5 text-sm leading-relaxed">
-          <p>
-            <b>Keep what is here</b> adds to the plan. Steps that already ran are never
-            touched, and anything the orchestrator proposes that matches work already done
-            is skipped — which is what you want when asking for a new feature or a fix.
-          </p>
-          <p className="text-muted">
-            <b>Discard and start fresh</b> clears every step first, including the ones that
-            already ran. Their history stays in the run log, but they leave the plan.
-          </p>
-          {steps.length > 0 && (
-            <p className="text-xs text-muted">
-              {steps.length} step(s) on the plan now, {done.length} of which have run.
-            </p>
-          )}
-        </div>
-      </Modal>
     </div>
   );
 }

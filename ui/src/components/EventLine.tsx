@@ -397,6 +397,23 @@ function renderDetail(
         body: <Screenshot detail={detail} sessionId={sessionId} result={result} />,
       };
 
+    case "film":
+      return {
+        show: true, icon: "▶", iconTone: "text-purple", failed: Boolean(detail.error),
+        open: true,
+        label: (
+          <span>
+            watched <span className="text-accent">{clip(detail.question, 70)}</span>
+            <span className="ml-2 text-muted">
+              {detail.shots.length} frames
+              {detail.usage?.total_tokens
+                ? ` · ${tokens(detail.usage.total_tokens)} tok` : ""}
+            </span>
+          </span>
+        ),
+        body: <Film detail={detail} sessionId={sessionId} result={result} />,
+      };
+
     case "truncated":
       return {
         show: true, icon: "✕", iconTone: "text-err", failed: true, open: true,
@@ -631,6 +648,65 @@ function Screenshot(
           <Code className="mt-1">{detail.prompt}</Code>
         </details>
       )}
+    </div>
+  );
+}
+
+function Film(
+  { detail, sessionId, result }:
+  { detail: Extract<ToolDetail, { kind: "film" }>; sessionId: string; result: string },
+) {
+  // The frames play as a loop — a flick-book, which is the point of having
+  // taken them: motion reads at a glance where eight thumbnails do not.
+  const [frame, setFrame] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const held = detail.shots.length;
+
+  useEffect(() => {
+    if (!playing || held < 2) return;
+    // Roughly the capture spacing, floored so a tight burst still reads.
+    const ms = Math.max(150, (detail.frames_between / 60) * 1000);
+    const timer = setInterval(() => setFrame((at) => (at + 1) % held), ms);
+    return () => clearInterval(timer);
+  }, [playing, held, detail.frames_between]);
+
+  const shot = detail.shots[frame];
+
+  return (
+    <div className="space-y-2">
+      {shot && (
+        <button onClick={() => setPlaying(!playing)} title={playing ? "Pause" : "Play"}
+                className="relative block">
+          <Shot sessionId={sessionId} shot={shot} className="max-h-[26rem]" />
+          <span className="absolute bottom-1 right-1 rounded-[--radius] bg-black/60
+                           px-1.5 py-0.5 text-[11px] text-white">
+            {playing ? "❚❚" : "▶"} {frame + 1}/{held}
+          </span>
+        </button>
+      )}
+      {!playing && held > 1 && (
+        <input
+          type="range" min={0} max={held - 1} value={frame}
+          onChange={(event) => setFrame(Number(event.target.value))}
+          className="w-full"
+        />
+      )}
+      <p className="text-[11px] text-muted">
+        {held} frames over {detail.frames} animation frames
+        {detail.moving ? "" : " — the screen never changed"}
+        {detail.preset || detail.model ? ` · ${detail.preset ?? detail.model}` : ""}
+      </p>
+
+      <Label>asked</Label>
+      <Code>{detail.question}</Code>
+      {detail.checks?.length > 0 && (
+        <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted">
+          {detail.checks.map((check) => <li key={check}>{check}</li>)}
+        </ul>
+      )}
+
+      <Label>{detail.error ? "no answer" : "answered"}</Label>
+      <Code>{detail.error || detail.answer || result}</Code>
     </div>
   );
 }

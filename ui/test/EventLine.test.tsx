@@ -39,6 +39,39 @@ describe("a visual check's evidence", () => {
     expect(screen.getByText(/full prompt it was sent/)).toBeInTheDocument();
   });
 
+  it("plays a filmed burst as a loop, with the measured motion said", () => {
+    // One screenshot cannot show motion. The film's frames come back as a
+    // flick-book: the same <img> cycling through the shots, with the vision
+    // model's reading of the whole sequence beside it.
+    show({
+      kind: "film", shots: ["st1/001.png", "st1/002.png", "st1/003.png"],
+      question: "does the player move right while D is held?",
+      checks: [], frames: 120, frames_between: 60,
+      motion: [0.21, 0.19], moving: true,
+      answer: "The sprite advances steadily right across all three frames.",
+      preset: "qwen-vl", usage: { total_tokens: 900 },
+    });
+
+    expect(screen.getByText(/watched/)).toBeInTheDocument();
+    expect(screen.getByText(/3 frames over 120 animation frames/)).toBeInTheDocument();
+    expect(screen.getByText(/advances steadily right/)).toBeInTheDocument();
+    // It starts on the first frame; the loop advances it from there.
+    expect(screen.getByRole("img", { name: /vision model/i }))
+      .toHaveAttribute("src", "/api/sessions/s1/shot/st1/001.png");
+    // Playing state is visible, so a stuck loop is tellable from a paused one.
+    expect(screen.getByText(/1\/3/)).toBeInTheDocument();
+  });
+
+  it("says when a filmed screen never changed", () => {
+    show({
+      kind: "film", shots: ["st1/001.png", "st1/002.png"],
+      question: "is the game animating?", checks: [], frames: 60,
+      frames_between: 60, motion: [0], moving: false,
+      answer: "", error: "no vision model",
+    });
+    expect(screen.getByText(/the screen never changed/)).toBeInTheDocument();
+  });
+
   it("keeps the screenshot when the model failed to answer", () => {
     show({
       kind: "screenshot", shot: "st1/002.png", question: "anything?",

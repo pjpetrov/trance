@@ -539,6 +539,26 @@ class AgentTools:
                                     "description": ("Photograph the whole page instead "
                                                     "of just the canvas. Default false.")}},
                     ["question"]),
+                _fn("watch",
+                    "Take a burst of screenshots over a span of time and ask the vision "
+                    "model about the whole sequence. Use this for anything about motion "
+                    "— does it move, flicker, animate smoothly, snap back — which a "
+                    "single screenshot cannot show and two endpoints cannot prove. "
+                    "Costs one vision call carrying every frame, so use `look` when a "
+                    "single picture answers the question.",
+                    {"question": {"type": "string",
+                                  "description": ("What you want to know about how the "
+                                                  "screen behaves over time.")},
+                     "checks": {"type": "array", "items": {"type": "string"},
+                                "description": ("Specific things to verify, one per "
+                                                "entry.")},
+                     "frames": {"type": "integer",
+                                "description": ("Animation frames to spread the burst "
+                                                "over. 60 is about a second. "
+                                                "Default 180.")},
+                     "shots": {"type": "integer",
+                               "description": "Pictures to take. Default 8, max 24."}},
+                    ["question"]),
             ]
         if ("graph" in self.role.toolsets and self.graph is not None
                 and "files" in self.role.toolsets):
@@ -582,6 +602,7 @@ class AgentTools:
             "wait": self.wait,
             "check_canvas": self.check_canvas,
             "look": self.look,
+            "watch": self.watch,
         }
         # A tool the role was not granted must be refused even if the model
         # invents the name — specs() omitting it is not enough on its own.
@@ -1169,6 +1190,60 @@ class AgentTools:
                     "model": seen["model"], "preset": seen["preset"],
                     "usage": seen["usage"], **meta})
 
+    def watch(self, question: str, checks: list | None = None,
+              frames: int = 180, shots: int = 8) -> ToolOutcome:
+        """Film the screen and ask the vision model about the sequence."""
+        from ..browser import BrowserUnavailable
+        from ..vision import VisionUnavailable, look_sequence
+
+        if isinstance(checks, str):
+            checks = [checks]
+        checks = [str(c) for c in (checks or [])][:12]
+        try:
+            frames = max(2, min(int(frames or 180), 1200))
+        except (TypeError, ValueError):
+            frames = 180
+        try:
+            shots = max(2, min(int(shots or 8), 24))
+        except (TypeError, ValueError):
+            shots = 8
+
+        try:
+            made = self.visual.film(frames=frames, shots=shots)
+        except BrowserUnavailable as exc:
+            return ToolOutcome(f"Could not film the screen: {exc}", ok=False,
+                               detail={"kind": "watch_failed", "error": str(exc)})
+
+        pngs = made.pop("pngs")
+        detail = {"kind": "film", "shots": made["shots"], "question": str(question),
+                  "checks": checks, "frames": made["frames"],
+                  "frames_between": made["frames_between"], "motion": made["motion"],
+                  "moving": made["moving"], "answer": ""}
+        # What was measured, said even when a model also answers: "changed
+        # between every pair" and "froze after frame 3" are facts the fractions
+        # carry and prose can garble.
+        moved = sum(1 for f in made["motion"] if f > 0)
+        measured = (f"{len(pngs)} frames over {made['frames']} animation frames; "
+                    f"the screen changed in {moved} of {len(made['motion'])} intervals.")
+
+        if self.vision_config is None:
+            return ToolOutcome(
+                measured + " No vision model is available to judge the sequence — "
+                "the frames are saved, and the numbers above are what can be said.",
+                ok=True, detail=detail)
+        try:
+            seen = look_sequence(pngs, str(question), self.vision_config, checks=checks,
+                                 frames_between=made["frames_between"],
+                                 cancel_token=self.session_id)
+        except VisionUnavailable as exc:
+            return ToolOutcome(
+                measured + f" The vision model could not answer: {exc}",
+                ok=False, detail={**detail, "error": str(exc)})
+        detail.update({"answer": seen["answer"], "prompt": seen["prompt"],
+                       "model": seen["model"], "preset": seen["preset"],
+                       "usage": seen["usage"]})
+        return ToolOutcome(f"{measured}\n\n{seen['answer']}", ok=True, detail=detail)
+
     def _stat(self, path: str) -> dict:
         target = self._resolve(path)
         if target is None:
@@ -1512,7 +1587,8 @@ def permissions_brief(role: AgentRole) -> str:
         lines.append(
             "You may open this project in a real headless browser (open_page), send it keys "
             "(press_key), measure its canvas (check_canvas) and photograph it for a vision "
-            "model to describe (look). The app is served as static files from the folder "
+            "model to describe (look), or film a short burst for questions about motion "
+            "(watch). The app is served as static files from the folder "
             "holding the page — no build or dev server is started, so a project that needs "
             "one will show you its failure rather than itself, and open_page says when that "
             "is the case."
