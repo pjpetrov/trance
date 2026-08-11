@@ -1,7 +1,6 @@
 import { useAgents, useConfig, useLoops, useSettings } from "@/api/queries";
 import { useSettingsMutations } from "@/api/mutations";
 import { Checkbox, Empty } from "@/components/ui/primitives";
-import { Checks } from "@/components/Checks";
 import { useUi } from "@/store/ui";
 import { toast } from "@/components/Toaster";
 
@@ -44,7 +43,6 @@ function FrameField(
 export function SettingsPanel() {
   const sessionId = useUi((state) => state.sessionId) ?? "";
   const config = useConfig();
-  const agents = useAgents(sessionId);
   const settings = useSettings(sessionId);
   const { planning } = useSettingsMutations(sessionId);
   const data = config.data;
@@ -106,20 +104,6 @@ export function SettingsPanel() {
           value={settings.data.plan_close ?? ""}
           onChange={(name) => save({ plan_close: name })}
         />
-        <div className="pt-1">
-          <Checks
-            label="After every step, also"
-            empty="nothing project-wide — only what each agent carries"
-            checks={settings.data.always_check ?? []}
-            verifiers={(agents.data?.agents ?? []).filter((role) => role.verifier)}
-            onChange={(names) => save({ always_check: names })}
-          />
-          <p className="mt-1 text-xs text-muted">
-            Runs at the end of each agent step's chain, whoever the agent is —
-            including agents added later. "Run the regressions after every step,
-            catch the break early" lives here, once.
-          </p>
-        </div>
       </section>
 
       <section className="space-y-2">

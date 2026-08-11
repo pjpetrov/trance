@@ -337,15 +337,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         asked. It is a property of the agent: set once, in one place, by a
         person who knows what this project needs.
         """
-        always = list(stores_of(session).settings.settings.always_check or [])
-
         def of(name: str) -> list[str]:
             role = session.role(name) or stores_of(session).roles.get(name)
-            held = list(getattr(role, "checks", None) or [])
-            # The project-wide floor, after the agent's own: the agent's order
-            # was typed by a person, and the floor is the catch-all at the end.
-            held += [extra for extra in always if extra and extra not in held]
-            return held
+            return list(getattr(role, "checks", None) or [])
         return of
 
     def pull_flow_roles(session) -> bool:
@@ -889,16 +883,6 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         for flag in ("git_commits", "git_auto_init"):
             if flag in body:
                 changes[flag] = bool(body[flag])
-        if "always_check" in body:
-            names = [str(n).strip() for n in (body.get("always_check") or [])
-                     if str(n).strip()]
-            for name in names:
-                gate = roles.get(name)
-                if gate is None or not gate.verifier:
-                    raise HTTPException(400, (
-                        f"{name!r} cannot verify every step — it is not a verifier "
-                        f"in this project."))
-            changes["always_check"] = names
         for frame in ("plan_open", "plan_close"):
             if frame in body:
                 name = (body.get(frame) or "").strip()

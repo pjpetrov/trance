@@ -407,8 +407,6 @@ export interface Planning {
   plan_open?: string;
   /** An agent or loop appended when a plan does not already end with it. */
   plan_close?: string;
-  /** Verifiers run after every agent step, project-wide, after each agent's own. */
-  always_check?: string[];
 }
 
 export interface VisualSupport {
