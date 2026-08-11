@@ -9,6 +9,7 @@
  */
 
 import { useMessageCommits, useSession } from "@/api/queries";
+import { duration } from "@/lib/format";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { useStartRun } from "@/api/mutations";
@@ -47,6 +48,10 @@ export function CommitsScreen() {
   // Only the steps this request added — running is offered for its own work,
   // not for whatever else is pending elsewhere in the plan.
   const pending = (data?.steps ?? []).filter((step) => step.status === "pending");
+  // What this iteration has cost so far, in working time — summed from its own
+  // steps, so a request that reused old work is not billed for it.
+  const worked = (data?.steps ?? [])
+    .reduce((sum, step) => sum + (step.seconds ?? 0), 0);
   // The request is the message before the reply, and it is the thing you
   // actually recognise — the reply is the orchestrator agreeing with it.
   const replyAt = asked.findIndex((message) => message.id === showing);
@@ -97,7 +102,15 @@ export function CommitsScreen() {
           {data && data.steps.length > 0 && (
             <section>
               <div className="mb-1 flex items-baseline gap-2">
-                <h3 className="text-xs font-medium text-muted">The plan it produced</h3>
+                <h3 className="text-xs font-medium text-muted">
+                  The plan it produced
+                  {worked > 0 && (
+                    <span className="ml-2 font-normal"
+                          title="Working time across these steps: every attempt, fix and check">
+                      · worked on for {duration(worked)}
+                    </span>
+                  )}
+                </h3>
                 <div className="flex-1" />
                 {pending.length > 0 && (
                   <Button

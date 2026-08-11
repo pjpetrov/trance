@@ -9855,3 +9855,90 @@ def test_the_engine_sweeps_on_every_way_out_of_a_run(tmp_path):
     assert session.status == "finished"
     assert any("npm run dev -w backend" in e.payload["command"] for e in seen)
     proc.wait(timeout=5)
+
+
+# =========================== the clock says who the working time went to
+
+def test_working_time_is_charged_to_the_agent_and_the_step(tmp_path, monkeypatch):
+    """The session clock counted the whole run; nothing said who it went to —
+    the difference between "7h 53m" and knowing the visual tester ate five."""
+    import time as time_module
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Flow, Step
+    from trance.session import Session
+
+    class _Turn:
+        text = "did it\n\nOUTCOME: SUCCESS"
+        outcome = ("SUCCESS", "")
+        reported_outcome = True
+        files_written: list = []
+        remit_violations: list = []
+        model_event_ids: list = []
+        tool_calls = 0
+        usage: dict = {}
+        context: dict = {}
+        transcript: list = []
+        verdict = None
+        notes_written = 0
+
+    def _slow_agent(**_kw):
+        time_module.sleep(0.05)
+        return _Turn()
+
+    monkeypatch.setattr("trance.engine.run_agent", _slow_agent)
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [BUILTIN_ROLES["frontend"]]
+    step = Step.from_dict({"role": "frontend", "task": "t", "checks": []})
+    step.checks_seeded = True
+    session.flow = Flow(steps=[step])
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+    engine._execute_agent(step)
+
+    assert step.status == "done"
+    assert step.seconds > 0
+    assert session.agent_seconds.get("frontend", 0) > 0
+    # And the split survives a save/load, or the stats page forgets on restart.
+    session.save(tmp_path / "sessions")
+    from trance.session import Session as S
+    back = S.load(tmp_path / "sessions" / "s1" / "session.json")
+    assert back.agent_seconds.get("frontend", 0) > 0
+
+
+def test_a_checks_time_is_charged_to_the_checker_not_the_worker(tmp_path, monkeypatch):
+    import time as time_module
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.session import Session
+
+    class _Passed:
+        verdict = "PASS"
+        text = "VERDICT: PASS"
+        model_event_ids: list = []
+
+    def _gate(**_kw):
+        time_module.sleep(0.03)
+        return _Passed()
+
+    monkeypatch.setattr("trance.engine.run_agent", _gate)
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"]]
+    step = Step.from_dict({"role": "frontend", "task": "t", "checks": ["factchecker"]})
+    step.checks_seeded = True
+    session.flow = Flow(steps=[step])
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._run_check(step, Attempt(n=1))
+
+    assert session.agent_seconds.get("factchecker", 0) > 0
+    assert "frontend" not in session.agent_seconds
+    assert step.seconds > 0                     # the step pays for its checks too

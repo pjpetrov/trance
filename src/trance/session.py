@@ -65,6 +65,8 @@ class Session:
     #: twice and was restarted did not take a fresh five minutes, it took the
     #: sum of what it spent, and that is the number worth knowing.
     run_seconds: float = 0.0
+    #: Working time by agent name, in seconds — who the run_seconds went to.
+    agent_seconds: dict = field(default_factory=dict)
     #: Line comments the user has left but not yet sent as work.
     review: list[dict] = field(default_factory=list)
     #: Reviews already turned into steps, with the commit range that answered
@@ -159,6 +161,8 @@ class Session:
             "team": [r.to_dict() for r in self.team],
             "history": self.history,
             "run_seconds": round(self.elapsed, 1),
+            "agent_seconds": {name: round(spent, 1)
+                              for name, spent in self.agent_seconds.items()},
             "working": self.working,
             "review": self.review,
             "reviews": self.reviews,
@@ -185,6 +189,7 @@ class Session:
             history=data.get("history", []), goal=data.get("goal", ""),
             review=data.get("review", []), reviews=data.get("reviews", []),
             run_seconds=float(data.get("run_seconds") or 0.0),
+            agent_seconds=dict(data.get("agent_seconds") or {}),
         )
         session.chat = [ChatMessage(**m) for m in data.get("chat", [])]
         session.team = [AgentRole.from_dict(r) for r in data.get("team", [])] or default_team()

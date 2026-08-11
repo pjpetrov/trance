@@ -135,6 +135,10 @@ class Step:
     entry: str = ""
     status: StepStatus = "pending"
     attempts: list[Attempt] = field(default_factory=list)
+    #: Working time this step has cost, in seconds, across every attempt,
+    #: fixer pass and check. What "how long was this iteration worked on"
+    #: sums over.
+    seconds: float = 0.0
     #: How many times this step has been *executed*, which is not how many
     #: attempts it has made. One run holds every retry and, for a loop step,
     #: every block of every agent in it — it is one press of the button, and it

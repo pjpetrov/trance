@@ -111,6 +111,24 @@ describe("the statistics page", () => {
     expect(screen.getByText(/1 failed · 4 in the plan/)).toBeInTheDocument();
   });
 
+  it("splits the working time by agent", async () => {
+    // "7h 53m" answered how long; nothing answered who. The engine charges
+    // every attempt, fix and check to whoever ran it, and this shows the split.
+    serve({
+      "/api/sessions/s1": session({
+        run_seconds: 3725,
+        agent_seconds: { frontend: 2400, "visual-tester": 1000, factchecker: 325 },
+        flow: { steps: [], cursor: 0 },
+      }),
+    });
+    renderWithQuery(<StatsScreen />);
+
+    expect(await screen.findByText(/By agent, this session/)).toBeInTheDocument();
+    const row = screen.getByText("visual-tester").closest("tr")!;
+    expect(within(row).getByText("16m 40s")).toBeInTheDocument();
+    expect(within(row).getByText("27%")).toBeInTheDocument();
+  });
+
   it("says nothing has been asked rather than showing an empty table", async () => {
     serve({ "/api/sessions/s1/usage": { models: [], total: 0, calls: 0 } });
     renderWithQuery(<StatsScreen />);

@@ -7,6 +7,7 @@
  * what the run is doing.
  */
 
+import { useEffect, useState } from "react";
 import { useConfig, useSession, useSessions } from "@/api/queries";
 import type { SocketState } from "@/hooks/useSessionSocket";
 import { useUi, type Screen } from "@/store/ui";
@@ -76,6 +77,28 @@ export function statusTone(status: SessionStatus | undefined): Tone {
     case "halted": return "err";
     default: return "neutral";
   }
+}
+
+/** The session's working time, ticking while it runs.
+ *
+ *  It used to redraw only when a snapshot happened to arrive, so it sat
+ *  frozen for minutes — which reads as gone, and was reported as gone.
+ *  Between snapshots the elapsed time is interpolated locally; each fresh
+ *  run_seconds re-anchors it, so drift never outlives one update. */
+function WorkClock({ seconds, running }: { seconds: number; running: boolean }) {
+  const [anchoredAt, setAnchoredAt] = useState(() => Date.now());
+  const [, redraw] = useState(0);
+
+  useEffect(() => { setAnchoredAt(Date.now()); }, [seconds]);
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => redraw((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const shown = running ? seconds + (Date.now() - anchoredAt) / 1000 : seconds;
+  if (shown <= 0) return null;
+  return <> · {duration(shown)}</>;
 }
 
 export function Shell({ socket }: { socket: SocketState }) {
@@ -164,7 +187,7 @@ function TopBar({ socket }: { socket: SocketState }) {
           <Dot tone={statusTone(live.status)} pulse={live.status === "running"} />
           <span className="truncate text-xs text-muted">
             {live.progress.done}/{live.progress.total} steps
-            {live.run_seconds > 0 && ` · ${duration(live.run_seconds)}`}
+            <WorkClock seconds={live.run_seconds} running={live.status === "running"} />
           </span>
           {live.progress.failed > 0 && (
             <Badge tone="err">{live.progress.failed} failed</Badge>

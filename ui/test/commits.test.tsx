@@ -40,6 +40,22 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("from a reply to its commits", () => {
+  it("says how long this iteration was worked on", async () => {
+    // Summed from the request's own steps — a request that reused old work is
+    // not billed for it, and the whole-session clock lives on Statistics.
+    useUi.setState({ screen: "commits", commitsFor: "m2" });
+    fakeServer({
+      "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/messages/m2/commits": {
+        ...ANSWER,
+        steps: [step({ id: "st1", task: "add level select", status: "done",
+                       seconds: 754 })],
+      },
+    });
+    renderWithQuery(<CommitsScreen />);
+    expect(await screen.findByText(/worked on for 12m 34s/)).toBeInTheDocument();
+  });
+
   it("offers the way through only on a reply that proposed work", async () => {
     fakeServer({
       "/api/sessions": [],

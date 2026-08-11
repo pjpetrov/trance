@@ -154,6 +154,8 @@ export interface Step {
   gates: string[];
   entry: string;
   status: StepStatus;
+  /** Working time this step has cost, across attempts, fixes and checks. */
+  seconds?: number;
   attempts: Attempt[];
   /** Executions, not attempts: one press of Start or Rerun, holding every
    *  retry and every loop block inside it. */
@@ -212,6 +214,8 @@ export interface Session {
   paused: boolean;
   working: boolean;
   run_seconds: number;
+  /** Working time by agent name — who the run_seconds went to. */
+  agent_seconds?: Record<string, number>;
   created_at: string;
   error: string | null;
   chat: ChatMessage[];

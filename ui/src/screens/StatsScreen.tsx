@@ -52,6 +52,8 @@ export function StatsScreen() {
           </div>
         </Panel>
 
+        <Effort agents={session.data?.agent_seconds ?? {}} />
+
         <Spend
           title="By model, this session"
           subtitle="every call the agents and the orchestrator made"
@@ -73,6 +75,49 @@ export function StatsScreen() {
         </p>
       </div>
     </div>
+  );
+}
+
+/** Who the working time went to. The session clock always counted the whole
+ *  run; this is the difference between "7h 53m" and knowing the visual tester
+ *  ate five of them. */
+function Effort({ agents }: { agents: Record<string, number> }) {
+  const rows = Object.entries(agents)
+    .filter(([, seconds]) => seconds > 0)
+    .sort(([, a], [, b]) => b - a);
+  if (!rows.length) return null;
+  const most = Math.max(...rows.map(([, seconds]) => seconds));
+  const total = rows.reduce((sum, [, seconds]) => sum + seconds, 0);
+
+  return (
+    <Panel>
+      <PanelHeader
+        title="By agent, this session"
+        subtitle="working time: every attempt, fix and check, charged to whoever ran"
+      />
+      <div className="overflow-x-auto p-2">
+        <table className="w-full text-sm">
+          <tbody>
+            {rows.map(([name, seconds]) => (
+              <tr key={name} className="border-t border-line/60 first:border-t-0">
+                <td className="relative px-2 py-1.5">
+                  <span
+                    className="absolute inset-y-0.5 left-0 rounded-[--radius] bg-accent/15"
+                    style={{ width: `${Math.round((seconds / most) * 100)}%` }}
+                    aria-hidden
+                  />
+                  <span className="relative font-code text-xs">{name}</span>
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{duration(seconds)}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-muted">
+                  {Math.round((seconds / total) * 100)}%
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
   );
 }
 

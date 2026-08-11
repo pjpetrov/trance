@@ -17,6 +17,7 @@ from __future__ import annotations
 import difflib
 import os
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -278,6 +279,7 @@ class FlowEngine:
             forced, on_backup_route = on_backup_route, False
             model_config, on_backup = self._model_for(
                 role, step, runs[role.name], force_backup=forced)
+            node_t0 = time.monotonic()
             turn = run_agent(
                 role=role,
                 # Three prompts, narrowing: what the project is, what this step
@@ -294,6 +296,7 @@ class FlowEngine:
                 approve=self.approve, reindex=self._reindex,
                 steering_inbox=step.take_steering,
             )
+            self._charge(role.name, step, node_t0)
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
             attempt.context = turn.context
@@ -372,6 +375,19 @@ class FlowEngine:
         })
         self._halt(step)
 
+    def _charge(self, name: str, step: Step | None, started: float) -> None:
+        """Book the time an agent just spent, to the agent and to the step.
+
+        The session clock already counts the whole run; this says who it went
+        to — which is the difference between "7h 53m" and knowing the visual
+        tester ate five of them.
+        """
+        spent = max(0.0, time.monotonic() - started)
+        self.session.agent_seconds[name] = (
+            self.session.agent_seconds.get(name, 0.0) + spent)
+        if step is not None:
+            step.seconds += spent
+
     def _sweep_processes(self, why: str) -> None:
         """Kill everything any agent left running, and say so.
 
@@ -446,6 +462,7 @@ class FlowEngine:
 
             model_config, on_backup = self._model_for(
                 role, step, loop, force_backup=endpoint_down or step.start_on_backup)
+            worker_t0 = time.monotonic()
             try:
                 turn = run_agent(
                     role=role, task=step.task, project=self.project,
@@ -460,6 +477,7 @@ class FlowEngine:
                     steering_inbox=step.take_steering,
                 )
             except BackendError as exc:
+                self._charge(role.name, step, worker_t0)
                 # The endpoint failed, not the agent. That is a failed try, not
                 # a failed step — and the next one goes to the backup, because a
                 # model that is down does not recover from being asked again.
@@ -479,6 +497,7 @@ class FlowEngine:
                 if loop >= limit:
                     break
                 continue
+            self._charge(role.name, step, worker_t0)
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
             attempt.context = turn.context
@@ -631,6 +650,7 @@ class FlowEngine:
         tried = "\n".join(
             f"  attempt {a.n}: {a.outcome or 'no outcome'} — {a.outcome_reason or a.feedback or '?'}"
             for a in step.attempts[:-1])
+        escalation_t0 = time.monotonic()
         turn = run_agent(
             role=role,
             task=(
@@ -707,6 +727,7 @@ class FlowEngine:
         # reproduced a minute ago.
         replay = (f"\n\n## What {step.role} actually did, in order\n{handoff.body}"
                   if handoff and handoff.body else "")
+        fixer_t0 = time.monotonic()
         turn = run_agent(
             role=fixer,
             task=(
@@ -730,6 +751,7 @@ class FlowEngine:
             approve=self.approve, reindex=self._reindex,
             steering_inbox=step.take_steering,
         )
+        self._charge(fixer.name, step, fixer_t0)
         attempt.fix_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
         attempt.fix_summary = _summarize(turn.text)
         attempt.files_written += turn.files_written
@@ -840,6 +862,7 @@ class FlowEngine:
             })
             self.on_change()
 
+            gate_t0 = time.monotonic()
             turn = run_agent(
                 role=gate,
                 task=self._gate_task(step, attempt, gate, index, checks),
@@ -853,6 +876,7 @@ class FlowEngine:
                 steering_inbox=step.take_steering,
                 verdict_required=True,
             )
+            self._charge(gate.name, step, gate_t0)
             verdict = turn.verdict or "UNKNOWN"
             result = GateResult(
                 gate=name, verdict=verdict,
