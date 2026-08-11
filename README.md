@@ -420,34 +420,21 @@ each session serves is remembered in its `.trance/`, so a preview survives
 trance restarting — a dev server found alive again is adopted, a static one is
 simply served again on the same port.
 
-## The CLI
-
-The UI is the main interface, but the pieces work on their own:
-
-```bash
-trance index      samples/sample-app                    # build the graph
-trance symbols    samples/sample-app order              # find entry points
-trance callgraph  samples/sample-app get_user_orders --hops 4
-trance bundle     samples/sample-app get_user_orders --task "..." --show
-trance run        samples/sample-app get_user_orders --task "add pagination"
-trance config --check                                   # test the model backend
-trance stats      samples/sample-app
-```
+## Where configuration lives
 
 A project keeps its own configuration in `<repo>/.trance/` — `agents.json`,
 `loops.json`, `commands.json`, `settings.json` — so copying that folder copies
 the way the project is built, and tuning an agent for one project leaves every
-other alone. A project with none yet is seeded from the workspace-wide files in
-`runs/`, which means an existing project picks up your current setup the first
-time it is opened.
+other alone. The **Default** scope (what new projects start from) lives in
+`runs/` and overlays trance's shipped definitions.
 
-Models are the exception and stay in `runs/providers.json`. They carry API keys,
-and a folder you copy, zip and share is the last place for one; a project names
-a model and the trance it lands in resolves that name against its own.
+Models are the exception and stay in `runs/providers.json`. They carry API
+keys, and a folder you copy, zip and share is the last place for one; a
+project names a model and the trance it lands in resolves that name against
+its own.
 
-`trance index` writes `<repo>/.trance/graph.db`. Runs write
-`runs/<run_id>/{run.json,trace.jsonl}`, validated against
-`schemas/trace_event.schema.json`.
+The graph index is `<repo>/.trance/graph.db`; sessions and their traces live
+under `runs/`.
 
 ## Tests
 
