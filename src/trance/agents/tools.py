@@ -1030,6 +1030,17 @@ class AgentTools:
 
         probe, errors = found["probe"], found["errors"]
         lines = [f"Opened {found['page']} at {found['url']}"]
+        if found.get("wrong_app"):
+            # Said first and loudest: everything else in this result describes
+            # somebody else's application.
+            lines.insert(0, (
+                f"STOP: what answered is NOT this project. The page calls itself "
+                f"{found.get('title')!r}; this project's {found['page']} is titled "
+                f"{found.get('expected_title')!r}. Something else is answering on "
+                f"that address — do not judge or debug this app against what you "
+                f"see here. Report the conflict instead."))
+        if found.get("dev_note"):
+            lines.append(found["dev_note"])
         if found["frames"] < found["asked_frames"]:
             lines.append(f"WARNING: only {found['frames']} of {found['asked_frames']} "
                          "animation frames ran — the page's main thread is blocked or "

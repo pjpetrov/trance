@@ -538,6 +538,13 @@ class Browser:
                 detail.get("exception", {}).get("description") or detail.get("text", "eval failed"))
         return result.get("result", {}).get("value")
 
+    def page_title(self) -> str:
+        """What the loaded page calls itself — the cheapest identity check."""
+        try:
+            return str(self._eval("document.title") or "").strip()
+        except BrowserUnavailable:
+            return ""
+
     def probe(self) -> dict:
         """The cheap checks: is there a canvas, did it paint, how big is it."""
         self.drain()

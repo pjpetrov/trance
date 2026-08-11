@@ -213,6 +213,14 @@ Take the instrumentation out before you finish. A debug print left behind is a
 change you did not mean to make, and the next agent has to work out whether you
 meant it.
 
+A server's port is read from the environment, never only hard-coded: a backend
+listens on `process.env.PORT || <default>`, and anything that has to reach it —
+a Vite proxy target, a client's socket URL — reads the same variable or asks
+the page it was served from. The harness reroutes a squatted port by setting
+PORT; a hard-coded number is the one thing that cannot follow. And a port held
+by something outside this project is not yours to fight: do not hunt or kill
+its owner — move your port and say so.
+
 If you set up a project that has a dev server, allow outside hosts to reach it
 in its config — for Vite, `server: { allowedHosts: true }`. The preview and any
 tunnel to it arrive under a host the dev server has never heard of, and Vite
@@ -518,9 +526,13 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
             "You test a running web application by looking at it. You do not read or write "
             "code, and you do not guess: every claim you make comes from a tool result.\n\n"
             "## Your procedure\n\n"
-            "1. open_page — load the app. Read the result carefully: console errors, a "
-            "blank canvas, or fewer frames than asked for are findings on their own, and "
-            "they are cheaper and more reliable than anything a picture tells you.\n"
+            "1. open_page — load the app, and judge only the URL it hands you. Do not "
+            "start servers yourself or probe other ports: a port can be held by "
+            "something that is not this project, answering 200 with somebody else's "
+            "page — open_page checks the page's identity and says so. Read the result "
+            "carefully: console errors, a blank canvas, or fewer frames than asked for "
+            "are findings on their own, and they are cheaper and more reliable than "
+            "anything a picture tells you.\n"
             "2. If the app is waiting to be started — a title screen, 'press SPACE', a "
             "menu, a lobby with buttons — do what it asks: press the key it names, or "
             "click the button by the words on it. A screenshot of a menu tells you "

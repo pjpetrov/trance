@@ -1264,3 +1264,83 @@ def test_a_real_button_can_be_clicked_by_its_words(tmp_path):
         assert missing["candidates"] == []                # the button is gone: game on
     finally:
         session.close()
+
+
+# ------------------------------------------------------- the identity check
+
+@needs_chrome
+def test_open_page_notices_when_something_else_answers(tmp_path, monkeypatch):
+    """Watched live: a Docker container squatted the expected port, answered
+    200 with its own page, and two agents spent an hour debugging a chatbot's
+    HTML as if it were their game. The page's own title against the project's
+    is the mechanical version of "check the endpoint is our app"."""
+    from trance import preview
+    from trance.agents.visual import VisualSession
+
+    # The project's page and the impostor that will actually answer.
+    project = tmp_path / "game"
+    project.mkdir()
+    (project / "index.html").write_text(
+        "<html><head><title>Zergling Rush</title></head><body>game</body></html>",
+        encoding="utf8")
+    impostor_root = tmp_path / "other"
+    impostor_root.mkdir()
+    (impostor_root / "index.html").write_text(
+        "<html><head><title>Open WebUI</title></head><body>chat</body></html>",
+        encoding="utf8")
+    impostor = preview.serve(impostor_root, host="127.0.0.1", port=0)
+
+    session = VisualSession(project)
+    try:
+        # Force the session at the impostor's server — the squatted-port shape.
+        monkeypatch.setattr(session, "_serve",
+                            lambda page: f"http://127.0.0.1:{impostor.port}/index.html")
+        found = session.open("index.html", settle_frames=5)
+        assert found["wrong_app"] is True
+        assert found["title"] == "Open WebUI"
+        assert found["expected_title"] == "Zergling Rush"
+
+        # And served honestly, no alarm.
+        monkeypatch.undo()
+        honest = session.open("index.html", settle_frames=5)
+        assert honest["wrong_app"] is False
+    finally:
+        session.close()
+        impostor.stop()
+
+
+def test_the_wrong_app_is_said_first_and_loudest(tmp_path):
+    class _Visual:
+        page = "index.html"
+        dev_command = ""
+        def open(self, path="", settle_frames=60):
+            return {"page": "index.html", "url": "http://127.0.0.1:3000/",
+                    "frames": 60, "asked_frames": 60,
+                    "errors": {"console": [], "requests": [], "page": []},
+                    "probe": {}, "dev_server": "", "dev_note": "",
+                    "title": "Open WebUI", "expected_title": "Zergling Rush",
+                    "wrong_app": True, "needs_build": False, "build_command": ""}
+
+    tools = AgentTools(tmp_path, _role())
+    tools._visual = _Visual()
+    out = tools.call("open_page", {"path": "index.html"})
+    assert out.text.startswith("STOP: what answered is NOT this project")
+    assert "Open WebUI" in out.text and "Zergling Rush" in out.text
+    assert "Report the conflict" in out.text
+
+
+def test_the_tester_is_told_to_judge_only_the_handed_url():
+    from trance.agents.roles import BUILTIN_ROLES
+
+    prompt = BUILTIN_ROLES["visual-tester"].system_prompt
+    assert "judge only the URL it hands you" in prompt
+    assert "Do not start servers yourself" in prompt
+
+
+def test_the_coders_are_told_ports_come_from_the_environment():
+    from trance.agents.roles import BUILTIN_ROLES
+
+    for name in ("frontend", "backend"):
+        prompt = BUILTIN_ROLES[name].system_prompt
+        assert "process.env.PORT" in prompt, name
+        assert "not yours to fight" in prompt, name

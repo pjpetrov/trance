@@ -139,6 +139,9 @@ class DevServer:
     #: restart has instead of a Popen. The dev server runs in its own session,
     #: so it survives trance dying; this is how the next trance finds it.
     pid: int = 0
+    #: What the launcher wants said about how this server came up — a squatted
+    #: port it routed around, a config line that must follow. Empty usually.
+    note: str = ""
 
     def __post_init__(self) -> None:
         if self.process is not None and not self.pid:
@@ -226,24 +229,70 @@ class DevServerFailed(RuntimeError):
         self.output = output
 
 
+#: What EADDRINUSE looks like in a node server's dying words. The port is the
+#: capture: knowing *which* port was squatted is what makes the retry and the
+#: config warning possible.
+_PORT_TAKEN = re.compile(r"EADDRINUSE[^\d]*(\d{2,5})")
+
+
+def free_port() -> int:
+    """A port the OS says is free right now."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 def run_dev(directory: Path, command: str, *, wait_s: float = 90.0,
-            log_dir: Path | None = None) -> DevServer:
+            log_dir: Path | None = None, reroute_ports: bool = True) -> DevServer:
     """Start a dev command and wait for it to say which port it is on.
 
     Waiting for the announcement rather than assuming 5173: the port a dev
     server settles on is not the one in its config when that one is taken, and
     a preview pointed at the configured port then shows someone else's app.
+
+    A port squatted by something outside the project is routed around, not
+    fought: watched live, a Docker container held the backend's default port,
+    the kills that tried to free it could never work, and a five-minute fight
+    ended in code being rewritten for a problem that was never code. On
+    EADDRINUSE the server is relaunched once with PORT set to a free one —
+    which reaches every backend that reads PORT from the environment — and the
+    note says what happened, including the config line that has to follow when
+    a file still hard-codes the squatted number.
     """
+    try:
+        return _launch_dev(directory, command, wait_s=wait_s, log_dir=log_dir)
+    except DevServerFailed as failed:
+        taken = _PORT_TAKEN.search(failed.output or "")
+        if not reroute_ports or taken is None:
+            raise
+        squatted, chosen = int(taken.group(1)), free_port()
+        server = _launch_dev(directory, command, wait_s=wait_s, log_dir=log_dir,
+                             env_extra={"PORT": str(chosen)})
+        note = (f"Port {squatted} is held by something outside this project, so the "
+                f"server was started with PORT={chosen} instead.")
+        config = _vite_config(Path(directory))
+        if config is not None and str(squatted) in config.read_text(encoding="utf8",
+                                                                    errors="replace"):
+            note += (f" NOTE: {config.name} still references {squatted} (a proxy "
+                     f"target?) — that line must follow to {chosen}, or the frontend "
+                     f"will talk to the squatter.")
+        server.note = note
+        return server
+
+
+def _launch_dev(directory: Path, command: str, *, wait_s: float,
+                log_dir: Path | None, env_extra: dict | None = None) -> DevServer:
     directory = Path(directory).resolve()
     log_dir = Path(log_dir) if log_dir else directory
     log_dir.mkdir(parents=True, exist_ok=True)
     log = log_dir / "dev-server.log"
 
     handle = open(log, "w", encoding="utf8")                      # noqa: SIM115
+    env = {**os.environ, **(env_extra or {})} if env_extra else None
     process = subprocess.Popen(                                   # noqa: S602
         command, shell=True, cwd=str(directory),
         stdout=handle, stderr=subprocess.STDOUT,
-        start_new_session=True, text=True,
+        start_new_session=True, text=True, env=env,
     )
 
     started = time.time()

@@ -49,6 +49,18 @@ def default_page(project: Path) -> str:
     return ""
 
 
+_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def _title_of(page: Path) -> str:
+    """The <title> a page file gives itself, or "" when it has none."""
+    try:
+        found = _TITLE.search(page.read_text(encoding="utf8", errors="replace"))
+    except OSError:
+        return ""
+    return found.group(1).strip() if found else ""
+
+
 class VisualSession:
     """The browser side of a step: serve the project, drive it, photograph it."""
 
@@ -144,6 +156,16 @@ class VisualSession:
         url = self._serve(page)
         loaded = self.browser.navigate(url, settle_frames=settle_frames)
         probe = self.browser.probe()
+        # Is what answered actually this project? Watched live: a Docker
+        # container squatted the expected port and answered 200 with its own
+        # page, and two agents spent an hour debugging a chatbot's HTML as if
+        # it were their game. The page's own title against the project's is
+        # the cheap mechanical version of "check the endpoint is our app".
+        expected = _title_of(self.project / page)
+        actual = self.browser.page_title()
+        wrong_app = bool(expected and actual
+                         and expected.lower() not in actual.lower()
+                         and actual.lower() not in expected.lower())
         return {
             "page": page, "url": url,
             "frames": loaded["frames"], "asked_frames": loaded["asked_frames"],
@@ -153,6 +175,8 @@ class VisualSession:
             # the failure — meant a Vite project could not be visually tested
             # at all.
             "dev_server": self.dev_command,
+            "dev_note": self._dev.note if self._dev is not None else "",
+            "title": actual, "expected_title": expected, "wrong_app": wrong_app,
             "needs_build": False,
             "build_command": "",
         }

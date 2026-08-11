@@ -420,3 +420,54 @@ def test_a_config_shape_the_edit_cannot_read_still_gets_the_hint(tmp_path, monke
 
     assert "makeConfig()" in (project / "vite.config.ts").read_text()  # untouched
     assert "allowedHosts" in body["hint"]                              # told instead
+
+
+# ------------------------------------------ routing around a squatted port
+
+def test_a_squatted_port_is_routed_around_with_a_free_one(tmp_path):
+    """Watched live: a Docker container held the backend's default port, the
+    kills that tried to free it could never work, and a five-minute fight
+    ended in code rewritten for a problem that was never code. The squatter is
+    not fought — the server is relaunched with PORT set to a free port."""
+    import socket as socket_module
+
+    holder = socket_module.socket()
+    holder.bind(("127.0.0.1", 0))
+    taken = holder.getsockname()[1]
+    holder.listen(1)
+    try:
+        project = _project()
+        (project / "server.py").write_text(
+            "import os, sys, time\n"
+            f"port = int(os.environ.get('PORT', {taken}))\n"
+            f"if port == {taken}:\n"
+            f"    print('Error: listen EADDRINUSE: address already in use :::{taken}')\n"
+            "    sys.exit(1)\n"
+            "print(f'Local: http://127.0.0.1:{port}/')\n"
+            "sys.stdout.flush(); time.sleep(30)\n", encoding="utf8")
+        # A config that hard-codes the squatted number: the one line PORT
+        # cannot reach, so the note has to name it.
+        (project / "vite.config.js").write_text(
+            f"export default {{ server: {{ proxy: {{ '/api': 'http://localhost:{taken}' }} }} }}",
+            encoding="utf8")
+
+        running = preview.run_dev(project, "python3 server.py", wait_s=15)
+        try:
+            assert running.port != taken
+            assert running.alive() is True
+            assert f"Port {taken} is held by something outside this project" in running.note
+            assert "vite.config.js still references" in running.note
+        finally:
+            running.stop()
+    finally:
+        holder.close()
+
+
+def test_a_failure_that_is_not_a_port_conflict_is_not_retried(tmp_path):
+    project = _project()
+    (project / "server.py").write_text(
+        "import sys\nprint('Error: Cannot find module vite')\nsys.exit(1)\n",
+        encoding="utf8")
+    with pytest.raises(preview.DevServerFailed) as raised:
+        preview.run_dev(project, "python3 server.py", wait_s=15)
+    assert "Cannot find module vite" in raised.value.output
