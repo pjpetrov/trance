@@ -2272,6 +2272,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 f"the revert did not apply cleanly — nothing was changed. "
                 f"{made.detail[:400]}"))
 
+        step.reverted_sha = made.sha
         bus.emit("step_reverted", session_id, agent="you", step_id=step_id, payload={
             "commits": shas, "sha": made.sha,
             "message": (f"Reverted this step's {len(shas)} commit(s) as {made.sha[:8]}. "
@@ -2279,6 +2280,41 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         })
         touch(session)
         return {"reverted": shas, "sha": made.sha}
+
+    @app.post("/api/sessions/{session_id}/steps/{step_id}/apply")
+    def apply_step(session_id: str, step_id: str):
+        """Take a revert back — for the one that was a mistake.
+
+        Reverting the inverse commit puts the step's work back, and all three
+        states stay in history: the work, the revert, the change of mind.
+        """
+        session = _need(store, session_id)
+        if session.status == "running":
+            raise HTTPException(409, "the run is writing right now — stop it first")
+        step = next((s for s in session.flow.steps if s.id == step_id), None)
+        if step is None:
+            raise HTTPException(404, "no such step")
+        if not step.reverted_sha:
+            raise HTTPException(400, "this step has no revert to apply back")
+
+        project = _project_of(session)
+        label = (step.task or step_id).strip()[:60]
+        made = vcs.revert_commits(project, [step.reverted_sha],
+                                  f"user: re-applied step — {label}")
+        if not made:
+            bus.emit("warning", session_id, step_id=step_id, payload={
+                "message": f"Re-apply failed and nothing was changed: {made.detail[:300]}"})
+            raise HTTPException(409, (
+                f"the re-apply did not go cleanly — nothing was changed. "
+                f"{made.detail[:400]}"))
+
+        step.reverted_sha = ""
+        bus.emit("step_reverted", session_id, agent="you", step_id=step_id, payload={
+            "sha": made.sha, "applied": True,
+            "message": f"Re-applied this step's commits as {made.sha[:8]}.",
+        })
+        touch(session)
+        return {"applied": True, "sha": made.sha}
 
     @app.post("/api/sessions/{session_id}/resume-pending")
     def resume_pending(session_id: str):

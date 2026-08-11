@@ -225,6 +225,9 @@ export const api = {
   revertStep: (sid: string, stepId: string) =>
     request<{ reverted: string[]; sha: string }>(
       `/api/sessions/${id(sid)}/steps/${id(stepId)}/revert`, { method: "POST" }),
+  applyStep: (sid: string, stepId: string) =>
+    request<{ applied: boolean; sha: string }>(
+      `/api/sessions/${id(sid)}/steps/${id(stepId)}/apply`, { method: "POST" }),
   commitLog: (sid: string) =>
     request<{ commits: Commit[] }>(`/api/sessions/${id(sid)}/commits`),
   clearFiles: (sid: string) =>

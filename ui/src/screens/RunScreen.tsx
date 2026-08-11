@@ -22,6 +22,7 @@ import { Badge, Button, Dot, Empty, Input, Panel, PanelHeader, Spinner }
   from "@/components/ui/primitives";
 import { stepTone, stepWord } from "@/components/Shell";
 import { toast } from "@/components/Toaster";
+import { Confirm } from "@/components/ui/Confirm";
 import type { Step, TranceEvent } from "@/api/types";
 
 export function RunScreen() {
@@ -191,7 +192,9 @@ function StepRow(
 ) {
   const sessionId = useUi((state) => state.sessionId);
   const { rerun } = useStepActions(sessionId ?? "");
-  const revert = useRevertStep(sessionId ?? "");
+  const commits = useRevertStep(sessionId ?? "");
+  // Which of the two commit operations is awaiting the user's yes.
+  const [confirming, setConfirming] = useState<"revert" | "apply" | null>(null);
   const steer = useSteer(sessionId ?? "");
   const [showRuns, setShowRuns] = useState(false);
 
@@ -244,17 +247,61 @@ function StepRow(
             </Button>
             {step.attempts.some((attempt) => attempt.commit) && (
               <Button
-                size="sm" variant="danger" busy={revert.isPending}
+                size="sm" variant="danger" busy={commits.revert.isPending}
                 title="Undo everything this step committed, as one inverse commit — the work and the undo both stay in history"
-                onClick={() => revert.mutateAsync(step.id)
-                  .then((out) => toast.ok(
-                    `Reverted ${out.reverted.length} commit(s) as ${out.sha.slice(0, 8)}.`))
-                  // A failed revert changed nothing; the button stays for
-                  // another try once the conflict is dealt with.
-                  .catch((error) => toast.err(String(error)))}
-              >revert</Button>
+                onClick={() => setConfirming("revert")}
+              >revert commits</Button>
+            )}
+            {step.reverted_sha && (
+              <Button
+                size="sm" busy={commits.apply.isPending}
+                title="Take the revert back: re-apply this step's commits"
+                onClick={() => setConfirming("apply")}
+              >apply commits</Button>
             )}
           </div>
+
+          <Confirm
+            open={confirming === "revert"}
+            title="Revert this step's commits?"
+            confirmLabel="Revert them"
+            danger
+            busy={commits.revert.isPending}
+            onClose={() => setConfirming(null)}
+            onConfirm={() => {
+              setConfirming(null);
+              commits.revert.mutateAsync(step.id)
+                .then((out) => toast.ok(
+                  `Reverted ${out.reverted.length} commit(s) as ${out.sha.slice(0, 8)}. `
+                  + "Apply commits takes it back."))
+                // A failed revert changed nothing; the button stays for
+                // another try once the conflict is dealt with.
+                .catch((error) => toast.err(String(error)))}}
+          >
+            <p>
+              Everything this step committed is undone as one inverse commit. The
+              work and the undo both stay in history, and <b>apply commits</b> can
+              take the revert back.
+            </p>
+          </Confirm>
+
+          <Confirm
+            open={confirming === "apply"}
+            title="Re-apply this step's commits?"
+            confirmLabel="Apply them"
+            busy={commits.apply.isPending}
+            onClose={() => setConfirming(null)}
+            onConfirm={() => {
+              setConfirming(null);
+              commits.apply.mutateAsync(step.id)
+                .then((out) => toast.ok(`Re-applied as ${out.sha.slice(0, 8)}.`))
+                .catch((error) => toast.err(String(error)))}}
+          >
+            <p>
+              The revert is taken back: this step's work returns, and all three
+              acts — the work, the revert, the change of mind — stay in history.
+            </p>
+          </Confirm>
 
           {showRuns && (
             <div className="space-y-0.5 rounded-[--radius] border border-line p-1">

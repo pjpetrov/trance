@@ -247,14 +247,21 @@ export function useMemoryMutations(sessionId: string) {
 
 export function useRevertStep(sessionId: string) {
   const client = useQueryClient();
-  return useMutation({
-    mutationFn: (stepId: string) => api.revertStep(sessionId, stepId),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: keys.files(sessionId) });
-      void client.invalidateQueries({ queryKey: keys.session(sessionId) });
-      void client.invalidateQueries({ queryKey: ["commitLog", sessionId] });
-    },
-  });
+  const settle = () => {
+    void client.invalidateQueries({ queryKey: keys.files(sessionId) });
+    void client.invalidateQueries({ queryKey: keys.session(sessionId) });
+    void client.invalidateQueries({ queryKey: ["commitLog", sessionId] });
+  };
+  return {
+    revert: useMutation({
+      mutationFn: (stepId: string) => api.revertStep(sessionId, stepId),
+      onSuccess: settle,
+    }),
+    apply: useMutation({
+      mutationFn: (stepId: string) => api.applyStep(sessionId, stepId),
+      onSuccess: settle,
+    }),
+  };
 }
 
 export function useFileMutations(sessionId: string) {

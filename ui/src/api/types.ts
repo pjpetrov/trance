@@ -156,6 +156,8 @@ export interface Step {
   status: StepStatus;
   /** Working time this step has cost, across attempts, fixes and checks. */
   seconds?: number;
+  /** The inverse commit of the last user revert, when one is outstanding. */
+  reverted_sha?: string;
   attempts: Attempt[];
   /** Executions, not attempts: one press of Start or Rerun, holding every
    *  retry and every loop block inside it. */

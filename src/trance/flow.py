@@ -118,6 +118,9 @@ class Step:
     #: fails. Off by default: throwing away work is not something to do on a
     #: guess, and a half-finished step is often still worth reading.
     revert_on_fail: bool = False
+    #: The inverse commit of the last user revert of this step, so "I reverted
+    #: by mistake" has something to re-apply. Cleared when it is applied back.
+    reverted_sha: str = ""
     #: Whether the escalation attempt has already been spent on this step.
     #: One per step: escalation that can itself loop is a longer loop with a
     #: bigger bill.

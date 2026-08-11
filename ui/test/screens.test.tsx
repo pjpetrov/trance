@@ -326,17 +326,51 @@ describe("reverting a step", () => {
 
     renderWithQuery(<><RunScreen /><Toaster /></>);
     await user.click(await screen.findByText(/Build the game loop/));
-    const button = await screen.findByRole("button", { name: "revert" });
-    await user.click(button);
+    await user.click(await screen.findByRole("button", { name: "revert commits" }));
+
+    // Nothing is sent until the confirmation says so.
+    expect(await screen.findByText(/one inverse commit/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Revert them" }));
 
     // Told that it failed — and the button stays for another try.
     expect(await screen.findByText(/did not apply cleanly/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "revert" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "revert commits" })).toBeInTheDocument();
 
     // A step with no commits never offers it.
     await user.click(screen.getByText(/committed nothing/));
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "revert" })).toBeNull());
+      expect(screen.queryByRole("button", { name: "revert commits" })).toBeNull());
+  });
+});
+
+describe("taking a revert back", () => {
+  it("offers apply commits only on a reverted step, behind a confirmation", async () => {
+    const user = userEvent.setup();
+    const server = fakeServer({
+      "/api/sessions/s1": session({
+        flow: {
+          steps: [step({ id: "st1", role: "backend", status: "done",
+                         task: "Build the game loop", reverted_sha: "fff888",
+                         attempts: [{ n: 1, commit: "abc123" } as never] })],
+          cursor: 0,
+        },
+      }),
+      "/api/sessions/s1/events": eventsRoute([], []),
+      "/api/sessions/s1/steps/st1/apply": { applied: true, sha: "0a1b2c3d" },
+    });
+
+    renderWithQuery(<RunScreen />);
+    await user.click(await screen.findByText(/Build the game loop/));
+    await user.click(await screen.findByRole("button", { name: "apply commits" }));
+
+    // The confirmation gates it: nothing sent yet.
+    expect(server.calls.some((call) => call.url.includes("/apply"))).toBe(false);
+    expect(await screen.findByText(/change of mind/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Apply them" }));
+    await waitFor(() =>
+      expect(server.calls.some((call) => call.method === "POST"
+        && call.url.includes("/steps/st1/apply"))).toBe(true));
   });
 });
 

@@ -10498,3 +10498,40 @@ def test_a_step_with_no_commits_says_so_and_a_running_session_refuses(tmp_path):
     busy = client.post(f"/api/sessions/{sid}/steps/{step.id}/revert")
     assert busy.status_code == 409
     assert "stop it first" in busy.json()["detail"]
+
+
+def test_a_mistaken_revert_can_be_applied_back(tmp_path):
+    """All three acts stay in history: the work, the revert, the change of
+    mind — and the step tracks its outstanding revert so the button knows
+    when to offer the way back."""
+    from trance import vcs
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _revert_app(tmp_path)
+    project.mkdir(parents=True, exist_ok=True)
+    vcs.ensure_repo(project)
+    (project / "game.js").write_text("the step's work\n", encoding="utf8")
+    made = vcs.commit_all(project, "backend: the step")
+
+    session = app.state.store.get(sid)
+    step = Step(role="backend", task="build it")
+    step.attempts = [Attempt(n=1, commit=made.sha)]
+    session.flow = Flow(steps=[step])
+
+    # Nothing to apply before any revert.
+    early = client.post(f"/api/sessions/{sid}/steps/{step.id}/apply")
+    assert early.status_code == 400
+
+    client.post(f"/api/sessions/{sid}/steps/{step.id}/revert")
+    assert step.reverted_sha
+    assert not (project / "game.js").exists()
+
+    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/apply").json()
+    assert out["applied"] is True
+    assert (project / "game.js").read_text() == "the step's work\n"
+    assert step.reverted_sha == ""              # the way back has been taken
+
+    subjects = [c["subject"] for c in vcs.log(project)]
+    assert any("re-applied step" in s for s in subjects)
+    assert any("reverted step" in s for s in subjects)
+    assert any("backend: the step" in s for s in subjects)
