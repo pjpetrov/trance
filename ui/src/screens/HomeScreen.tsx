@@ -19,7 +19,11 @@ export function HomeScreen() {
   const { sessionId, selectSession, go, showCommitsFor } = useUi();
   const [removing, setRemoving] = useState<{ id: string; name: string;
                                              dir: string } | null>(null);
-  const [alsoFiles, setAlsoFiles] = useState(false);
+  // Checked by default: a session made here made its folder, and "delete"
+  // meaning "everything, the state files, the whole thing" is what the user
+  // asked deletion to mean. The server still refuses to wipe any directory
+  // outside the workspace, whatever the checkbox says.
+  const [alsoFiles, setAlsoFiles] = useState(true);
   const sessions = useSessions();
   const session = useSession(sessionId);
   const { create, remove } = useSessionLifecycle();
@@ -94,9 +98,10 @@ export function HomeScreen() {
         }}
       >
         <p>
-          Its conversation, plan and run history go. The project at{" "}
-          <code className="text-accent">{removing?.dir}</code> stays where it is unless
-          you say otherwise.
+          Its conversation, plan and run history go, and with the box below
+          checked the whole directory at{" "}
+          <code className="text-accent">{removing?.dir}</code> goes with them —
+          the generated files, <code>.trance</code>, the git history, everything.
         </p>
         <Checkbox
           label="Delete the project files too"

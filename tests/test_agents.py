@@ -10189,3 +10189,68 @@ def test_the_plain_git_log_is_served_with_short_shas(tmp_path):
     # A project that is not a repository answers empty rather than 500.
     bare = client.post("/api/sessions", json={"name": "fresh"}).json()
     assert client.get(f"/api/sessions/{bare['id']}/commits").json()["commits"] == []
+
+
+def test_deleting_a_session_with_files_wipes_the_whole_directory(tmp_path):
+    """"The whole thing" includes .trance and .git: unlike clear-all, which
+    keeps what remembers the project, deleting the session is the end of it."""
+    import pathlib
+
+    from fastapi.testclient import TestClient
+
+    from trance import vcs
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    made = client.post("/api/sessions", json={"name": "game"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "index.html").write_text("x", encoding="utf8")
+    (project / ".trance").mkdir(exist_ok=True)
+    (project / ".trance" / "memory.md").write_text("m", encoding="utf8")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+
+    out = client.delete(f"/api/sessions/{sid}?files=true").json()
+    assert out["files_deleted"] is True
+    assert not project.exists()
+
+
+def test_a_shared_directory_is_not_wiped_out_from_under_the_other_session(tmp_path):
+    """Two sessions on one folder are two views of one project — the stores
+    are held by path for exactly that reason."""
+    import pathlib
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    first = client.post("/api/sessions", json={"name": "game"}).json()
+    second = client.post("/api/sessions", json={"name": "game"}).json()
+    assert first["project_dir"] == second["project_dir"]     # same folder, by design
+    project = pathlib.Path(first["project_dir"])
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "index.html").write_text("x", encoding="utf8")
+
+    answer = client.delete(f"/api/sessions/{first['id']}?files=true")
+    assert answer.status_code == 400
+    assert "same directory" in answer.json()["detail"]
+    assert project.exists()
+
+    # Without the files it goes quietly, and the survivor keeps its ground.
+    ok = client.delete(f"/api/sessions/{first['id']}")
+    assert ok.json()["deleted"] == first["id"]
+    assert project.exists()

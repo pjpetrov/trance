@@ -1829,6 +1829,16 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                     f"where you can see what is in it.")
         return ""
 
+    def _shared_with(session) -> list[str]:
+        """Other sessions working in the same directory. Two sessions on one
+        folder are two views of one project, and deleting one of them must not
+        pull the floor from under the other."""
+        mine = Path(session.project_dir).expanduser().resolve()
+        return [other.name for other in store.all()
+                if other.id != session.id
+                and Path(other.project_dir).expanduser().resolve() == mine]
+        return ""
+
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str, files: bool = False):
         """Delete a session and its trace.
@@ -1849,6 +1859,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             session.stop()  # let the engine unwind before the directory goes
         project = _project_of(session)
         refusal = _safe_to_remove(project) if files else ""
+        if files and not refusal:
+            sharing = _shared_with(session)
+            if sharing:
+                refusal = (f"the session(s) {', '.join(sharing[:4])} work in the same "
+                           f"directory. Delete them too, or delete this session "
+                           f"without its files.")
         if files and refusal:
             raise HTTPException(400, f"the session was not deleted: {refusal}")
 
@@ -1859,6 +1875,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if files and project.exists():
             shutil.rmtree(project, ignore_errors=True)
             removed = not project.exists()
+            workspace.forget(project)
         return {"deleted": session_id, "project_dir": session.project_dir,
                 "files_deleted": removed}
 
