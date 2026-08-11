@@ -8,7 +8,8 @@
  * and the next request is the answer, and this is where it is read.
  */
 
-import { useMessageCommits, useSession } from "@/api/queries";
+import { useState } from "react";
+import { useCommitLog, useMessageCommits, useSession } from "@/api/queries";
 import { duration } from "@/lib/format";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
@@ -34,6 +35,49 @@ export function CommitsScreen() {
   // — a session whose chat has not loaded renders the empty state first, then
   // re-renders with a request to show.
   const start = useStartRun(sessionId ?? "");
+  // Two questions this page can answer, as modes: "what came of what I asked"
+  // (requests coupled to their steps and commits) and "what is actually in
+  // the repo" — plain git history, which includes the user's own commits and
+  // the clears, which no request owns.
+  const [mode, setMode] = useState<"requests" | "log">("requests");
+  const log = useCommitLog(sessionId, mode === "log");
+
+  const switcher = (
+    <div className="flex rounded-[--radius] border border-line p-0.5 text-xs">
+      {([["requests", "By request"], ["log", "All commits"]] as const)
+        .map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setMode(id)}
+            className={mode === id
+              ? "rounded-[--radius] bg-accent-soft px-2 py-1 text-fg"
+              : "rounded-[--radius] px-2 py-1 text-muted hover:text-fg"}
+          >{label}</button>
+        ))}
+    </div>
+  );
+
+  if (mode === "log") {
+    return (
+      <div className="h-full overflow-y-auto p-3">
+        <Panel className="mx-auto max-w-4xl">
+          <PanelHeader
+            title="Every commit"
+            subtitle="the project's git history, newest first — open one for its diff"
+            actions={switcher}
+          />
+          <div className="space-y-px p-2">
+            {log.isLoading && <Spinner className="m-2 text-muted" />}
+            {log.data?.length === 0 && (
+              <Empty title="No commits yet."
+                     hint="Each finished step commits; they will appear as the run works." />
+            )}
+            {log.data?.map((commit) => <CommitRow key={commit.sha} commit={commit} />)}
+          </div>
+        </Panel>
+      </div>
+    );
+  }
 
   if (!showing) {
     return (
@@ -66,7 +110,12 @@ export function CommitsScreen() {
             ? `${data.commits.length} commit(s)`
               + (data.still_to_run ? ` · ${data.still_to_run} step(s) still to run` : "")
             : "reading the history"}
-          actions={<Button size="sm" onClick={() => go("home")}>back to the chat</Button>}
+          actions={
+            <>
+              {switcher}
+              <Button size="sm" onClick={() => go("home")}>back to the chat</Button>
+            </>
+          }
         />
 
         <div className="space-y-4 p-4">

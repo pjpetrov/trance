@@ -265,6 +265,17 @@ export function useMessageCommits(sessionId: string | null, messageId: string | 
   });
 }
 
+export function useCommitLog(sessionId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["commitLog", sessionId ?? ""] as const,
+    queryFn: async () => (await api.commitLog(sessionId!)).commits,
+    enabled: Boolean(sessionId) && enabled,
+    // The log grows while a run commits each step; a browse page that lags a
+    // minute behind the run reads as broken.
+    refetchInterval: 10_000,
+  });
+}
+
 export function useCommit(sessionId: string | null, sha: string | null) {
   return useQuery({
     queryKey: keys.commit(sessionId ?? "", sha ?? ""),

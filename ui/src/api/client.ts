@@ -222,6 +222,8 @@ export const api = {
   deleteFile: (sid: string, path: string) =>
     request<{ deleted: string; committed: boolean }>(
       `/api/sessions/${id(sid)}/file?path=${id(path)}`, { method: "DELETE" }),
+  commitLog: (sid: string) =>
+    request<{ commits: Commit[] }>(`/api/sessions/${id(sid)}/commits`),
   clearFiles: (sid: string) =>
     request<{ removed: number; committed: boolean }>(
       `/api/sessions/${id(sid)}/files`, { method: "DELETE" }),

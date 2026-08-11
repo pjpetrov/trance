@@ -1680,6 +1680,19 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                       if message.base and after else []),
         }
 
+    @app.get("/api/sessions/{session_id}/commits")
+    def commit_log(session_id: str, limit: int = 100):
+        """The project's git history, plain. The by-request view answers "what
+        came of what I asked"; this answers "what is actually in the repo" —
+        including the user's own commits and the clears, which no request owns.
+        """
+        session = _need(store, session_id)
+        project = _project_of(session)
+        if not vcs.is_repo(project):
+            return {"commits": []}
+        rows = vcs.log(project, limit=max(1, min(int(limit), 500)))
+        return {"commits": [{**row, "short": row["sha"][:8]} for row in rows]}
+
     @app.get("/api/sessions/{session_id}/commit/{sha}")
     def show_commit(session_id: str, sha: str):
         """One commit of this project: its message, its stat, its patch."""

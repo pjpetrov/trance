@@ -40,6 +40,35 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("from a reply to its commits", () => {
+  it("has a plain git-log mode beside the by-request one", async () => {
+    // The page's name says commits; what it showed was iterations. Both are
+    // real questions, so both are modes — and the log includes commits no
+    // request owns: the user's own, and the clears.
+    const user = userEvent.setup();
+    useUi.setState({ screen: "commits", commitsFor: "m2" });
+    fakeServer({
+      "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/messages/m2/commits": ANSWER,
+      "/api/sessions/s1/commits": { commits: [
+        { sha: "aaa111", short: "aaa111", subject: "user: cleared the generated files",
+          when: "1 minute ago", who: "petrovs" },
+        { sha: "def456", short: "def456", subject: "frontend: add level select",
+          when: "2 hours ago", who: "trance" },
+      ] },
+    });
+    renderWithQuery(<CommitsScreen />);
+    await screen.findByText(/What came of this/);
+
+    await user.click(screen.getByRole("button", { name: "All commits" }));
+    expect(await screen.findByText(/Every commit/)).toBeInTheDocument();
+    expect(screen.getByText(/cleared the generated files/)).toBeInTheDocument();
+    expect(screen.getByText(/add level select/)).toBeInTheDocument();
+
+    // And back, without losing the request that was open.
+    await user.click(screen.getByRole("button", { name: "By request" }));
+    expect(await screen.findByText(/What came of this/)).toBeInTheDocument();
+  });
+
   it("says how long this iteration was worked on", async () => {
     // Summed from the request's own steps — a request that reused old work is
     // not billed for it, and the whole-session clock lives on Statistics.

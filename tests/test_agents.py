@@ -10151,3 +10151,41 @@ def test_clear_all_refuses_while_the_run_is_writing(tmp_path):
     answer = client.delete(f"/api/sessions/{made['id']}/files")
     assert answer.status_code == 409
     assert "stop it first" in answer.json()["detail"]
+
+
+def test_the_plain_git_log_is_served_with_short_shas(tmp_path):
+    """The by-request view answers "what came of what I asked"; this answers
+    "what is in the repo" — including the user's own commits and the clears,
+    which no request owns."""
+    import pathlib
+
+    from fastapi.testclient import TestClient
+
+    from trance import vcs
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    made = client.post("/api/sessions", json={"name": "game"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "a.js").write_text("x", encoding="utf8")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "frontend: draw the lobby")
+    (project / "b.js").write_text("y", encoding="utf8")
+    vcs.commit_all(project, "user: their own hand-made commit")
+
+    rows = client.get(f"/api/sessions/{sid}/commits").json()["commits"]
+    # Newest first, whoever made them (commit_all adds its own prefix).
+    assert "hand-made" in rows[0]["subject"]
+    assert "draw the lobby" in rows[1]["subject"]
+    assert all(len(r["short"]) == 8 for r in rows)
+
+    # A project that is not a repository answers empty rather than 500.
+    bare = client.post("/api/sessions", json={"name": "fresh"}).json()
+    assert client.get(f"/api/sessions/{bare['id']}/commits").json()["commits"] == []
