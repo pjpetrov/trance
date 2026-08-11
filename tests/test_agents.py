@@ -10037,3 +10037,51 @@ def test_the_frame_is_applied_from_the_projects_settings(tmp_path, monkeypatch):
     steps = body["flow"]["steps"]
     assert steps[0]["role"] == "claude"
     assert steps[-1]["loop"] == "visual-test-and-fix"
+
+
+def test_a_framed_plan_runs_its_planner_from_the_library_not_the_shipped_copy(tmp_path, monkeypatch):
+    """Seen live: the plan opened with the planner as configured, and the step
+    ran on the default Qwen — the shipped planner, preset None. The proposal's
+    team never mentioned the planner, the proposal path never pulled it, and
+    the engine's builtin fallback silently handed over the shipped copy while
+    the library's, preset claude-code, sat unconsulted."""
+    from fastapi.testclient import TestClient
+
+    from trance.agents import orchestrator
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "zerg", "project_dir": str(tmp_path / "z")}).json()["id"]
+    client.put("/api/presets/claude-code",
+               json={"kind": "claudecode", "model": "", "base_url": ""})
+    made = client.put(f"/api/agents/planner?session={sid}", json={"preset": "claude-code"})
+    assert made.status_code == 200, made.json()
+    client.put(f"/api/config/planning?session={sid}", json={"plan_open": "planner"})
+
+    def _proposed(**kwargs):
+        frame = orchestrator.ensure_frame(
+            {"summary": "s", "team": ["backend"], "requirements": [],
+             "steps": [{"role": "backend", "loop": "", "task": "make the server",
+                        "check": None, "checks": [], "on_fail": None,
+                        "max_loops": 0, "points": 2}]},
+            opening=getattr(kwargs.get("settings"), "plan_open", ""),
+            closing="", roles=kwargs.get("roles"), loops=kwargs.get("loops"))
+        return {"text": "planned", "truncated": False, "proposal": frame}
+
+    monkeypatch.setattr(orchestrator, "chat", _proposed)
+    body = client.post(f"/api/sessions/{sid}/chat", json={"message": "build it"}).json()
+
+    # The planner is on the team, and it is the library's copy — with the model.
+    planner = next((r for r in body["team"] if r["name"] == "planner"), None)
+    assert planner is not None
+    assert planner["preset"] == "claude-code"
+
+    # And the engine resolves the same copy the moment a run would.
+    session = app.state.store.get(sid)
+    assert session.role("planner").preset == "claude-code"

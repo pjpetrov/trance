@@ -292,6 +292,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             return False
         if session.flow.next_pending() is None:
             return False
+        # The team, made whole before anyone runs. Found live: a plan whose
+        # first step named the library's planner started with the *shipped*
+        # planner — no preset, so the default model — because the proposal
+        # path had never pulled the role onto the team and nothing between
+        # the proposal and Run forced a read that would have healed it.
+        refresh_team(session)
         session.error = None
         session.clear_stop()
         publish_commands_of(session)
@@ -2054,6 +2060,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             # plan screen shows that until a full reload — which reads as the
             # agent's checks being ignored.
             seed_checks(session.flow, checks_for(session))
+            # And every role the flow names joins the team here too — the
+            # framed plan can open with an agent the orchestrator's own team
+            # list never mentioned.
+            pull_flow_roles(session)
             # Pin the reply to the code as it stands. Everything committed from
             # here until the next proposal is what this answer turned into, so
             # "show me what came of this" is a range rather than a guess.
