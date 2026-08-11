@@ -311,9 +311,14 @@ snap back. The console plays the burst back as a flick-book.
 visually judged by a **local Qwen3.6-27B (64k context) served by llama.cpp on
 a single RTX 3090** — no API, no cloud. The history card at the top of this
 README is the tester driving that game. And when the game is broken, the same
-rigor cuts the other way — here it fails a step because pressing E produced
-no "Enter vehicle" prompt, each check answered with the on-screen evidence
-quoted:
+rigor cuts the other way. Here is the frame it captured and its reading of
+it — DESCRIBE what is there, answer each CHECK with the evidence, then the
+verdict:
+
+![The frame the tester analyzed, and its reading](docs/screens/gta2-analysis.png)
+
+And the same step's ending: the failure routed back, the loop refusing to
+call it done —
 
 ![The tester's verdict, evidence per check](docs/screens/gta2-console.png)
 
