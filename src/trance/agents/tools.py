@@ -995,10 +995,9 @@ class AgentTools:
                          "animation frames ran — the page's main thread is blocked or "
                          "the tab is being throttled. (An app whose own draw loop has "
                          "died still produces frames; check_canvas is what finds that.)")
-        if found["needs_build"]:
-            lines.append(f"WARNING: this project is built by a bundler ({found['build_command']}). "
-                         "Served as static files its imports will fail. What you see may be "
-                         "the failure, not the app.")
+        if found.get("dev_server"):
+            lines.append(f"The project's own dev server is running behind this page "
+                         f"({found['dev_server']}); it stops when your step ends.")
         if probe.get("canvas"):
             lines.append(f"Canvas: {probe.get('w')}x{probe.get('h')}"
                          + (f" ({probe['count']} canvases, largest measured)"
@@ -1588,10 +1587,9 @@ def permissions_brief(role: AgentRole) -> str:
             "You may open this project in a real headless browser (open_page), send it keys "
             "(press_key), measure its canvas (check_canvas) and photograph it for a vision "
             "model to describe (look), or film a short burst for questions about motion "
-            "(watch). The app is served as static files from the folder "
-            "holding the page — no build or dev server is started, so a project that needs "
-            "one will show you its failure rather than itself, and open_page says when that "
-            "is the case."
+            "(watch). A project that needs its own dev server (Vite and friends) gets its "
+            "dev script from package.json started behind the page and stopped with your "
+            "step; anything else is served statically from the folder holding the page."
         )
 
     lines.append(

@@ -53,11 +53,13 @@ def test_the_browser_tools_are_offered_only_to_agents_granted_them(tmp_path):
     assert refused.ok is False and "do not have" in refused.text
 
 
-def test_the_prompt_says_the_app_is_served_statically():
-    """The agent has to know why a Vite project might show it a failure."""
+def test_the_prompt_says_how_the_app_is_served():
+    """The agent has to know what is behind the page it is judging: the
+    project's own dev server when it needs one, static files otherwise."""
     brief = permissions_brief(_role())
     assert "headless browser" in brief
-    assert "static" in brief and "no build or dev server is started" in brief
+    assert "dev server" in brief and "package.json" in brief
+    assert "statically" in brief
 
 
 def test_looking_without_a_vision_model_is_a_readable_refusal(tmp_path):
@@ -1094,3 +1096,89 @@ def test_a_film_without_a_vision_model_still_reports_what_it_measured(tmp_path):
     assert out.detail["moving"] is False
     assert "No vision model" in out.text
     assert "changed in 0 of 1 intervals" in out.text
+
+
+
+# ----------------------------------------------------------- the dev server
+
+def test_a_vite_project_gets_its_own_dev_server_behind_the_page(tmp_path, monkeypatch):
+    """Served statically, a Vite app loads and dies on its first bare import —
+    a visual test of one could only ever photograph the failure. And its dev
+    server transpiles without typechecking, so a broken `npm run build` does
+    not stop the app being judged while the type errors are someone's task."""
+    from types import SimpleNamespace
+
+    from trance import preview
+    from trance.agents.visual import VisualSession
+
+    project = tmp_path / "app"
+    project.mkdir()
+    (project / "index.html").write_text("<canvas></canvas>", encoding="utf8")
+    (project / "vite.config.ts").write_text("export default {}", encoding="utf8")
+    (project / "package.json").write_text(
+        '{"scripts": {"dev": "vite"}}', encoding="utf8")
+
+    started = {}
+
+    def _run_dev(directory, command, *, log_dir=None, **_kw):
+        started["dir"], started["command"] = str(directory), command
+        return SimpleNamespace(port=5191, alive=lambda: True,
+                               stop=lambda: started.__setitem__("stopped", True))
+
+    monkeypatch.setattr(preview, "run_dev", _run_dev)
+    session = VisualSession(project)
+
+    url = session._serve("index.html")
+    assert url == "http://127.0.0.1:5191/"
+    assert started["command"] == "npm run dev"
+    assert session.dev_command == "npm run dev"
+
+    session.close()
+    assert started.get("stopped") is True
+
+
+def test_a_dev_server_that_will_not_start_says_its_last_words(tmp_path, monkeypatch):
+    """The log tail is the diagnosis — a missing dependency, a broken config —
+    and without it the agent only knows that nothing loaded."""
+    import pytest as _pytest
+
+    from trance import preview
+    from trance.agents.visual import VisualSession
+    from trance.browser import BrowserUnavailable
+
+    project = tmp_path / "app"
+    project.mkdir()
+    (project / "index.html").write_text("x", encoding="utf8")
+    (project / "vite.config.ts").write_text("export default {}", encoding="utf8")
+    (project / "package.json").write_text('{"scripts": {"dev": "vite"}}', encoding="utf8")
+
+    def _refuse(directory, command, *, log_dir=None, **_kw):
+        raise preview.DevServerFailed("exited before it served anything",
+                                      output="Error: Cannot find module 'vite'")
+
+    monkeypatch.setattr(preview, "run_dev", _refuse)
+    with _pytest.raises(BrowserUnavailable) as raised:
+        VisualSession(project)._serve("index.html")
+    assert "npm run dev" in str(raised.value)
+    assert "Cannot find module 'vite'" in str(raised.value)
+
+
+def test_a_plain_page_is_still_served_statically(tmp_path, monkeypatch):
+    """No bundler, no dev server: a folder of HTML has nothing to build, and
+    starting npm for it would be pure ceremony."""
+    from trance import preview
+    from trance.agents.visual import VisualSession
+
+    project = tmp_path / "plain"
+    project.mkdir()
+    (project / "index.html").write_text("<h1>hi</h1>", encoding="utf8")
+
+    monkeypatch.setattr(preview, "run_dev",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("started npm")))
+    session = VisualSession(project)
+    try:
+        url = session._serve("index.html")
+        assert url.startswith("http://127.0.0.1:")
+        assert session.dev_command == ""
+    finally:
+        session.close()

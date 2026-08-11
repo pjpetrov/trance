@@ -60,6 +60,10 @@ class VisualSession:
         self.cancel_token = cancel_token or session_id
         self._browser: Browser | None = None
         self._preview = None
+        self._dev = None
+        #: The dev command behind the page, when one is running. Reported so
+        #: the agent knows what it is looking at.
+        self.dev_command = ""
         self._shots = 0
         self.page = ""
 
@@ -73,13 +77,37 @@ class VisualSession:
         return self._browser
 
     def _serve(self, page: str) -> str:
-        """A URL for `page`, from a static server rooted where the page lives.
+        """A URL for `page` — the project's own dev server when it needs one,
+        else a static server rooted where the page lives.
 
-        Static only, deliberately: starting a project's dev server is the user's
-        call, not something a step does on their machine behind them. A project
-        that genuinely needs a build says so in the result instead.
+        A Vite app served statically loads and then dies on its first bare
+        import, so a visual test of one could only ever photograph the failure.
+        The dev script comes from the project's own package.json — nothing is
+        invented — it is started once per step, its output goes to
+        .trance/dev-server.log, and it is stopped with the step. It also
+        sidesteps a broken `npm run build`: a dev server transpiles without
+        typechecking, so the app runs and can be judged while the type errors
+        are still someone's open task.
         """
         root = preview.web_root_for(self.project, page)
+        wants = preview.dev_command(self.project, root)
+        if wants and wants.get("needed"):
+            if self._dev is not None and not self._dev.alive():
+                self._dev = None
+            if self._dev is None:
+                try:
+                    self._dev = preview.run_dev(
+                        Path(wants["dir"]), wants["command"],
+                        log_dir=self.project / ".trance")
+                except preview.DevServerFailed as failed:
+                    raise BrowserUnavailable(
+                        f"this project needs its dev server ({wants['command']}) and "
+                        f"it would not start: {failed}. Its last words:\n"
+                        f"{failed.output[-800:]}") from failed
+                self.dev_command = wants["command"]
+            name = Path(page).name
+            path = "" if name == "index.html" else name
+            return f"http://127.0.0.1:{self._dev.port}/{path}"
         if self._preview is None or Path(self._preview.root) != root:
             if self._preview is not None:
                 self._preview.stop()
@@ -94,6 +122,12 @@ class VisualSession:
         if self._preview is not None:
             self._preview.stop()
             self._preview = None
+        if self._dev is not None:
+            # The step started it, the step ends it: a dev server left behind
+            # holds its port against every later step, and nothing else reaps it.
+            self._dev.stop()
+            self._dev = None
+            self.dev_command = ""
 
     # ------------------------------------------------------------ operations
 
@@ -110,15 +144,17 @@ class VisualSession:
         url = self._serve(page)
         loaded = self.browser.navigate(url, settle_frames=settle_frames)
         probe = self.browser.probe()
-        build = preview.dev_command(self.project, preview.web_root_for(self.project, page))
         return {
             "page": page, "url": url,
             "frames": loaded["frames"], "asked_frames": loaded["asked_frames"],
             "errors": loaded["errors"], "probe": probe,
-            # A Vite app served statically loads and then dies on its first bare
-            # import. Saying so turns a baffling blank page into a known cause.
-            "needs_build": bool(build and build.get("needed")),
-            "build_command": (build or {}).get("command", ""),
+            # Running behind the page, when the project needs one. The old
+            # answer — serve it statically and warn that what you see may be
+            # the failure — meant a Vite project could not be visually tested
+            # at all.
+            "dev_server": self.dev_command,
+            "needs_build": False,
+            "build_command": "",
         }
 
     def _needs_a_page(self) -> None:
