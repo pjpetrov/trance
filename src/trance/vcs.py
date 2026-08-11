@@ -223,6 +223,30 @@ def undo(project: Path, commit_sha: str, checkpoint: str = "") -> GitResult:
                      files=lost + removed)
 
 
+def revert_commits(project: Path, shas: list[str], message: str) -> GitResult:
+    """Add one inverse commit undoing `shas`, newest first.
+
+    One commit for the lot rather than one per sha: "revert this step" is one
+    act, and reverting it back — changing your mind — should be one act too.
+    A conflict aborts the whole thing and leaves the tree exactly as it was:
+    a half-applied revert is worse than a failed one, and the caller's promise
+    is that failing costs nothing but the click.
+    """
+    shas = [sha for sha in shas if sha]
+    if not shas:
+        return GitResult(False, "no commits to revert")
+    code, out = _run(project, "revert", "--no-commit", *reversed(shas))
+    if code != 0:
+        _run(project, "revert", "--abort")
+        _run(project, "reset", "--hard", "HEAD")
+        return GitResult(False, out.strip() or "git revert failed")
+    made = commit_all(project, message)
+    if not made:
+        _run(project, "reset", "--hard", "HEAD")
+        return GitResult(False, f"the revert staged but would not commit: {made.detail}")
+    return GitResult(True, f"reverted {len(shas)} commit(s)", sha=head(project))
+
+
 def log(project: Path, limit: int = 20) -> list[dict]:
     """Recent commits, for showing what a run actually produced."""
     code, out = _run(project, "log", f"-{limit}", "--pretty=format:%H%x1f%s%x1f%ar")

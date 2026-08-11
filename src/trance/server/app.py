@@ -2243,6 +2243,43 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {**session.flow.to_dict(), **outcome,
                 "team": [r.to_dict() for r in session.team]}
 
+    @app.post("/api/sessions/{session_id}/steps/{step_id}/revert")
+    def revert_step(session_id: str, step_id: str):
+        """Undo everything a step committed, as one inverse commit.
+
+        Failing costs nothing but the click: a conflict aborts cleanly, the
+        tree stays as it was, and the button remains for another try — after
+        whatever caused the conflict is dealt with.
+        """
+        session = _need(store, session_id)
+        if session.status == "running":
+            raise HTTPException(409, "the run is writing right now — stop it first")
+        step = next((s for s in session.flow.steps if s.id == step_id), None)
+        if step is None:
+            raise HTTPException(404, "no such step")
+        shas = list(dict.fromkeys(
+            a.commit for a in step.attempts if a.commit))
+        if not shas:
+            raise HTTPException(400, "this step recorded no commits to revert")
+
+        project = _project_of(session)
+        label = (step.task or step_id).strip()[:60]
+        made = vcs.revert_commits(project, shas, f"user: reverted step — {label}")
+        if not made:
+            bus.emit("warning", session_id, step_id=step_id, payload={
+                "message": f"Revert failed and nothing was changed: {made.detail[:300]}"})
+            raise HTTPException(409, (
+                f"the revert did not apply cleanly — nothing was changed. "
+                f"{made.detail[:400]}"))
+
+        bus.emit("step_reverted", session_id, agent="you", step_id=step_id, payload={
+            "commits": shas, "sha": made.sha,
+            "message": (f"Reverted this step's {len(shas)} commit(s) as {made.sha[:8]}. "
+                        f"The step's work and the undo are both in history."),
+        })
+        touch(session)
+        return {"reverted": shas, "sha": made.sha}
+
     @app.post("/api/sessions/{session_id}/resume-pending")
     def resume_pending(session_id: str):
         """Kick the engine for any pending work (after rerun, or a flow edit)."""

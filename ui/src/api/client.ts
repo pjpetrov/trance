@@ -222,6 +222,9 @@ export const api = {
   deleteFile: (sid: string, path: string) =>
     request<{ deleted: string; committed: boolean }>(
       `/api/sessions/${id(sid)}/file?path=${id(path)}`, { method: "DELETE" }),
+  revertStep: (sid: string, stepId: string) =>
+    request<{ reverted: string[]; sha: string }>(
+      `/api/sessions/${id(sid)}/steps/${id(stepId)}/revert`, { method: "POST" }),
   commitLog: (sid: string) =>
     request<{ commits: Commit[] }>(`/api/sessions/${id(sid)}/commits`),
   clearFiles: (sid: string) =>

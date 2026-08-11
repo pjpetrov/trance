@@ -9,7 +9,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEventTail, useSession, useStepEvents } from "@/api/queries";
-import { useRunControl, useStartRun, useStepActions, useSteer } from "@/api/mutations";
+import { useRevertStep, useRunControl, useStartRun, useStepActions, useSteer }
+  from "@/api/mutations";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { clip, timeOf } from "@/lib/format";
@@ -190,6 +191,7 @@ function StepRow(
 ) {
   const sessionId = useUi((state) => state.sessionId);
   const { rerun } = useStepActions(sessionId ?? "");
+  const revert = useRevertStep(sessionId ?? "");
   const steer = useSteer(sessionId ?? "");
   const [showRuns, setShowRuns] = useState(false);
 
@@ -240,6 +242,18 @@ function StepRow(
                     title="Every run of this step">
               history{runs.length ? ` (${runs.length})` : ""}
             </Button>
+            {step.attempts.some((attempt) => attempt.commit) && (
+              <Button
+                size="sm" variant="danger" busy={revert.isPending}
+                title="Undo everything this step committed, as one inverse commit — the work and the undo both stay in history"
+                onClick={() => revert.mutateAsync(step.id)
+                  .then((out) => toast.ok(
+                    `Reverted ${out.reverted.length} commit(s) as ${out.sha.slice(0, 8)}.`))
+                  // A failed revert changed nothing; the button stays for
+                  // another try once the conflict is dealt with.
+                  .catch((error) => toast.err(String(error)))}
+              >revert</Button>
+            )}
           </div>
 
           {showRuns && (

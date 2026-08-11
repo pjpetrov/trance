@@ -61,6 +61,9 @@ export function fakeServer(routes: Record<string, Route>): FakeServer {
     const answer = typeof route === "function"
       ? (route as (request: FakeRequest) => unknown)(request)
       : route;
+    // A function route may answer a real Response, for tests about failure —
+    // a fake server that can only say 200 cannot test what an error looks like.
+    if (answer instanceof Response) return answer;
     return new Response(JSON.stringify(answer),
                         { status: 200, headers: { "Content-Type": "application/json" } });
   });

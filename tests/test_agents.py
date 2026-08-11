@@ -10389,3 +10389,112 @@ def test_a_rejection_with_tries_left_still_promises_the_retry(tmp_path, monkeypa
     assert step.status == "done"
     assert "Trying again" in said["check_failed"][0]["message"]
     assert "reviewer" in said["step_retry"][0]["message"]
+
+
+# ============================================= reverting a step's commits
+
+def _revert_app(tmp_path):
+    import pathlib
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    made = client.post("/api/sessions", json={"name": "game"}).json()
+    return client, app, made["id"], pathlib.Path(made["project_dir"])
+
+
+def test_a_steps_commits_can_be_reverted_as_one_inverse_commit(tmp_path):
+    """The step's work and the undo both stay in history — "reverted" must
+    never mean the work is gone and unreadable."""
+    from trance import vcs
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _revert_app(tmp_path)
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "keep.js").write_text("untouched\n", encoding="utf8")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "start")
+
+    # Two attempts, two commits — the shape a retried step leaves behind.
+    (project / "game.js").write_text("v1\n", encoding="utf8")
+    first = vcs.commit_all(project, "backend: attempt 1")
+    (project / "game.js").write_text("v2\n", encoding="utf8")
+    (project / "extra.js").write_text("added\n", encoding="utf8")
+    second = vcs.commit_all(project, "backend: attempt 2")
+
+    session = app.state.store.get(sid)
+    step = Step(role="backend", task="build the game loop")
+    step.attempts = [Attempt(n=1, commit=first.sha), Attempt(n=2, commit=second.sha)]
+    session.flow = Flow(steps=[step])
+
+    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/revert").json()
+
+    assert out["reverted"] == [first.sha, second.sha]
+    assert not (project / "game.js").exists()
+    assert not (project / "extra.js").exists()
+    assert (project / "keep.js").read_text() == "untouched\n"
+    subjects = [c["subject"] for c in vcs.log(project)]
+    assert any("reverted step" in s for s in subjects)
+    assert any("attempt 2" in s for s in subjects)      # the work is still there
+
+
+def test_a_conflicting_revert_fails_cleanly_and_can_be_tried_again(tmp_path):
+    """Failing costs nothing but the click: the tree stays exactly as it was,
+    and the button stays for another try."""
+    from trance import vcs
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _revert_app(tmp_path)
+    project.mkdir(parents=True, exist_ok=True)
+    vcs.ensure_repo(project)
+    (project / "game.js").write_text("original\n", encoding="utf8")
+    vcs.commit_all(project, "start")
+    (project / "game.js").write_text("the step's version\n", encoding="utf8")
+    stepped = vcs.commit_all(project, "backend: the step")
+    # A later hand edit to the same lines: the revert cannot apply cleanly.
+    (project / "game.js").write_text("later hand edit\n", encoding="utf8")
+    vcs.commit_all(project, "user: my own change on top")
+
+    session = app.state.store.get(sid)
+    step = Step(role="backend", task="t")
+    step.attempts = [Attempt(n=1, commit=stepped.sha)]
+    session.flow = Flow(steps=[step])
+
+    answer = client.post(f"/api/sessions/{sid}/steps/{step.id}/revert")
+    assert answer.status_code == 409
+    assert "nothing was changed" in answer.json()["detail"]
+    # The tree is exactly as it was: the hand edit intact, no revert dirt.
+    assert (project / "game.js").read_text() == "later hand edit\n"
+    code_out = vcs.dirty(project)
+    assert code_out == []
+
+    # And nothing stops a second attempt once the conflict is dealt with.
+    again = client.post(f"/api/sessions/{sid}/steps/{step.id}/revert")
+    assert again.status_code == 409
+
+
+def test_a_step_with_no_commits_says_so_and_a_running_session_refuses(tmp_path):
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _revert_app(tmp_path)
+    project.mkdir(parents=True, exist_ok=True)
+    session = app.state.store.get(sid)
+    step = Step(role="backend", task="t")
+    step.attempts = [Attempt(n=1)]
+    session.flow = Flow(steps=[step])
+
+    bare = client.post(f"/api/sessions/{sid}/steps/{step.id}/revert")
+    assert bare.status_code == 400
+    assert "no commits" in bare.json()["detail"]
+
+    session.status = "running"
+    busy = client.post(f"/api/sessions/{sid}/steps/{step.id}/revert")
+    assert busy.status_code == 409
+    assert "stop it first" in busy.json()["detail"]

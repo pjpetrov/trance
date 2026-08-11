@@ -10,6 +10,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RunScreen } from "@/screens/RunScreen";
+import { Toaster } from "@/components/Toaster";
 import { AgentsEditor } from "@/modals/AgentsEditor";
 import { PlanScreen } from "@/screens/PlanScreen";
 import { ModelsEditor } from "@/modals/ModelsEditor";
@@ -299,6 +300,43 @@ describe("the run screen", () => {
 
     renderWithQuery(<RunScreen />);
     expect(await screen.findByText(/only one ghost is visible/)).toBeInTheDocument();
+  });
+});
+
+describe("reverting a step", () => {
+  it("offers revert only where there are commits, and reports a failure honestly", async () => {
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/sessions/s1": session({
+        flow: {
+          steps: [step({ id: "st1", role: "backend", status: "done",
+                         task: "Build the game loop",
+                         attempts: [{ n: 1, commit: "abc123" } as never] }),
+                  step({ id: "st2", role: "backend", status: "done",
+                         task: "A step that committed nothing" })],
+          cursor: 0,
+        },
+      }),
+      "/api/sessions/s1/events": eventsRoute([], []),
+      // The revert conflicts: the server answers 409 and changes nothing.
+      "/api/sessions/s1/steps/st1/revert": () => new Response(
+        JSON.stringify({ detail: "the revert did not apply cleanly — nothing was changed." }),
+        { status: 409, headers: { "Content-Type": "application/json" } }),
+    });
+
+    renderWithQuery(<><RunScreen /><Toaster /></>);
+    await user.click(await screen.findByText(/Build the game loop/));
+    const button = await screen.findByRole("button", { name: "revert" });
+    await user.click(button);
+
+    // Told that it failed — and the button stays for another try.
+    expect(await screen.findByText(/did not apply cleanly/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "revert" })).toBeInTheDocument();
+
+    // A step with no commits never offers it.
+    await user.click(screen.getByText(/committed nothing/));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "revert" })).toBeNull());
   });
 });
 
