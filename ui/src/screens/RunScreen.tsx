@@ -298,8 +298,9 @@ function Console(
   { stepId, pinnedRun, onPickRun }:
   { stepId: string | null; pinnedRun: number | null; onPickRun: (run: number | null) => void },
 ) {
-  const { sessionId, showReads, toggleReads, follow, setFollow } = useUi();
+  const { sessionId, showReads, toggleReads, follow, setFollow, setOpenStep } = useUi();
   const session = useSession(sessionId);
+  const steps = session.data?.flow.steps ?? [];
   const tail = useEventTail(sessionId);
   const stepEvents = useStepEvents(sessionId, stepId);
   const bottom = useRef<HTMLDivElement>(null);
@@ -411,9 +412,17 @@ function Console(
               onClick={() => {
                 const next = !follow;
                 setFollow(next);
-                // Turning it on means "show me what is happening now", which is
-                // the newest run of the step, not whichever one was pinned.
-                if (next) { onPickRun(null); bottom.current?.scrollIntoView({ block: "end" }); }
+                // Turning it on means "show me what is happening now" — the
+                // running step, its newest run, its newest lines. Only jumping
+                // at the *next* transition left you reading the step you had
+                // wandered to, following in name only until something changed.
+                if (next) {
+                  const live = steps.find((step) => step.status === "running"
+                                                 || step.status === "verifying");
+                  if (live && live.id !== stepId) setOpenStep(live.id);
+                  onPickRun(null);
+                  bottom.current?.scrollIntoView({ block: "end" });
+                }
               }}
             >{follow ? "following" : "follow"}</Button>
             <Button variant="ghost" size="sm" onClick={toggleReads}>

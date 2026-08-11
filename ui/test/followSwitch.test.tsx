@@ -47,6 +47,36 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the follow switch", () => {
+  it("jumps to the running step the moment it is turned on", async () => {
+    // "Follow" while reading an old step used to follow in name only: nothing
+    // moved until the harness's next transition, so the button looked broken
+    // exactly when it was pressed with intent.
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/sessions/s1": session({
+        status: "running",
+        flow: {
+          steps: [step({ id: "st1", status: "done", task: "the old step" }),
+                  step({ id: "st2", status: "running", task: "the live one" })],
+          cursor: 1,
+        },
+      }),
+      "/api/sessions/s1/events": eventsRoute([], []),
+    });
+    renderWithQuery(<RunScreen />);
+    // Wander to the finished step the way a person does — clicking it, which
+    // also pauses following. Setting the store directly here would dodge the
+    // arrival picker and test a state the page cannot reach.
+    await user.click(await screen.findByText(/the old step/));
+    expect(useUi.getState().openStep).toBe("st1");
+    expect(useUi.getState().follow).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "follow" }));
+
+    expect(useUi.getState().openStep).toBe("st2");
+    expect(useUi.getState().follow).toBe(true);
+  });
+
   it("is on by default and says so", async () => {
     serve([line()]);
     renderWithQuery(<RunScreen />);
