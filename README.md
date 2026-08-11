@@ -316,6 +316,25 @@ loop), **look** — one screenshot, one question to a vision model — and
 for the questions a single picture cannot answer — does it move, flicker,
 snap back. The console plays the burst back as a flick-book.
 
+**A real session.** A GTA2-style game, every line of it written, tested and
+visually judged by a **local Qwen3.6-27B with a 64k context window, served by
+llama.cpp on a single RTX 3090** — no API, no cloud. The visual tester drives
+the game it is judging: walks the city with WASD, presses **E** beside a
+sedan, and asks the vision model pointed questions with the evidence demanded
+per check:
+
+![The visual tester walking the city](docs/screens/gta2-city.png)
+
+![Driving the sedan it entered](docs/screens/gta2-driving.png)
+
+The second frame is the tester *in the car it entered* — the `[ E ] Exit
+vehicle` prompt and the SEDAN speed stat on the HUD are the evidence its
+verdict cites. And when the game is broken, the same rigor cuts the other
+way — here it fails a step because pressing E produced no "Enter vehicle"
+prompt, with the on-screen evidence quoted line by line:
+
+![The tester's verdict, evidence per check](docs/screens/gta2-console.png)
+
 `open_page` starts the project's **own dev server** behind the page when it
 needs one (a Vite app served statically dies on its first import), with a
 fresh free port injected as `PORT` — the squatter on your default port is
