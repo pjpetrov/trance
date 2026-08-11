@@ -9751,3 +9751,107 @@ def test_a_session_saved_before_the_team_pull_heals_on_read(tmp_path):
 
     body = client.get(f"/api/sessions/{sid}").json()
     assert "claude" in [r["name"] for r in body["team"]]
+
+
+# ======================= nothing an agent starts outlives the user's stop
+
+def test_a_foreground_command_cannot_leave_a_server_behind(tmp_path):
+    """`cmd &` is the leak: the shell exits clean, the server stays — measured
+    live at an hour and a half, holding its port and a stale game nobody could
+    join. Whatever a finished command leaves in its process group dies with
+    it, and the agent is told to use background=true instead."""
+    import os
+
+    from trance.agents.roles import AgentRole
+    from trance.agents.tools import AgentTools
+
+    role = AgentRole(name="dev", title="Dev", description="", system_prompt="",
+                     paths=["**"], toolsets=["files", "commands"],
+                     commands=["bash"], shell=True)
+    tools = AgentTools(tmp_path, role)
+    # The output redirect is the point: a child holding the stdout pipe is
+    # already caught by the timeout path; the one that redirects returns the
+    # shell instantly and used to survive for good.
+    out = tools.call("run_command",
+                     {"command": "bash -c 'sleep 300 >/dev/null 2>&1 & echo $!'"})
+
+    assert out.ok is True
+    pid = int(out.text.splitlines()[2].strip())
+    assert "has been stopped" in out.text and "background=true" in out.text
+    # Killed is not yet reaped: a zombie answers kill(pid, 0) until init gets
+    # to it, so give it a moment rather than reading the race as survival.
+    import time as _time
+    for _ in range(40):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        _time.sleep(0.05)
+    else:
+        os.kill(pid, 9)
+        raise AssertionError(f"the orphan (pid {pid}) survived the reap")
+
+
+def test_a_clean_command_is_not_scolded_about_leftovers(tmp_path):
+    from trance.agents.roles import AgentRole
+    from trance.agents.tools import AgentTools
+
+    role = AgentRole(name="dev", title="Dev", description="", system_prompt="",
+                     paths=["**"], toolsets=["files", "commands"], commands=["echo"])
+    tools = AgentTools(tmp_path, role)
+    out = tools.call("run_command", {"command": "echo hello"})
+    assert out.ok is True
+    assert "has been stopped" not in out.text
+
+
+def test_stop_everything_kills_foreground_strays_and_background_alike(tmp_path):
+    import os
+    import subprocess
+
+    from trance.agents import tools as tools_module
+    from trance.agents.tools import RunningCommand, stop_everything
+
+    proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
+    with tools_module._RUNNING_LOCK:
+        tools_module._RUNNING["cmd_test"] = RunningCommand(
+            command_id="cmd_test", proc=proc, pgid=os.getpgid(proc.pid),
+            command="sleep 300", background=False, log_path="")
+
+    stopped = stop_everything()
+    assert "sleep 300" in stopped
+    proc.wait(timeout=5)
+    with tools_module._RUNNING_LOCK:
+        assert "cmd_test" not in tools_module._RUNNING
+
+
+def test_the_engine_sweeps_on_every_way_out_of_a_run(tmp_path):
+    """Stopped or finished, nothing an agent started stays behind — and the
+    console says what was reaped rather than it dying silently."""
+    import os
+    import subprocess
+
+    from trance.agents import tools as tools_module
+    from trance.agents.tools import RunningCommand
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Flow
+    from trance.session import Session
+
+    proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
+    with tools_module._RUNNING_LOCK:
+        tools_module._RUNNING["cmd_stray"] = RunningCommand(
+            command_id="cmd_stray", proc=proc, pgid=os.getpgid(proc.pid),
+            command="npm run dev -w backend", background=False, log_path="")
+
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.flow = Flow(steps=[])
+    bus = EventBus()
+    seen = []
+    bus.subscribe_sync(lambda e: seen.append(e) if e.type == "background_stopped" else None)
+
+    FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)._run()
+
+    assert session.status == "finished"
+    assert any("npm run dev -w backend" in e.payload["command"] for e in seen)
+    proc.wait(timeout=5)

@@ -2158,6 +2158,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             bus.emit("run_stopped", session_id, payload={
                 "reason": "stopped by user", "aborted_model_calls": aborted,
                 "message": "Stopped, and the model call in flight was broken off."})
+        # And everything the agents started. The engine sweeps too when its
+        # loop notices the stop — but a foreground command mid-flight holds
+        # that loop for up to its whole timeout, and Stop means now.
+        from ..agents.tools import stop_everything
+
+        for command in stop_everything():
+            bus.emit("background_stopped", session_id, payload={
+                "command": command,
+                "message": f"Stopped a process an agent left running: {command}"})
         bus.emit("stopping", session_id, payload={
             "message": ("Stopping after the current agent turn. Resume will start a "
                         "fresh engine from the next pending step.")})

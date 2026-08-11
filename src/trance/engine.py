@@ -34,7 +34,7 @@ from .loops import CHECK_FAILED, EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS
 from .indexer.service import default_db_path, index_repo
 from .session import Session
 from . import vcs
-from .agents.tools import stop_background
+from .agents.tools import stop_background, stop_everything
 from .worker.tools import ContextTools, project_map
 
 
@@ -165,12 +165,14 @@ class FlowEngine:
                 if session.stopping:
                     self._emit("run_stopped", payload={"reason": "stopped by user"})
                     session.status = "ready"
+                    self._sweep_processes("the run was stopped")
                     break
 
                 step = session.flow.next_pending()
                 if step is None:
                     session.status = "finished"
                     self._emit("run_finished", payload=session.flow.progress)
+                    self._sweep_processes("the run finished")
                     break
 
                 try:
@@ -369,6 +371,19 @@ class FlowEngine:
             "attempts": len(step.attempts), "halts_flow": True, "loop": step.loop,
         })
         self._halt(step)
+
+    def _sweep_processes(self, why: str) -> None:
+        """Kill everything any agent left running, and say so.
+
+        Stop means stop: a process an agent started answering to nobody is not
+        a feature. The per-step reap catches background commands; this catches
+        whatever slipped past it, on every way out of a run.
+        """
+        for command in stop_everything():
+            self._emit("background_stopped", payload={
+                "command": command,
+                "message": f"Stopped a process an agent left running ({why}): {command}",
+            })
 
     def _loop_goal(self, loop) -> str:
         """The project goal, plus what this loop is for."""

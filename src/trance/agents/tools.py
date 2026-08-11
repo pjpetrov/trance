@@ -213,6 +213,29 @@ def stop_background(_reason: str = "") -> list[str]:
     return stopped
 
 
+def stop_everything(_reason: str = "") -> list[str]:
+    """Kill every process any agent started, foreground or background.
+
+    The user's Stop means stop: nothing an agent launched outlives it. Found
+    the hard way — a backend started by an agent survived its step, the run,
+    and a server restart, and sat on its port for an hour and a half holding a
+    stale game nobody could join.
+    """
+    with _RUNNING_LOCK:
+        entries = list(_RUNNING.values())
+    stopped = []
+    for entry in entries:
+        if not kill_group(entry.pgid):
+            try:
+                entry.proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+        stopped.append(entry.command)
+        with _RUNNING_LOCK:
+            _RUNNING.pop(entry.command_id, None)
+    return stopped
+
+
 def command_policy() -> CommandPolicy:
     return _POLICY
 
@@ -1425,6 +1448,13 @@ class AgentTools:
         code = proc.returncode
         if code is not None and code < 0 and not timed_out:
             cancelled = True
+        # Whatever the command left running in its group is an orphan: with
+        # `cmd &` the shell exits clean while the server stays, holding its
+        # port and its state against everything that comes after — measured
+        # live at an hour and a half. Nothing survives a finished command.
+        left_behind = False
+        if not timed_out and not cancelled:
+            left_behind = kill_group(pgid)
         elapsed = round(time.time() - started, 1)
         self.notify("command_finished", {
             "command_id": command_id, "exit_code": code, "seconds": elapsed,
@@ -1432,6 +1462,12 @@ class AgentTools:
         })
 
         output = (output or "").strip() or "(no output)"
+        if left_behind:
+            output += ("\n\nNOTE: this command left a process running when it "
+                       "finished (`&`, or something it spawned). That process has "
+                       "been stopped — nothing survives a finished command. To keep "
+                       "a server running for your later tool calls, run it with "
+                       "background=true instead.")
         if len(output) > MAX_COMMAND_OUTPUT:
             half = MAX_COMMAND_OUTPUT // 2
             output = output[:half] + "\n… (trimmed) …\n" + output[-half:]
