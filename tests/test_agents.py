@@ -10535,3 +10535,112 @@ def test_a_mistaken_revert_can_be_applied_back(tmp_path):
     assert any("re-applied step" in s for s in subjects)
     assert any("reverted step" in s for s in subjects)
     assert any("backend: the step" in s for s in subjects)
+
+
+# ================== the Default scope is an overlay on shipped, not a freeze
+
+def test_an_unedited_default_tracks_the_shipped_definition(tmp_path, monkeypatch):
+    """The defaults file used to hold full frozen copies, so trance's prompt
+    improvements never reached it — the same staleness the sessions had, one
+    layer up, found when a visual tester ran a months-old procedure. Unedited
+    means the definition is trance's to improve."""
+    import copy as copy_module
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import RoleStore
+
+    path = tmp_path / "agents.json"
+    first = RoleStore(path, overlay=True)
+    held = first.get("frontend")
+    held.preset = "Qwen-local"                      # wiring: a choice, kept
+    first.upsert(held)
+
+    # trance ships a better prompt.
+    improved = copy_module.deepcopy(BUILTIN_ROLES["frontend"])
+    improved.system_prompt = "the improved shipped prompt"
+    monkeypatch.setitem(BUILTIN_ROLES, "frontend", improved)
+
+    again = RoleStore(path, overlay=True)
+    fresh = again.get("frontend")
+    assert fresh.system_prompt == "the improved shipped prompt"   # flowed in
+    assert fresh.preset == "Qwen-local"                           # choice kept
+
+
+def test_an_edited_default_definition_stays_edited(tmp_path, monkeypatch):
+    import copy as copy_module
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import RoleStore
+
+    path = tmp_path / "agents.json"
+    first = RoleStore(path, overlay=True)
+    held = first.get("frontend")
+    held.system_prompt = "my own carefully tuned prompt"
+    first.upsert(held)
+
+    improved = copy_module.deepcopy(BUILTIN_ROLES["frontend"])
+    improved.system_prompt = "the improved shipped prompt"
+    monkeypatch.setitem(BUILTIN_ROLES, "frontend", improved)
+
+    again = RoleStore(path, overlay=True)
+    assert again.get("frontend").system_prompt == "my own carefully tuned prompt"
+
+    # Reset is the opt-in to the shipped version, wiring intact.
+    again.reset("frontend")
+    assert again.get("frontend").system_prompt == "the improved shipped prompt"
+    # And having reset, it tracks again.
+    third = RoleStore(path, overlay=True)
+    assert third.get("frontend").system_prompt == "the improved shipped prompt"
+
+
+def test_a_file_from_before_the_flag_is_treated_as_edited(tmp_path):
+    """An old frozen copy and a real edit are indistinguishable, so the safe
+    reading is "edited" — the cleanup is a deliberate act, not a load."""
+    import json as json_module
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import RoleStore
+
+    path = tmp_path / "agents.json"
+    stale = BUILTIN_ROLES["frontend"].to_dict()
+    stale["system_prompt"] = "an old shipped prompt, frozen long ago"
+    path.write_text(json_module.dumps({"agents": [stale]}), encoding="utf8")
+
+    store = RoleStore(path, overlay=True)
+    assert store.get("frontend").system_prompt == \
+        "an old shipped prompt, frozen long ago"
+
+
+def test_a_session_resets_to_the_default_not_over_it(tmp_path):
+    """One chain, one hop: the user's own default is what "the default" means,
+    and reset must never skip past it to shipped."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    # The user's default: their own frontend prompt.
+    client.put("/api/agents/frontend?session=defaults",
+               json={"system_prompt": "the default my projects start from"})
+
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+    client.put(f"/api/agents/frontend?session={sid}",
+               json={"system_prompt": "a local experiment", "preset": None})
+
+    listed = next(a for a in client.get(f"/api/agents?session={sid}").json()["agents"]
+                  if a["name"] == "frontend")
+    assert "system_prompt" in listed["differs"]     # the marker sees the drift
+
+    out = client.post(f"/api/agents/frontend/reset?session={sid}").json()
+    assert out["system_prompt"] == "the default my projects start from"
+
+    # And the Default scope itself resets one hop further, to shipped.
+    reset_default = client.post("/api/agents/frontend/reset?session=defaults").json()
+    from trance.agents.roles import BUILTIN_ROLES
+    assert reset_default["system_prompt"] == BUILTIN_ROLES["frontend"].system_prompt

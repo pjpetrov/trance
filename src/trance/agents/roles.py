@@ -119,6 +119,27 @@ class AgentRole:
         return cls(**clean)
 
 
+#: What an agent *is*, as opposed to how a user wired it in (model, checks,
+#: retries — RESET_KEEPS in the store). These are the fields "differs from the
+#: original" is judged on, and the fields a reset actually replaces.
+DEFINITION_FIELDS = ("title", "description", "system_prompt", "paths",
+                     "toolsets", "verifier")
+
+
+def definition_differs(role, original) -> list[str]:
+    """Which definition fields differ between a copy and its original.
+
+    The answer a marker needs: not merely "is it different" but *where*, so a
+    tooltip can say "prompt, toolsets" and the person knows whether that is
+    their edit or a frozen copy of an older shipped version — both look the
+    same from here, and both are worth flagging.
+    """
+    if original is None:
+        return []
+    return [field for field in DEFINITION_FIELDS
+            if getattr(role, field, None) != getattr(original, field, None)]
+
+
 _CODER_RULES = """
 ## How you work
 

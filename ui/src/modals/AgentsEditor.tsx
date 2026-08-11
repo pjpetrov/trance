@@ -292,23 +292,25 @@ export function AgentsEditor() {
                   }))
                   .catch((error) => toast.err(String(error)))}
               >Draft a prompt from the name</Button>
-              {draft.protected && (
+              {(draft.protected || (scope === "project" && draft.differs?.length)) && (
                 // A session keeps its own copy of every prompt, taken when it
-                // was created. Improvements to a shipped agent otherwise reach
-                // new sessions only, and the project you are actually running
-                // keeps the prompt it was born with.
+                // was created; the Default scope overlays shipped. Reset walks
+                // one hop back up that chain.
                 <Button
                   size="sm" busy={reset.isPending}
-                  title="Take the current shipped prompt and permissions for this agent"
+                  title={scope === "project"
+                    ? "Take the Default scope's current definition for this agent (your wiring — model, checks, retries — stays)"
+                    : "Take trance's shipped definition for this agent (your wiring stays)"}
                   onClick={() => reset.mutateAsync(draft.name)
                     .then(() => {
                       // The server has already written it; anything staged for
                       // this agent would only put the old prompt back on Apply.
                       library.forget(draft.name);
-                      toast.ok(`${draft.name} is back to its shipped prompt.`);
+                      toast.ok(`${draft.name} is back to its ${
+                        scope === "project" ? "default" : "shipped"} definition.`);
                     })
                     .catch((error) => toast.err(String(error)))}
-                >Restore shipped prompt</Button>
+                >{scope === "project" ? "Reset to default" : "Reset to shipped"}</Button>
               )}
               <Button
                 size="sm" variant="danger"
@@ -316,6 +318,13 @@ export function AgentsEditor() {
               >Delete</Button>
               <div className="flex-1" />
               {draft.protected && <Badge>built-in</Badge>}
+              {(draft.differs?.length ?? 0) > 0 && (
+                <Badge
+                  tone="warn"
+                  title={`Differs from ${scope === "project" ? "the default" : "shipped"} in: ${
+                    draft.differs!.join(", ")}. Either your edit, or a frozen copy of an older version — Reset takes the current one.`}
+                >modified</Badge>
+              )}
               {draft.resolved && <Badge>{draft.resolved.model}</Badge>}
             </div>
           </div>

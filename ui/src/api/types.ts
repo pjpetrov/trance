@@ -51,6 +51,9 @@ export interface AgentRole {
   tool_rounds: number;
   color: string;
   protected?: boolean;
+  /** Definition fields that differ from what a reset would restore — the
+   *  Default copy in a session, shipped in the Default scope. */
+  differs?: string[];
   resolved?: ResolvedModel;
 }
 

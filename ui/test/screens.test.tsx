@@ -141,14 +141,15 @@ describe("editing what new projects start from", () => {
     expect(screen.getByText(/every new session is created with/)).toBeInTheDocument();
   });
 
-  it("can take a shipped agent's current prompt into a session that has an old copy", async () => {
-    // A session copies every prompt when it is created and keeps that copy, so
-    // improving a built-in agent otherwise reaches new sessions only — while
-    // the project actually being worked on runs the prompt it was born with.
+  it("resets a session's copy to the default, one hop up the chain", async () => {
+    // A session copies every prompt when it is created and keeps that copy;
+    // reset walks back to the Default scope — never skipping over the user's
+    // own defaults to shipped.
     const user = userEvent.setup();
     const server = fakeServer({
       "/api/agents": {
-        agents: [{ ...role({ name: "frontend" }), protected: true }],
+        agents: [{ ...role({ name: "frontend" }), protected: true,
+                   differs: ["system_prompt", "toolsets"] }],
         verifiers: [], toolsets: [],
       },
       "/api/presets": { presets: [] },
@@ -157,7 +158,9 @@ describe("editing what new projects start from", () => {
     });
 
     renderWithQuery(<AgentsEditor />);
-    await user.click(await screen.findByRole("button", { name: "Restore shipped prompt" }));
+    // The copy wears its difference where the person can see it.
+    expect(await screen.findByText("modified")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reset to default" }));
 
     await waitFor(() =>
       expect(server.to("/api/agents/frontend/reset")).toHaveLength(1));
@@ -166,7 +169,24 @@ describe("editing what new projects start from", () => {
     expect(screen.getByText("No changes")).toBeInTheDocument();
   });
 
-  it("does not offer to restore an agent nobody ships", async () => {
+  it("offers the shipped definition in the Default scope, and no marker when identical", async () => {
+    const user = userEvent.setup();
+    fakeServer({
+      "/api/agents": {
+        agents: [{ ...role({ name: "frontend" }), protected: true, differs: [] }],
+        verifiers: [], toolsets: [],
+      },
+      "/api/presets": { presets: [] },
+      "/api/config": config(),
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await user.click(await screen.findByRole("button", { name: "Default" }));
+    expect(await screen.findByRole("button", { name: "Reset to shipped" })).toBeInTheDocument();
+    expect(screen.queryByText("modified")).toBeNull();
+  });
+
+  it("does not offer a reset where nothing has a default", async () => {
     fakeServer({
       "/api/agents": { agents: [role({ name: "mine" })], verifiers: [], toolsets: [] },
       "/api/presets": { presets: [] },
@@ -175,7 +195,7 @@ describe("editing what new projects start from", () => {
 
     renderWithQuery(<AgentsEditor />);
     await screen.findByDisplayValue("mine");
-    expect(screen.queryByRole("button", { name: "Restore shipped prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Reset to/ })).toBeNull();
   });
 
   it("can write an edit into the defaults without leaving this session", async () => {

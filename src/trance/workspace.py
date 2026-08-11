@@ -179,7 +179,10 @@ class DefaultStores:
         self.project = self.dir
         self.seeded: dict[str, bool] = {}
 
-        self.roles = RoleStore(self.dir / AGENTS)
+        # The overlay is what makes this scope *the* default rather than a
+        # frozen copy of one: a built-in whose definition was never edited
+        # here keeps tracking trance's shipped version.
+        self.roles = RoleStore(self.dir / AGENTS, overlay=True)
         self.loops = LoopStore(self.dir / LOOPS)
         self.commands = CommandStore(self.dir / COMMANDS)
         self.settings = SettingsStore(self.dir / SETTINGS)

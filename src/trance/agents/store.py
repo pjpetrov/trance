@@ -19,7 +19,7 @@ import threading
 from pathlib import Path
 
 from ..loops import SUCCESS, FAILED, EXIT_LOOP, FAIL_LOOP, Edge, Loop, LoopNode
-from .roles import BUILTIN_ROLES, TOOLSETS, AgentRole
+from .roles import BUILTIN_ROLES, TOOLSETS, AgentRole, definition_differs
 from .tools import ALLOWED_COMMANDS, CommandPolicy
 
 #: Types that ship with trance. They can be edited, but not deleted — deleting
@@ -33,11 +33,23 @@ INHERITED_WHEN_UNSET = {"tool_rounds": 0}
 
 
 class RoleStore:
-    def __init__(self, path: Path, seed: dict[str, AgentRole] | None = None):
+    def __init__(self, path: Path, seed: dict[str, AgentRole] | None = None,
+                 overlay: bool = False):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._roles: dict[str, AgentRole] = {}
+        #: The Default scope is an overlay on shipped: a built-in whose
+        #: *definition* was never edited keeps tracking trance's shipped
+        #: version, so prompt improvements flow into the defaults instead of
+        #: freezing at whichever version first wrote the file. Wiring — model,
+        #: checks, retries — is always the stored copy's. Sessions stay frozen
+        #: copies, deliberately.
+        self.overlay = overlay
+        #: Per built-in: has its definition been deliberately edited here?
+        #: Missing means the file predates the flag — treated as edited, since
+        #: an old frozen copy and a real edit are indistinguishable.
+        self._definition_edited: dict[str, bool] = {}
 
         if self.path.exists():
             self._load()
@@ -47,7 +59,10 @@ class RoleStore:
         # means an edit mutates the shipped default in place, and `reset()`
         # would then restore the very edit it is meant to undo.
         for name, role in (seed or BUILTIN_ROLES).items():
-            self._roles.setdefault(name, copy.deepcopy(role))
+            if name not in self._roles:
+                self._roles[name] = copy.deepcopy(role)
+                # Just seeded from shipped: unedited by construction.
+                self._definition_edited[name] = False
         self._save()
 
     # ----------------------------------------------------------------- io
@@ -74,12 +89,27 @@ class RoleStore:
                 for field, unset in INHERITED_WHEN_UNSET.items():
                     if field not in item and getattr(builtin, field) != unset:
                         setattr(role, field, getattr(builtin, field))
+            if "definition_edited" in item:
+                self._definition_edited[role.name] = bool(item["definition_edited"])
+            if (self.overlay and builtin is not None
+                    and self._definition_edited.get(role.name) is False):
+                # Unedited here means: the definition is trance's to improve.
+                # Take the current shipped one, keep the stored wiring.
+                fresh = copy.deepcopy(builtin)
+                for keep in self.RESET_KEEPS:
+                    setattr(fresh, keep, copy.deepcopy(getattr(role, keep)))
+                role = fresh
             self._roles[role.name] = role
 
     def _save(self) -> None:
-        payload = {"agents": [r.to_dict() for r in self._roles.values()]}
+        rows = []
+        for role in self._roles.values():
+            item = role.to_dict()
+            if role.name in self._definition_edited:
+                item["definition_edited"] = self._definition_edited[role.name]
+            rows.append(item)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf8")
+        tmp.write_text(json.dumps({"agents": rows}, indent=2), encoding="utf8")
         tmp.replace(self.path)
 
     # ---------------------------------------------------------------- api
@@ -92,6 +122,12 @@ class RoleStore:
 
     def upsert(self, role: AgentRole) -> AgentRole:
         with self._lock:
+            builtin = BUILTIN_ROLES.get(role.name)
+            if builtin is not None:
+                # A wiring-only save keeps tracking shipped; a definition edit
+                # is a decision, frozen until reset says otherwise.
+                self._definition_edited[role.name] = bool(
+                    definition_differs(role, builtin))
             self._roles[role.name] = role
             self._save()
         return role
@@ -114,27 +150,31 @@ class RoleStore:
                    "checks", "command_list", "commands", "workdir", "shell",
                    "tool_rounds", "color")
 
-    def reset(self, name: str) -> AgentRole | None:
-        """Restore a built-in agent to its shipped definition.
+    def reset(self, name: str, source: AgentRole | None = None) -> AgentRole | None:
+        """Restore an agent's definition to its original.
 
-        Stored edits are never overwritten on load, which is right — but it also
-        means prompt improvements that ship with a new trance version don't
-        reach an agent you've already saved. This is the opt-in.
+        The original is `source` when given — a session resets to the Default
+        scope's copy, which is what "the default" means — else the shipped
+        built-in. One chain: session → default → shipped, each link restoring
+        one hop, never skipping over the user's own defaults.
 
-        The shipped *definition* — prompt, remit, toolsets, title. The user's
+        Only the *definition* — prompt, remit, toolsets, title. The user's
         wiring — model, checks, retries, allowlist — survives: it was never the
         thing being restored, and it is not the thing that goes stale.
         """
-        shipped = BUILTIN_ROLES.get(name)
-        if shipped is None:
+        original = source or BUILTIN_ROLES.get(name)
+        if original is None:
             return None
-        role = copy.deepcopy(shipped)
+        role = copy.deepcopy(original)
         with self._lock:
             held = self._roles.get(name)
             if held is not None:
                 for keep in self.RESET_KEEPS:
                     setattr(role, keep, copy.deepcopy(getattr(held, keep)))
             self._roles[name] = role
+            shipped = BUILTIN_ROLES.get(name)
+            if shipped is not None:
+                self._definition_edited[name] = bool(definition_differs(role, shipped))
             self._save()
         return role
 

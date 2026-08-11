@@ -22,7 +22,7 @@ from ..agents import orchestrator as orchestrator_agent
 from ..agents.orchestrator import POINTS
 from ..agents.approval import ALWAYS, ApprovalBroker, DECISIONS
 from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
-from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole
+from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole, definition_differs
 from ..trace.session_log import SessionLog
 from ..agents.store import (
     CommandStore, DEFAULT_LIST, LoopStore, PROTECTED, RoleStore,
@@ -633,6 +633,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "verifiers": [r.name for r in roles.all() if r.verifier],
             "agents": [
                 {**r.to_dict(), "protected": r.name in PROTECTED,
+                 # Which definition fields differ from what a reset would
+                 # restore: the Default copy for a session, shipped for the
+                 # Default scope. An old frozen copy and a deliberate edit
+                 # look identical from here — both are worth the marker.
+                 "differs": definition_differs(
+                     r, (BUILTIN_ROLES.get(r.name) if session == DEFAULTS
+                         else (defaults_stores.roles.get(r.name)
+                               or BUILTIN_ROLES.get(r.name)))),
                  "resolved": _resolved_for(r)}
                 for r in roles.all()
             ],
@@ -667,11 +675,18 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.post("/api/agents/{name}/reset")
     def reset_agent(name: str, session: str = ""):
-        """Restore a built-in agent type to its shipped prompt and permissions."""
+        """Restore an agent's definition to its default.
+
+        One chain, one hop at a time: a session resets to the Default scope's
+        copy — which for a custom agent kept in the defaults works too — and
+        the Default scope resets to shipped. Never skips over the user's own
+        defaults, which is what made "restore" two different words before.
+        """
         roles = stores_q(session).roles
-        role = roles.reset(name)
+        source = None if session == DEFAULTS else defaults_stores.roles.get(name)
+        role = roles.reset(name, source=source)
         if role is None:
-            raise HTTPException(404, f"{name!r} is not a built-in agent type")
+            raise HTTPException(404, f"{name!r} has no default to reset to")
         for session in store.all():
             refresh_team(session)
             touch(session)
