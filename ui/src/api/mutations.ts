@@ -248,6 +248,13 @@ export function useMemoryMutations(sessionId: string) {
 export function useFileMutations(sessionId: string) {
   const client = useQueryClient();
   return {
+    clear: useMutation({
+      mutationFn: () => api.clearFiles(sessionId),
+      onSuccess: () => {
+        void client.invalidateQueries({ queryKey: keys.files(sessionId) });
+        void client.invalidateQueries({ queryKey: keys.session(sessionId) });
+      },
+    }),
     write: useMutation({
       mutationFn: (body: { path: string; content: string }) => api.writeFile(sessionId, body),
       onSuccess: (result, body) => {

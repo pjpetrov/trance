@@ -64,6 +64,8 @@ export function FilesScreen() {
   const preview = usePreview(sessionId);
   const { start, share, stop, plan, run } = usePreviewMutations(sessionId ?? "");
   const review = useReviewMutations(sessionId ?? "");
+  const files = useFileMutations(sessionId ?? "");
+  const [clearing, setClearing] = useState(false);
 
   const [general, setGeneral] = useState<string | null>(null);
   // What the orchestrator says starts this project, waiting to be confirmed.
@@ -122,6 +124,11 @@ show you the command, and run it after you confirm."
                   })
                   .catch((error) => toast.err(String(error)))}
               >start app</Button>
+              <Button
+                size="sm" variant="ghost"
+                title="Remove every generated file. .trance and the git history stay, so it can be undone."
+                onClick={() => setClearing(true)}
+              >clear all</Button>
             </>
           )}
         />
@@ -268,6 +275,30 @@ show you the command, and run it after you confirm."
           })
           .catch((error) => toast.err(String(error)))}
       />
+
+      <Confirm
+        open={clearing}
+        title="Clear all generated files?"
+        confirmLabel="Clear them"
+        danger
+        busy={files.clear.isPending}
+        onClose={() => setClearing(false)}
+        onConfirm={() => {
+          setClearing(false);
+          files.clear.mutateAsync()
+            .then((out) => toast.ok(
+              `Removed ${out.removed} file(s).`
+              + (out.committed ? " The wipe is a commit — revert it to undo." : "")))
+            .catch((error) => toast.err(String(error)));
+        }}
+      >
+        <p>
+          Everything the run built in this project is removed. Two things stay:
+          <code> .trance/</code> (trance's own state — the plan, the memory, the
+          screenshots) and <code>.git/</code> — the wipe is committed, so this is
+          an undoable act, not a shredder.
+        </p>
+      </Confirm>
 
       <Confirm
         open={Boolean(proposal)}

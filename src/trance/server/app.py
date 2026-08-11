@@ -44,7 +44,7 @@ from ..providers import (
     client_for,
 )
 from ..session import ChatMessage, SessionStore
-from .. import paths, preview, vcs
+from .. import paths, preview, vcs, workspace
 from ..usage import UsageLedger
 from ..workspace import DefaultStores, Workspace, folder_for
 from ..worker.client import BackendError
@@ -996,6 +996,53 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         # never change and the browser should not keep asking.
         return FileResponse(target, media_type="image/png",
                             headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.delete("/api/sessions/{session_id}/files")
+    def clear_files(session_id: str):
+        """Remove everything the run generated, keeping the project's state.
+
+        .trance stays — it is trance's own memory of the project, and the
+        request was to clear what the agents built, not what trance knows.
+        .git stays too, deliberately: the wipe is committed, so "clear all"
+        is an undoable act rather than a shredder, and the history of how
+        the files came to be survives them.
+        """
+        session = _need(store, session_id)
+        if session.status == "running":
+            raise HTTPException(409, "the run is writing files right now — stop it first")
+        project = _project_of(session)
+        if not project.is_dir():
+            return {"removed": 0}
+
+        # Nothing keeps serving files that are about to not exist.
+        _forget_preview(session)
+        served = previews.pop(session_id, None)
+        if served is not None:
+            served.stop()
+
+        removed = 0
+        for entry in sorted(project.iterdir()):
+            if entry.name in (workspace.STORE_DIR, ".git"):
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                removed += sum(1 for f in entry.rglob("*") if f.is_file())
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                removed += 1
+                entry.unlink(missing_ok=True)
+
+        committed = False
+        if vcs.is_repo(project) and config_for(session).git_commits:
+            committed = bool(vcs.commit_all(project, "user: cleared the generated files"))
+        bus.emit("files_cleared", session_id, agent="you", payload={
+            "removed": removed, "committed": committed,
+            "message": (f"Cleared {removed} generated file(s). .trance and the git "
+                        f"history stay"
+                        + (" — the wipe is a commit, so it can be undone."
+                           if committed else ".")),
+        })
+        touch(session)
+        return {"removed": removed, "committed": committed}
 
     @app.put("/api/sessions/{session_id}/file")
     def write_project_file(session_id: str, body: dict):

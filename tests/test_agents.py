@@ -10085,3 +10085,66 @@ def test_a_framed_plan_runs_its_planner_from_the_library_not_the_shipped_copy(tm
     # And the engine resolves the same copy the moment a run would.
     session = app.state.store.get(sid)
     assert session.role("planner").preset == "claude-code"
+
+
+# ============================== clearing what the run built, and only that
+
+def test_clear_all_removes_the_generated_files_and_keeps_the_state(tmp_path):
+    """.trance is trance's memory of the project and .git is the history of
+    how the files came to be — the wipe is itself a commit, so clearing is an
+    undoable act rather than a shredder."""
+    import pathlib
+
+    from fastapi.testclient import TestClient
+
+    from trance import vcs
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    made = client.post("/api/sessions", json={"name": "game"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "game.js").write_text("x", encoding="utf8")
+    (project / "index.html").write_text("<canvas>", encoding="utf8")
+    (project / ".trance").mkdir(exist_ok=True)
+    (project / ".trance" / "memory.md").write_text("decisions", encoding="utf8")
+    vcs.ensure_repo(project)
+    vcs.commit_all(project, "the run built this")
+
+    out = client.delete(f"/api/sessions/{sid}/files").json()
+
+    assert out["removed"] == 2
+    assert not (project / "src").exists()
+    assert not (project / "index.html").exists()
+    assert (project / ".trance" / "memory.md").read_text() == "decisions"
+    assert (project / ".git").is_dir()
+    # The wipe is on the record, so it can be reverted.
+    assert out["committed"] is True
+    assert any("cleared" in c["subject"] for c in vcs.log(project))
+
+
+def test_clear_all_refuses_while_the_run_is_writing(tmp_path):
+    import pathlib
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    made = client.post("/api/sessions", json={"name": "game"}).json()
+    pathlib.Path(made["project_dir"]).mkdir(parents=True, exist_ok=True)
+    app.state.store.get(made["id"]).status = "running"
+
+    answer = client.delete(f"/api/sessions/{made['id']}/files")
+    assert answer.status_code == 409
+    assert "stop it first" in answer.json()["detail"]

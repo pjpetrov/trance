@@ -222,6 +222,9 @@ export const api = {
   deleteFile: (sid: string, path: string) =>
     request<{ deleted: string; committed: boolean }>(
       `/api/sessions/${id(sid)}/file?path=${id(path)}`, { method: "DELETE" }),
+  clearFiles: (sid: string) =>
+    request<{ removed: number; committed: boolean }>(
+      `/api/sessions/${id(sid)}/files`, { method: "DELETE" }),
   writeFile: (sid: string, body: { path: string; content: string }) =>
     request<{ path: string; bytes: number; committed: boolean }>(
       `/api/sessions/${id(sid)}/file`, { method: "PUT", body }),
