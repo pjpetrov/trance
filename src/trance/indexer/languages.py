@@ -67,6 +67,16 @@ _TS_DEFINITIONS = """
     ; and keeps the more specific kind.
     (program (lexical_declaration (variable_declarator name: (identifier) @name) @def.variable))
     (program (variable_declaration (variable_declarator name: (identifier) @name) @def.variable))
+    ; The .d.ts surface: what a library *declares* rather than defines. These
+    ; are the shapes an agent asks the graph about — `declare function`,
+    ; interfaces, type aliases, enums, and the signatures inside ambient
+    ; classes and interfaces, none of which have bodies to match above.
+    (function_signature name: (identifier) @name) @def.function
+    (method_signature name: (property_identifier) @name) @def.method
+    (interface_declaration name: (type_identifier) @name) @def.class
+    (type_alias_declaration name: (type_identifier) @name) @def.class
+    (enum_declaration name: (identifier) @name) @def.class
+    (abstract_class_declaration name: (type_identifier) @name) @def.class
 """
 _TS_CALLS = """
     (call_expression function: (identifier) @callee) @call

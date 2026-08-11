@@ -104,6 +104,16 @@ class GraphDB:
 
     # ---------------------------------------------------------------- files
 
+    def get_meta(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+        self.conn.commit()
+
     def file_hashes(self) -> dict[str, str]:
         """path -> sha256 for every indexed file. Drives incremental re-index."""
         return {r["path"]: r["sha256"] for r in self.conn.execute("SELECT path, sha256 FROM files")}
@@ -167,7 +177,10 @@ class GraphDB:
             ("WHERE s.name = ?", query),
             ("WHERE s.qualname LIKE ?", f"%{query}%"),
         ):
-            rows = self.conn.execute(f"{base} {clause} ORDER BY s.qualname", (arg,)).fetchall()
+            rows = self.conn.execute(
+                f"{base} {clause} ORDER BY "
+                f"CASE WHEN f.path LIKE 'node_modules/%' THEN 1 ELSE 0 END, "
+                f"s.qualname", (arg,)).fetchall()
             if rows:
                 return [_row_to_symbol(r) for r in rows]
         return []

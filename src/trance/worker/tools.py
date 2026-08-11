@@ -109,7 +109,10 @@ class ContextTools:
             return ToolResult(_miss(symbol), hit=False, symbols=[])
         sym = matches[0]
         body = self._source(sym)
-        header = f"# {sym.file_path}:{sym.start_line}-{sym.end_line}"
+        package = _package_of(sym.file_path)
+        header = (f"# [{package}] {sym.file_path}:{sym.start_line}-{sym.end_line} "
+                  f"(library type declaration)"
+                  if package else f"# {sym.file_path}:{sym.start_line}-{sym.end_line}")
         extra = ""
         if len(matches) > 1:
             others = ", ".join(m.qualname for m in matches[1:MAX_RESULTS])
@@ -127,7 +130,8 @@ class ContextTools:
         matches = self.db.find_symbols(pattern)
         if not matches:
             return ToolResult(_no_match(pattern), hit=False, symbols=[])
-        lines = [f"{m.kind} {m.qualname}  ({m.file_path}:{m.start_line})" for m in matches[:MAX_RESULTS]]
+        lines = [f"{m.kind} {_labelled(m.qualname, m.file_path)}  "
+                 f"({m.file_path}:{m.start_line})" for m in matches[:MAX_RESULTS]]
         if len(matches) > MAX_RESULTS:
             lines.append(f"... and {len(matches) - MAX_RESULTS} more")
         return ToolResult("\n".join(lines), hit=True, symbols=[m.qualname for m in matches[:MAX_RESULTS]])
@@ -208,6 +212,20 @@ class ContextTools:
         return data[sym.start_byte : sym.end_byte].decode("utf8", errors="replace")
 
 
+def _package_of(path: str) -> str:
+    """The npm package a node_modules path belongs to, or ""."""
+    parts = path.split("/")
+    if not path.startswith("node_modules/") or len(parts) < 2:
+        return ""
+    return "/".join(parts[1:3]) if parts[1].startswith("@") else parts[1]
+
+
+def _labelled(qualname: str, path: str) -> str:
+    """A library symbol says which library, up front — [phaser] Scene."""
+    package = _package_of(path)
+    return f"[{package}] {qualname.split('::', 1)[-1]}" if package else qualname
+
+
 def _no_match(pattern: str) -> str:
     """Say why, when the pattern was never going to match anything.
 
@@ -257,6 +275,21 @@ def project_map(db: GraphDB, *, budget_chars: int = MAP_BUDGET_CHARS,
     if not paths:
         return ""
 
+    # Library declarations are indexed too, but a map that listed Phaser's
+    # 3,000 symbols file-by-file would spend the whole budget on somebody
+    # else's API. One line per package: enough to know asking beats grepping
+    # node_modules with run_command.
+    libraries: dict[str, int] = {}
+    project_paths = []
+    for path in paths:
+        package = _package_of(path)
+        if package:
+            libraries[package] = libraries.get(package, 0) + len(
+                db.symbols_in_file(path))
+        else:
+            project_paths.append(path)
+    paths = project_paths
+
     # Files the task mentions come first; the budget bites the tail.
     hint = (focus or "").lower()
     ordered = sorted(paths, key=lambda p: (0 if p.lower() in hint else 1, p))
@@ -278,4 +311,10 @@ def project_map(db: GraphDB, *, budget_chars: int = MAP_BUDGET_CHARS,
 
     if shown < len(ordered):
         lines.append(f"…and {len(ordered) - shown} more file(s) — use search_symbols to find them.")
+    if libraries:
+        listed = ", ".join(f"{name} ({count} symbols)"
+                           for name, count in sorted(libraries.items()))
+        lines.append(
+            f"Libraries indexed (type declarations — get_definition and "
+            f"search_symbols reach them): {listed}")
     return "\n".join(lines)
