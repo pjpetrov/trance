@@ -46,8 +46,30 @@ pauses that agent and puts the exact action on screen: allow once, allow always
 next round. Pause and click any console line to comment on that specific action.
 
 **Commits as it goes.** Every step runs between two commits, so `git log` is the
-record of what each agent did — and a step that goes wrong can be undone with
-`git revert`, leaving both the work and the undo in history.
+record of what each agent did. Every step that committed has a **revert
+commits** button — one inverse commit, behind a confirmation — and **apply
+commits** to take a mistaken revert back; all three acts stay in history. The
+Commits page answers both questions: what each chat request turned into (its
+plan, how long it was worked on, its commits with diffs), and the plain git
+log of everything, including the commits no request owns.
+
+**Says where the effort went.** A Statistics page counts tokens per model and
+working time per agent — every attempt, fix and check charged to whoever ran —
+live while the run works, with the model that is answering right now pulsing.
+The topbar clock ticks through the whole session.
+
+**Frames every plan.** Two per-project settings name an agent whose step opens
+every generated plan (a planner going over the request before anyone builds)
+and an agent or loop that closes it (a final visual pass) — enforced by rule
+on every proposal, the way the fact check is, because what a plan must always
+have is not the model's to forget.
+
+**Cleans up honestly.** Nothing an agent starts outlives the run — Stop kills
+every tracked process, a finished command reaps what it left behind, and each
+reaped process is named in the console. **Clear all** on the Files page
+removes everything the run built while keeping `.trance/` and git history
+(the wipe is itself a commit, so it is undoable); deleting a session takes its
+whole directory, with the guards that make that safe.
 
 **Lets you review the result.** A Files screen with a real editor: read the code,
 click a line number to comment on it, and send the review as a step the flow
@@ -64,16 +86,30 @@ HTTPS tunnel so you can send the link to someone (see
 
 ## Screens
 
+The run console, following a live step — every model call, command, diff and
+verdict, with the context gauge in the corner:
+
+![The run console](docs/screens/run.png)
+
+Statistics — where the time and tokens actually went: working time charged per
+agent, tokens per model with the cached share called out, all of it live while
+a run works:
+
+![Statistics](docs/screens/stats.png)
+
 | | |
 |---|---|
-| **Home** | Name a project and its directory. Agents may only write inside it. |
-| **Plan** | Orchestrator chat, and the flow editor underneath it. |
+| **Chat** | Name a project, describe it, and talk to the orchestrator. |
+| **Plan** | The flow editor: steps, their agents, and the check chips on each. |
 | **Run** | The pipeline, and a live console of the working agent. |
-| **Files** | The project tree, a CodeMirror editor, and line-by-line review. |
+| **Commits** | Two modes: what each request produced, or the plain git log. |
+| **Files** | The tree, a CodeMirror editor, line review, and serve/start/clear. |
+| **Reviews** | Every review you sent and what was done about it, from git. |
+| **Statistics** | Tokens, calls, working time — per agent and per model. |
 
 Four modals — **⚙ Models**, **👥 Agents**, **↻ Loops**, **$_ Commands** — all the
 same shape: what you have listed down one side, the one you picked filling the
-pane.
+pane. More screenshots in [docs/screens/](docs/screens/).
 
 ---
 
@@ -118,19 +154,23 @@ whole step, with its own loop of reads, edits and test runs inside it. If it
 does run out, the message says how many tool calls it made and which files it
 changed — the work is on disk behind the step's checkpoint.
 
-**It is still a trance step.** Claude Code's own file tools are switched off
-(`--tools ""`) and trance's are handed to it over MCP — `read_file`,
-`edit_file`, `write_file`, `run_command`, the graph lookups. So a write outside
-the remit is refused *as it is made*, commands are checked against the
-allowlist, reads are deduplicated, and every call appears in the console while
-the step runs. One measured step: eight calls, three of them graph lookups
-instead of reading a 300-line file, one edit accepted inside the remit and one
-refused outside it.
+**It runs with its own tools, and the control is post-hoc.** Measured, the MCP
+bridge that used to sit here was never the cost, and its live enforcement
+bought little the git diff at the end does not prove better. A role that may
+write nothing — a reviewer, a checker — gets read-only tools (Read, Grep,
+Glob) and cannot touch the project at all; a writer gets edit permission and a
+Bash allowlist shaped from the same command list every other agent answers to.
+A write outside the remit still fails the step — judged from the diff when it
+finishes. The agents editor says this trade where the model is chosen.
 
-What it still gives up is **context**: trance's prompt goes in, but Claude Code
-reads what it likes after that and carries tens of thousands of tokens of its
-own preamble. A git check after the step remains as a backstop, in case anything
-reaches the disk another way.
+Verifier turns carry the step's **diff in the prompt**, which is what makes
+review on this backend affordable: a measured review without it spent thirty
+internal turns and 355k tokens rediscovering what one `git show` knew. The
+statistics page splits **cache re-reads** out of the input count — a delegated
+run re-reads its conversation every internal turn at about a tenth of a fresh
+token, and summed raw it reads as 20× the spend it was. A step that goes past
+40 internal turns is flagged in the console while it runs, with the advice
+that matters: split it, because every retry pays the whole amount again.
 
 Whether using it this way fits your Claude Code subscription is a licensing
 question, not a technical one.
@@ -169,10 +209,30 @@ Toolsets: `files` (read/write within the remit), `graph` (symbol lookups),
 `commands` (allowlisted programs), `inspect` (file existence and size only — for
 verifiers that must not be able to do the work themselves).
 
-Ships with backend, frontend, tester, devops, reviewer, planner, factchecker and
-the orchestrator. All editable; new ones can be added — a new agent starts from
-a template with the parts to replace marked «like this», and one button drafts a
-first prompt from the name you gave it.
+An agent also carries **checks** — verifiers that run after every step it
+does, shown as chips you can take off. Set once on the agent, they are copied
+onto its steps (and its loop nodes) where you can see and change them per
+task; a removed chip stays removed. "After every step, run the regression
+tests" lives here, not ticked onto twenty steps by hand.
+
+Ships with backend, frontend, fullstack (both remits — the visual loop's
+repairer, because a symptom on screen does not say which side its cause is
+on), tester, devops, reviewer, planner (whose product is documents: docs/**
+and *.md), factchecker, regression and the orchestrator. All editable; new
+ones can be added — a new agent starts from a template with the parts to
+replace marked «like this», and one button drafts a first prompt from the
+name you gave it.
+
+**Where definitions live.** Each project keeps its own copies in `.trance/`;
+the **Default** scope is what new projects start from, and it is an *overlay*
+on shipped: a built-in whose definition you never edited keeps tracking
+trance's improvements, an edit freezes exactly that agent, and a copy that
+differs from its original wears a `modified` badge saying which fields. Reset
+walks one hop — a session resets to your Default, the Default resets to
+shipped — and always keeps your wiring: model, checks, retries. Deleting is
+scoped to the project and warned rather than walled: the first delete names
+what still uses the agent, "Delete anyway" is the approval, and a step that
+still names it fails at run time saying it was deleted.
 
 ### Steps, loops and outcomes
 
@@ -180,12 +240,16 @@ A **step** is one agent attempting one task. It ends with an outcome the agent
 states — `OUTCOME: SUCCESS` or `OUTCOME: FAILED — why` — and anything other than
 success is retried, bounded by that agent's try count or the step's override.
 
-A step may also carry a **check**: an independent agent confirming the report is
-true. When a check contradicts a claimed success, the agent is told exactly what
-the check found and tries again — a missing file is usually something forgotten,
-and it can be finished. Only a check that keeps failing halts the run, because
-later steps must not build on work that is not there. Every step that writes
-files gets a factchecker by default.
+A step carries a **chain of checks**: independent agents confirming the report
+is true, run in order — the first FAIL sends the work back and the whole chain
+runs again, so a fix that breaks an earlier check cannot pass. When a check
+contradicts a claimed success, the agent is told exactly what the check found
+and tries again — a missing file is usually something forgotten, and it can be
+finished. Only a check that keeps failing halts the run. Every step that
+writes files gets the factchecker by rule — always the same one, chosen by
+nobody: the planner model is deliberately not asked to pick verifiers, because
+asked, it picked from the shape of the sentence in front of it, differently
+each time. Everything above that floor comes from the agents' own chips.
 
 A **loop** is a reusable block of agents wired by outcome — tester finds a bug,
 developer fixes it, tester runs again, until it passes or a count runs out. Each
@@ -229,9 +293,36 @@ This is the point of the project, so it is worth being specific:
   have this above" — unless the earlier copy was trimmed away.
 - **The budget is calibrated.** Trimming is enforced against the endpoint's own
   `prompt_tokens`, not a chars/4 guess that runs low exactly where code is dense.
+- **Libraries answer by name too.** The indexer takes the `.d.ts` type surface
+  of the manifest's direct dependencies — Phaser's whole public API is one
+  pass, 10k symbols — behind a lockfile fingerprint so node_modules is walked
+  only when the dependencies change. Library symbols rank after the project's
+  own and wear their package: `[phaser] Scene`. Implementations stay
+  unindexed; grepping node_modules at run_command prices was the alternative.
 - **Shared memory instead of re-derivation.** Agents write decisions others must
   match — a route shape, a port, the test command — to `.trance/memory.md`, which
   reaches every later agent and is compacted when it outgrows its budget.
+
+### Visual testing
+
+An agent with the `browser` toolset opens the project in a real headless
+Chrome and judges it by what is actually on screen. It can **press keys**,
+**click buttons by the words on them** (a lobby with buttons cannot be passed
+any other way), **wait** in animation frames, run the cheap mechanical checks
+(did it paint, is the picture still changing — said as *still*, with both
+readings, because a menu waiting for input looks exactly like a dead render
+loop), **look** — one screenshot, one question to a vision model — and
+**watch**: a filmed burst of frames sent to the vision model as one sequence,
+for the questions a single picture cannot answer — does it move, flicker,
+snap back. The console plays the burst back as a flick-book.
+
+`open_page` starts the project's **own dev server** behind the page when it
+needs one (a Vite app served statically dies on its first import), with a
+fresh free port injected as `PORT` — the squatter on your default port is
+routed around, never fought — and stops it when the step ends. It also checks
+**identity**: if what answers is not this project (a container squatting the
+port, answering 200 with its own page), the result says so first and loudest,
+before anyone debugs somebody else's app.
 
 ### Git
 
@@ -318,10 +409,15 @@ A tunnel started this way shows up in the UI too — trance reads the ngrok
 agent's local API, so the **share** link appears however the tunnel was started.
 Set `TRANCE_NGROK_API` if your agent is not on the default port.
 
-A Vite or webpack project will not work through any of this: the preview serves
-files, and the page's bare imports (`import ... from "three"`) need a build step.
-trance tells you which import stops it. Run your own dev server and point ngrok
-at that port instead.
+A Vite or webpack project works through **start app** instead of the static
+server: the orchestrator reads the README, shows you the exact command, and
+runs it only after your yes — with a fresh free port injected as `PORT`, so
+the project's own tooling serves the page. Sharing such a preview writes the
+tunnel's host into the Vite config's `allowedHosts` mechanically (Vite
+restarts itself on config changes), so the link works without a paste. What
+each session serves is remembered in its `.trance/`, so a preview survives
+trance restarting — a dev server found alive again is adopted, a static one is
+simply served again on the same port.
 
 ## The CLI
 
@@ -355,7 +451,7 @@ a model and the trance it lands in resolves that name against its own.
 ## Tests
 
 ```bash
-pytest                       # the Python side
+pytest                       # the Python side — parallel by default (-n auto)
 cd ui && npm test            # the interface, in jsdom
 cd ui && npx tsc --noEmit    # types
 ```
@@ -372,7 +468,8 @@ route matching was loose enough to answer one endpoint from another.
 ```
 src/trance/
   indexer/     tree-sitter parsing → SQLite symbol + call graph, incremental
-  mcp_server.py  the graph as an MCP server, for a delegated Claude Code
+  mcp_server.py  the project's tools as an MCP server (standalone; the
+                 delegated Claude Code path now uses its own tools directly)
   curator/     N-hop walk → minimal bundle under a token budget
   agents/      roles, tools, runner, memory, approvals, handoff
   providers/   model clients and the registry
