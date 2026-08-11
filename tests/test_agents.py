@@ -10644,3 +10644,101 @@ def test_a_session_resets_to_the_default_not_over_it(tmp_path):
     reset_default = client.post("/api/agents/frontend/reset?session=defaults").json()
     from trance.agents.roles import BUILTIN_ROLES
     assert reset_default["system_prompt"] == BUILTIN_ROLES["frontend"].system_prompt
+
+
+# ======================== loops carry the same check chips the plan does
+
+def test_a_loop_node_is_seeded_with_its_agents_checks_once(tmp_path):
+    """The major flaw the user caught: agent-level verifiers never ran inside
+    loops, and there was nowhere to see or change that. The same deal as the
+    plan now — copied once from the agent, the loop's own to edit, a removal
+    sticks."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+
+    client.put(f"/api/agents/frontend?session={sid}",
+               json={"checks": ["factchecker", "regression"]})
+
+    loops = client.get(f"/api/loops?session={sid}").json()["loops"]
+    visual = next(l for l in loops if l["name"] == "visual-test-and-fix")
+    repair = next(n for n in visual["nodes"] if n["role"] == "frontend")
+    assert repair["checks"] == ["factchecker", "regression"]
+    assert repair["checks_seeded"] is True
+
+    # Taking one off is a decision that sticks across reads.
+    for node in visual["nodes"]:
+        if node["role"] == "frontend":
+            node["checks"] = ["factchecker"]
+    client.put(f"/api/loops/visual-test-and-fix?session={sid}", json=visual)
+    again = next(l for l in client.get(f"/api/loops?session={sid}").json()["loops"]
+                 if l["name"] == "visual-test-and-fix")
+    kept = next(n for n in again["nodes"] if n["role"] == "frontend")
+    assert kept["checks"] == ["factchecker"]
+
+
+def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Attempt, Flow, Step
+    from trance.loops import EXIT_LOOP, Edge, Loop, LoopNode
+    from trance.session import Session
+
+    asked = []
+
+    class _Turn:
+        text = "did it\n\nOUTCOME: SUCCESS"
+        outcome = ("SUCCESS", "")
+        reported_outcome = True
+        files_written: list = []
+        remit_violations: list = []
+        model_event_ids: list = []
+        tool_calls = 0
+        usage: dict = {}
+        context: dict = {}
+        transcript: list = []
+        verdict = None
+        notes_written = 0
+
+    class _Verdict:
+        verdict = "PASS"
+        text = "VERDICT: PASS"
+        model_event_ids: list = []
+
+    def _ran(*, role, **_kw):
+        asked.append(role.name)
+        return _Turn() if role.name == "frontend" else _Verdict()
+
+    monkeypatch.setattr("trance.engine.run_agent", _ran)
+    node = LoopNode(id="n1", role="frontend",
+                    checks_chain=["factchecker", "regression"], checks_seeded=True,
+                    on={"SUCCESS": Edge(target=EXIT_LOOP)})
+    loop = Loop(name="fix-it", nodes=[node], start="n1", max_steps=3)
+
+    class _Loops:
+        def get(self, name):
+            return loop if name == "fix-it" else None
+
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"],
+                    BUILTIN_ROLES["regression"]]
+    step = Step(role="", loop="fix-it", task="t")
+    session.flow = Flow(steps=[step])
+
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus(),
+                        loops=_Loops())
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._execute_loop(step)
+
+    assert asked == ["frontend", "factchecker", "regression"]
+    assert step.status == "done"

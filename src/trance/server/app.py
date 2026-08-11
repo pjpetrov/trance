@@ -36,7 +36,7 @@ import dataclasses
 from dataclasses import replace
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
-from ..flow import Flow, Step, seed_checks
+from ..flow import Flow, Step, merge_checks, seed_checks
 from ..loops import EXITS, STOP, Loop, validate as validate_loop
 from ..providers.base import list_models
 from ..providers import (
@@ -298,6 +298,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         # path had never pulled the role onto the team and nothing between
         # the proposal and Run forced a read that would have healed it.
         refresh_team(session)
+        seed_loop_checks(stores_of(session))
         session.error = None
         session.clear_stop()
         publish_commands_of(session)
@@ -1723,9 +1724,33 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         known = {r.name for r in roles.all()}
         return known, {r.name for r in roles.all() if r.verifier}
 
+    def seed_loop_checks(held) -> None:
+        """Copy each node's agent's standing checks onto the node, once.
+
+        The same honesty the plan got: merged at run time the chain was
+        invisible — the loops editor showed one thing, the engine ran another.
+        Copied onto the node, the editor shows what will run and can change
+        it, and a check taken off a loop stays off.
+        """
+        loops, roles = held.loops, held.roles
+        for loop in loops.all():
+            grew = False
+            for node in loop.nodes:
+                if node.checks_seeded or not node.role:
+                    continue
+                always = list(getattr(roles.get(node.role), "checks", None) or [])
+                if not always:
+                    continue
+                node.checks_chain = merge_checks(node.checks, always)
+                node.checks_seeded = True
+                grew = True
+            if grew:
+                loops.upsert(loop)
+
     @app.get("/api/loops")
     def list_loops(session: str = ""):
         held = stores_q(session)
+        seed_loop_checks(held)
         loops, roles = held.loops, held.roles
         return {"loops": [l.to_dict() for l in loops.all()],
                 "outcomes": list(EXITS), "stops": list(STOP),

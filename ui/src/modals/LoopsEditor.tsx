@@ -17,6 +17,7 @@ import { LibraryFooter, LibraryList } from "@/components/ui/Library";
 import { DEFAULTS, ScopeSwitch, idFor, type Scope }
   from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
+import { Checks } from "@/components/Checks";
 import type { Loop, LoopNode } from "@/api/types";
 
 /** What an exit means, so the editor can say it rather than showing a raw key. */
@@ -215,6 +216,19 @@ export function LoopsEditor() {
                     placeholder="what this agent is here to do"
                     value={node.focus}
                     onChange={(event) => editNode(node.id, { focus: event.target.value })}
+                  />
+
+                  {/* The same chips a plan step carries, seeded from this
+                      node's agent — and the loop's own to change: taking one
+                      off here stays off. */}
+                  <Checks
+                    checks={node.checks ?? (node.check ? [node.check] : [])}
+                    verifiers={(agents.data?.agents ?? [])
+                      .filter((role) => role.verifier && role.name !== node.role)}
+                    onChange={(checks) => editNode(node.id, {
+                      checks, checks_seeded: true,
+                      check: checks[0] ?? null,
+                    })}
                   />
 
                   <div className="space-y-1">

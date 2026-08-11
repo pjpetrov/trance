@@ -314,12 +314,16 @@ class FlowEngine:
             attempt.outcome, attempt.outcome_reason = outcome, reason
             attempt.commit = self._commit_step(step, role.name, outcome)
             exit_name = SUCCESS if outcome == OUTCOME_SUCCESS else FAILED
-            if outcome == OUTCOME_SUCCESS and node.check:
-                step.check = node.check          # so the messages name the right one
-                # This node's check and nothing else. A loop's wiring lives on
-                # its nodes — each says who checks that turn — and a chain left
-                # on the step would run after every node instead.
-                if self._run_check(step, attempt, chain=[node.check]) == "FAIL":
+            node_chain = (list(node.checks) if node.checks_seeded
+                          else merge_checks(node.checks, list(getattr(
+                              role, "checks", None) or [])))
+            if outcome == OUTCOME_SUCCESS and node_chain:
+                step.check = node_chain[0]       # so the messages name someone real
+                # This node's chain and nothing else — a chain left on the
+                # step would run after every node instead. Seeded nodes are
+                # the whole truth; unseeded ones still merge the agent's
+                # standing checks, exactly as a plan step does.
+                if self._run_check(step, attempt, chain=node_chain) == "FAIL":
                     exit_name = CHECK_FAILED
             # A fixer that made things worse should not hand its mess on.
             if exit_name != SUCCESS and node.revert_on_fail:

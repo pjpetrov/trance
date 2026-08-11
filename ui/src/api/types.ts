@@ -444,7 +444,12 @@ export interface LoopNode {
   id: string;
   role: string;
   focus: string;
+  /** Legacy single check; `checks` is the chain that runs. */
   check: string | null;
+  /** The same chips a step carries: copied once from the node's agent, then
+   *  the loop's own to edit. */
+  checks?: string[];
+  checks_seeded?: boolean;
   revert_on_fail?: boolean;
   on: Record<string, LoopEdge[]>;
 }

@@ -89,8 +89,16 @@ class LoopNode:
     #: Appended to the step's own task. This is what tells the tester it is
     #: testing rather than building, when both share the step's prompt.
     focus: str = ""
-    #: Optional check on this node's work, as on a step.
+    #: Optional check on this node's work, as on a step. Legacy single form;
+    #: `checks` is the chain that actually runs.
     check: str | None = None
+    #: Every check this node's work runs, in order — the same chips a step
+    #: carries. Copied once from the node's agent, then the loop's own to edit.
+    checks_chain: list[str] = field(default_factory=list)
+    #: Whether the chain has been filled in from the agent's standing checks.
+    #: Once it has, the chain here is the whole truth — a check taken off in
+    #: the loops editor stays off.
+    checks_seeded: bool = False
     #: Undo this block's changes when it does not succeed. Useful mid-loop: a
     #: fixer that made things worse should not hand its mess to the next agent.
     revert_on_fail: bool = False
@@ -104,6 +112,13 @@ class LoopNode:
         # common case. Normalise so everything downstream sees a list.
         self.on = {k: ([v] if isinstance(v, Edge) else list(v))
                    for k, v in (self.on or {}).items()}
+
+    @property
+    def checks(self) -> list[str]:
+        """Every check this node runs, falling back to the legacy single one."""
+        if self.checks_chain:
+            return [name for name in self.checks_chain if name]
+        return [self.check] if self.check else []
 
     def routes(self, outcome: str) -> list[Edge]:
         return self.on.get(outcome) or []
@@ -133,7 +148,9 @@ class LoopNode:
 
     def to_dict(self) -> dict:
         return {"id": self.id, "role": self.role, "focus": self.focus,
-                "check": self.check, "revert_on_fail": self.revert_on_fail,
+                "check": self.check, "checks": self.checks,
+                "checks_seeded": self.checks_seeded,
+                "revert_on_fail": self.revert_on_fail,
                 "on": {k: [e.to_dict() for e in routes] for k, routes in self.on.items()}}
 
     @classmethod
@@ -143,6 +160,11 @@ class LoopNode:
             role=data.get("role") or "",
             focus=data.get("focus") or "",
             check=data.get("check") or None,
+            # Presence decides, as on a step: "checks: []" is taking them all
+            # off, not saying nothing.
+            checks_chain=[str(n) for n in data["checks"] if n]
+                         if "checks" in data else [],
+            checks_seeded=bool(data.get("checks_seeded")),
             revert_on_fail=bool(data.get("revert_on_fail")),
             on={k: [Edge.from_dict(e) for e in (v if isinstance(v, list) else [v])]
                 for k, v in (data.get("on") or {}).items() if k in EXITS},
