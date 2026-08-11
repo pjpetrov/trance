@@ -22,7 +22,7 @@ trance serve            # http://localhost:8080
 
 **Plans work.** You describe a project; an orchestrator asks a couple of
 questions and proposes a team and an ordered flow. Edits to the plan save
-themselves — there is no Save button to forget. Steps come with size
+themselves. Steps come with size
 estimates, and anything too big to picture is broken up before you see it. The
 plan lands in an editor — reorder, rewrite, add, delete — and nothing runs until
 you press Run.
@@ -32,6 +32,14 @@ commands with their output, diffs as they are written, graph lookups, every
 model call. The step that is running says how full its context window is, and
 the run header says what it has asked of each model so far — tokens, per model,
 because that is the decision it informs.
+
+**Sees the app it builds.** A visual tester opens the project in a **real
+browser** — a headless Chrome, not a DOM stub — presses the keys, clicks the
+buttons, and judges what is actually on screen with a vision model. Every
+move is kept: the history shows each screenshot it took, the question it
+asked about it, the answer it got, and the key or click it decided on next —
+so "the tester said it works" is something you can open and check, frame by
+frame.
 
 **Keeps agents inside their lane.** Each agent owns path globs, a toolset, and a
 command allowlist, enforced at the tool boundary rather than asked for in a
