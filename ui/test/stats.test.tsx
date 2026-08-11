@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import { StatsScreen } from "@/screens/StatsScreen";
 import { useUi } from "@/store/ui";
 import { fakeServer, renderWithQuery, stubWebSocket } from "./render";
@@ -154,6 +154,39 @@ describe("the statistics page", () => {
     expect(screen.getByTitle("working right now")).toBeInTheDocument();
   });
 
+  it("marks a delegated claude-code run for its whole quiet stretch", async () => {
+    // A delegated step emits one `delegated` event and then nothing until it
+    // finishes — its usage arrives as a lump at the end. That event staying
+    // newest is exactly the run being in flight, so it pulses like a wait.
+    serve({
+      "/api/sessions/s1": session({
+        run_seconds: 100,
+        agent_seconds: { planner: 90 },
+        flow: { steps: [], cursor: 0 },
+      }),
+      "/api/sessions/s1/usage": {
+        models: [{ model: "claude-code", calls: 3, input_tokens: 160_000,
+                   output_tokens: 33_500, cache_read_tokens: 106_000,
+                   total: 193_500 }],
+        total: 193_500, calls: 3,
+      },
+      "/api/sessions/s1/events": {
+        events: [{
+          id: "ev1", type: "delegated", session_id: "s1", step_id: "st1",
+          ts: "2026-08-11T13:00:00Z", agent: "planner",
+          payload: { model: "opus", preset: "claude-code",
+                     message: "planner is running this step inside Claude Code" },
+        }], total: 1, shown: 1,
+      },
+    });
+    renderWithQuery(<StatsScreen />);
+
+    expect((await screen.findAllByTitle("answering right now")).length).toBe(1);
+    const row = screen.getAllByText("claude-code")[0]!.closest("tr")!;
+    expect(within(row).getByTitle("answering right now")).toBeInTheDocument();
+    expect(screen.getByTitle("working right now")).toBeInTheDocument();
+  });
+
   it("shows no pulse when the newest event is an answer, not a wait", async () => {
     serve({
       "/api/sessions/s1/events": {
@@ -163,6 +196,39 @@ describe("the statistics page", () => {
     renderWithQuery(<StatsScreen />);
     await screen.findAllByText("Qwen3.6-llama.cpp");
     expect(screen.queryByTitle("answering right now")).toBeNull();
+  });
+
+  it("creeps the clock and the working agent's row every second", async () => {
+    // The charged numbers arrive when calls end — minutes apart on a
+    // delegated step — and a stopped clock between arrivals reads as broken.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      serve({
+        "/api/sessions/s1": session({
+          status: "running",
+          run_seconds: 100,
+          agent_seconds: { planner: 90, factchecker: 10 },
+          flow: { steps: [], cursor: 0 },
+        }),
+        "/api/sessions/s1/events": {
+          events: [{
+            id: "ev1", type: "delegated", session_id: "s1", step_id: "st1",
+            ts: "2026-08-11T13:00:00Z", agent: "planner",
+            payload: { model: "opus", preset: "claude-code", message: "running" },
+          }], total: 1, shown: 1,
+        },
+      });
+      renderWithQuery(<StatsScreen />);
+      expect(await screen.findByText("1m 40s")).toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(3_000));
+      // 100s became 103s, and the accruing time sits on the working planner.
+      expect(screen.getByText("1m 43s")).toBeInTheDocument();
+      const planner = screen.getByText("planner").closest("tr")!;
+      expect(within(planner).getByText("1m 33s")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says nothing has been asked rather than showing an empty table", async () => {

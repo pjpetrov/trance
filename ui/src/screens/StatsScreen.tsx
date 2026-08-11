@@ -10,12 +10,30 @@
  * writes: measured on one run here, 43.4M in against 700K out.
  */
 
+import { useEffect, useRef, useState } from "react";
 import { useEventTail, useLifetimeUsage, useSession, useUsage } from "@/api/queries";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { duration, tokens } from "@/lib/format";
 import { Dot, Empty, Panel, PanelHeader, Spinner } from "@/components/ui/primitives";
 import type { ModelSpend, Usage } from "@/api/types";
+
+/** `base`, creeping forward one second at a time while `running`.
+ *
+ *  The charged numbers arrive when calls end — on a delegated step, minutes
+ *  apart — and a stopped clock between arrivals reads as a broken page. Each
+ *  fresh base re-anchors the creep, so drift never outlives one update. */
+function useLiveSeconds(base: number, running: boolean): number {
+  const [, redraw] = useState(0);
+  const anchor = useRef({ base, at: Date.now() });
+  if (anchor.current.base !== base) anchor.current = { base, at: Date.now() };
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => redraw((n: number) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+  return running ? base + (Date.now() - anchor.current.at) / 1000 : base;
+}
 
 export function StatsScreen() {
   const sessionId = useUi((state) => state.sessionId);
@@ -27,7 +45,17 @@ export function StatsScreen() {
   // event being a model_waiting is exactly the call that has not come back.
   const tail = useEventTail(sessionId);
   const last = tail.data?.[tail.data.length - 1];
-  const active = last?.type === "model_waiting"
+  // Two shapes of "answering right now". The round-by-round backends emit a
+  // model_waiting between calls; a delegated claude-code step emits one
+  // `delegated` event and then nothing until it finishes — so that event
+  // staying newest is exactly the whole run being in flight, and its usage
+  // arriving only at the end is why the counters hold still meanwhile.
+  const running = session.data?.status === "running";
+  const liveRun = useLiveSeconds(session.data?.run_seconds ?? 0, running);
+  // What has accrued since the last charge landed — shown on whoever is
+  // working, since that is who the engine will charge it to.
+  const accruing = liveRun - (session.data?.run_seconds ?? 0);
+  const active = (last?.type === "model_waiting" || last?.type === "delegated")
     ? { name: String((last.payload as { preset?: string; model?: string }).preset
                      ?? (last.payload as { model?: string }).model ?? ""),
         agent: last.agent ?? "" }
@@ -51,8 +79,7 @@ export function StatsScreen() {
           <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
             <Figure label="tokens" value={tokens(here.data?.total ?? 0)} />
             <Figure label="model calls" value={(here.data?.calls ?? 0).toLocaleString()} />
-            <Figure label="working time"
-                    value={duration(session.data?.run_seconds ?? 0)} />
+            <Figure label="working time" value={duration(liveRun)} />
             <Figure
               label="steps"
               value={`${done} done`}
@@ -62,7 +89,8 @@ export function StatsScreen() {
           </div>
         </Panel>
 
-        <Effort agents={session.data?.agent_seconds ?? {}} activeAgent={active?.agent} />
+        <Effort agents={session.data?.agent_seconds ?? {}} activeAgent={active?.agent}
+                accruing={accruing} />
 
         <Spend
           title="By model, this session"
@@ -93,10 +121,16 @@ export function StatsScreen() {
  *  run; this is the difference between "7h 53m" and knowing the visual tester
  *  ate five of them. */
 function Effort(
-  { agents, activeAgent }:
-  { agents: Record<string, number>; activeAgent?: string },
+  { agents, activeAgent, accruing = 0 }:
+  { agents: Record<string, number>; activeAgent?: string; accruing?: number },
 ) {
-  const rows = Object.entries(agents)
+  // The active agent's row creeps with the clock: the engine will charge it
+  // this time when the call ends, and a frozen row until then reads as stuck.
+  const held = { ...agents };
+  if (activeAgent && accruing > 0) {
+    held[activeAgent] = (held[activeAgent] ?? 0) + accruing;
+  }
+  const rows = Object.entries(held)
     .filter(([, seconds]) => seconds > 0)
     .sort(([, a], [, b]) => b - a);
   if (!rows.length) return null;

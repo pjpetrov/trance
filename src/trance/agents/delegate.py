@@ -142,6 +142,10 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
 
     bus.emit("delegated", session_id, agent=role.name, step_id=step_id, payload={
         "model": config.model or "claude code default",
+        # The stats page marks who is answering right now. A delegated run
+        # emits nothing else until it finishes, so this event *is* the "in
+        # flight" signal, and it has to name the preset the ledger keys by.
+        "preset": config.preset,
         "message": (
             f"{role.name} is running this step inside Claude Code: one call, its "
             + ("own tools — writes are judged against the remit from the diff when "

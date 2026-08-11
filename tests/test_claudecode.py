@@ -346,10 +346,17 @@ def test_a_delegated_writer_runs_with_its_own_tools_and_a_shaped_bash(tmp_path, 
     vcs.ensure_repo(project)
     vcs.commit_all(project, "start")
 
+    bus = EventBus()
+    said = []
+    bus.subscribe_sync(lambda e: said.append(e) if e.type == "delegated" else None)
     delegate.run_delegated(
         role=BUILTIN_ROLES["frontend"], task="add stop()", project=project,
-        config=ModelConfig(kind="claudecode", model="opus"), bus=EventBus(),
-        session_id="s", step_id="st", goal="a web app")
+        config=ModelConfig(kind="claudecode", model="opus", preset="claude-code"),
+        bus=bus, session_id="s", step_id="st", goal="a web app")
+
+    # The one event the run emits before it finishes: the stats page's "in
+    # flight" signal, so it must name the preset the ledger keys by.
+    assert said and said[0].payload["preset"] == "claude-code"
 
     command = seen["command"]
     assert seen["cwd"] == str(project)              # it works where the project is
