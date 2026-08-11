@@ -693,22 +693,52 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             touch(session)
         return {**role.to_dict(), "protected": True, "resolved": _resolved_for(role)}
 
+    def _sessions_of(held) -> list:
+        """The sessions that actually read this store — same project, no more.
+
+        Deletion used to be refused because *some other project's* session
+        named the same agent, which was a leftover from the one-shared-library
+        era: those sessions read their own copies, and deleting here cannot
+        touch them.
+        """
+        mine = Path(getattr(held, "project", "")).resolve()
+        return [s for s in store.all()
+                if Path(s.project_dir).expanduser().resolve() == mine]
+
     @app.delete("/api/agents/{name}")
-    def delete_agent(name: str, session: str = ""):
-        roles = stores_q(session).roles
+    def delete_agent(name: str, session: str = "", force: bool = False):
+        """Delete an agent from this scope.
+
+        Usage inside the same scope is a warning, not a wall: the first call
+        answers 409 naming what still points at it, and force=true is the
+        approval — after which a step that still names it fails at run time
+        saying the agent was deleted, rather than silently misbehaving.
+        """
+        held = stores_q(session)
+        roles = held.roles
         if name in PROTECTED:
             raise HTTPException(409, f"{name!r} is a built-in agent type and cannot be deleted")
-        used_by = [s.name for s in store.all() if any(r.name == name for r in s.team)]
-        if used_by:
-            raise HTTPException(409, f"{name!r} is on the team of: {', '.join(used_by[:6])}")
-        verifying = [
-            f"{s.name}:{st.role}" for s in store.all() for st in s.flow.steps
-            if st.verify_with == name
-        ]
-        if verifying:
-            raise HTTPException(409, f"{name!r} verifies: {', '.join(verifying[:6])}")
-        if not roles.delete(name):
+        if roles.get(name) is None:
             raise HTTPException(404, "no such agent")
+
+        if not force:
+            usage = []
+            for s in _sessions_of(held):
+                for n, st in enumerate(s.flow.steps, 1):
+                    if st.role == name:
+                        usage.append(f"step {n} of {s.name}")
+                    elif name in st.checks:
+                        usage.append(f"a check on step {n} of {s.name}")
+            for loop in held.loops.all():
+                if any(node.role == name for node in loop.nodes):
+                    usage.append(f"the {loop.name} loop")
+            if usage:
+                raise HTTPException(409, (
+                    f"{name!r} is still used by: {', '.join(usage[:8])}. "
+                    f"Delete it anyway and those steps will fail when they run, "
+                    f"saying the agent was deleted."))
+
+        roles.delete(name)
         return {"deleted": name}
 
     @app.get("/api/presets")
@@ -788,12 +818,18 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {**renamed.to_dict(), "repointed_sessions": repointed}
 
     @app.delete("/api/presets/{name}")
-    def delete_preset(name: str):
-        in_use = [
-            f"{s.name}:{r.name}" for s in store.all() for r in s.team if r.preset == name
-        ]
-        if in_use:
-            raise HTTPException(409, f"model {name!r} is assigned to: {', '.join(in_use[:6])}")
+    def delete_preset(name: str, force: bool = False):
+        # Presets are global, so the usage list is too — but it is a warning
+        # to approve past, not a wall: an agent whose preset is gone falls
+        # back to the default worker model, which is survivable and said.
+        if not force:
+            in_use = sorted({f"{r.name} ({s.name})" for s in store.all()
+                             for r in s.team if r.preset == name})
+            if in_use:
+                raise HTTPException(409, (
+                    f"model {name!r} is assigned to: {', '.join(in_use[:6])}. "
+                    f"Delete it anyway and those agents fall back to the "
+                    f"default worker model."))
         if not providers.delete_preset(name):
             raise HTTPException(404, "no such model")
         _sync()
@@ -1775,15 +1811,20 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return saved.to_dict()
 
     @app.delete("/api/loops/{name}")
-    def delete_loop(name: str, session: str = ""):
-        loops = stores_q(session).loops
-        used = [s.name for s in store.all()
-                if any(step.loop == name for step in s.flow.steps)]
-        if used:
-            raise HTTPException(409, (
-                f"{name!r} is used by: {', '.join(used)}. Change those steps first."))
-        if not loops.delete(name):
+    def delete_loop(name: str, session: str = "", force: bool = False):
+        held = stores_q(session)
+        loops = held.loops
+        if loops.get(name) is None:
             raise HTTPException(404, "no such loop")
+        if not force:
+            used = [f"step {n} of {s.name}" for s in _sessions_of(held)
+                    for n, step in enumerate(s.flow.steps, 1) if step.loop == name]
+            if used:
+                raise HTTPException(409, (
+                    f"{name!r} is still used by: {', '.join(used[:8])}. "
+                    f"Delete it anyway and those steps will fail when they run, "
+                    f"saying the loop was deleted."))
+        loops.delete(name)
         return {"deleted": name}
 
     # ----------------------------------------------------------- sessions

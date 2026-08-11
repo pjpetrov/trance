@@ -6,8 +6,10 @@
  *  add one except through another screen, and a Save button per item.
  */
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { ApiError } from "@/api/client";
 import { cn } from "@/lib/cn";
+import { Confirm } from "./Confirm";
 import { Badge, Button, Empty } from "./primitives";
 
 export function LibraryList<T>(
@@ -71,6 +73,55 @@ export function LibraryList<T>(
 }
 
 /** The footer every library shares: what is pending, and the two ways out. */
+/** Deleting through the library, with usage as a question rather than a wall.
+ *
+ * A first delete that hits usage answers 409 naming what still points at the
+ * thing; the confirm shows exactly that, and "Delete anyway" is the approval —
+ * after which steps that still name it fail at run time saying it was deleted.
+ * A 404 mid-apply means an earlier confirmed pass already removed it. */
+export function useForcedRemoval(
+  removeOne: (name: string, force: boolean) => Promise<unknown>,
+) {
+  const [forcing, setForcing] = useState<{ name: string; detail: string } | null>(null);
+
+  const removeAll = async (names: string[]): Promise<boolean> => {
+    for (const name of names) {
+      try {
+        await removeOne(name, false);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          setForcing({ name, detail: error.detail });
+          return false;
+        }
+        if (error instanceof ApiError && error.status === 404) continue;
+        throw error;
+      }
+    }
+    return true;
+  };
+  return { forcing, clear: () => setForcing(null), removeAll };
+}
+
+export function ForceConfirm(
+  { forcing, busy, onClose, onConfirm }:
+  { forcing: { name: string; detail: string } | null; busy?: boolean;
+    onClose: () => void; onConfirm: (name: string) => void },
+) {
+  return (
+    <Confirm
+      open={Boolean(forcing)}
+      title={`Delete "${forcing?.name}" anyway?`}
+      confirmLabel="Delete anyway"
+      danger
+      busy={busy}
+      onClose={onClose}
+      onConfirm={() => forcing && onConfirm(forcing.name)}
+    >
+      <p>{forcing?.detail}</p>
+    </Confirm>
+  );
+}
+
 export function LibraryFooter(
   { changeCount, onApply, onApplyDefault, onDiscard, busy, note }:
   {

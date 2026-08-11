@@ -13,7 +13,8 @@ import { useDraftLibrary } from "@/lib/useDraftLibrary";
 import { useUi } from "@/store/ui";
 import { Badge, Button, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
-import { LibraryFooter, LibraryList } from "@/components/ui/Library";
+import { ForceConfirm, LibraryFooter, LibraryList, useForcedRemoval }
+  from "@/components/ui/Library";
 import { DEFAULTS, ScopeSwitch, idFor, type Scope }
   from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
@@ -71,10 +72,13 @@ export function LoopsEditor() {
   const library = useDraftLibrary<Loop>(loops.data, (loop) => loop.name);
   const draft = library.selected;
 
+  const removals = useForcedRemoval(
+    (name, force) => remove.mutateAsync({ name, force }));
+
   const apply = async (alsoDefault = false) => {
     setApplying(true);
     try {
-      for (const name of library.removed) await remove.mutateAsync(name);
+      if (!(await removals.removeAll(library.removed))) return;
       for (const loop of library.changed) {
         await save.mutateAsync({ name: loop.name, body: loop });
         // Deletions are not repeated against the template — see AgentsEditor.
@@ -278,6 +282,14 @@ export function LoopsEditor() {
       <footer className="flex items-center gap-2 border-t border-line px-4 py-3">
         <ScopeSwitch scope={scope} onChange={setScope} what="loops" />
         <div className="flex-1" />
+        <ForceConfirm
+          forcing={removals.forcing}
+          busy={remove.isPending}
+          onClose={removals.clear}
+          onConfirm={(name) => remove.mutateAsync({ name, force: true })
+            .then(() => { removals.clear(); return apply(); })
+            .catch((error) => toast.err(String(error)))}
+        />
         <LibraryFooter
           changeCount={library.changeCount}
           onApply={() => apply()}

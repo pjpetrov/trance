@@ -14,7 +14,8 @@ import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { Badge, Button, Checkbox, Empty, Field, Input, Select, Textarea }
   from "@/components/ui/primitives";
-import { LibraryFooter, LibraryList } from "@/components/ui/Library";
+import { ForceConfirm, LibraryFooter, LibraryList, useForcedRemoval }
+  from "@/components/ui/Library";
 import { Checks } from "@/components/Checks";
 import { DEFAULTS, ScopeSwitch, idFor, type Scope }
   from "@/components/ScopeSwitch";
@@ -59,12 +60,15 @@ export function AgentsEditor() {
   const library = useDraftLibrary<AgentRole>(agents.data?.agents, (role) => role.name);
   const draft = library.selected;
 
+  const removals = useForcedRemoval(
+    (name, force) => remove.mutateAsync({ name, force }));
+
   const apply = async (alsoDefault = false) => {
     setApplying(true);
     try {
       // Deletions first: a rename is expressed as an add plus a delete, and
       // doing them the other way round briefly has both names present.
-      for (const name of library.removed) await remove.mutateAsync(name);
+      if (!(await removals.removeAll(library.removed))) return;
       for (const role of library.changed) {
         await save.mutateAsync({ name: role.name, body: role });
         // Only what this edit wrote. A deletion is not repeated against the
@@ -334,6 +338,14 @@ export function AgentsEditor() {
       <footer className="flex items-center gap-2 border-t border-line px-4 py-3">
         <ScopeSwitch scope={scope} onChange={setScope} what="agents" />
         <div className="flex-1" />
+        <ForceConfirm
+          forcing={removals.forcing}
+          busy={remove.isPending}
+          onClose={removals.clear}
+          onConfirm={(name) => remove.mutateAsync({ name, force: true })
+            .then(() => { removals.clear(); return apply(); })
+            .catch((error) => toast.err(String(error)))}
+        />
         <LibraryFooter
           changeCount={library.changeCount}
           onApply={() => apply()}

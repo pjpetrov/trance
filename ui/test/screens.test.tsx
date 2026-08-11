@@ -323,6 +323,52 @@ describe("the run screen", () => {
   });
 });
 
+describe("deleting a used agent", () => {
+  it("turns the usage into a question, and delete-anyway finishes the apply", async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    let deleted = false;
+    const server = fakeServer({
+      "/api/agents": { agents: [role({ name: "helper", title: "Helper" })],
+                       verifiers: [], toolsets: [] },
+      "/api/presets": { presets: [] },
+      "/api/config": config(),
+      "/api/agents/helper": (request: { method: string; url: string }) => {
+        if (request.method !== "DELETE") return role({ name: "helper" });
+        calls += 1;
+        if (deleted) {
+          // The re-run of apply after the confirmed force: already gone.
+          return new Response(JSON.stringify({ detail: "no such agent" }),
+                              { status: 404, headers: { "Content-Type": "application/json" } });
+        }
+        if (!request.url.includes("force=true")) {
+          return new Response(JSON.stringify({
+            detail: "'helper' is still used by: step 1 of game. Delete it anyway "
+              + "and those steps will fail when they run, saying the agent was deleted.",
+          }), { status: 409, headers: { "Content-Type": "application/json" } });
+        }
+        deleted = true;
+        return { deleted: "helper" };
+      },
+    });
+
+    renderWithQuery(<AgentsEditor />);
+    await screen.findByDisplayValue("helper");
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: /^Apply \(/ }));
+
+    // The wall became a question, with the usage in it.
+    expect(await screen.findByText(/still used by: step 1 of game/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete anyway" }));
+
+    // The forced delete lands, and the re-run apply treats the 404 as done.
+    await waitFor(() => expect(deleted).toBe(true));
+    expect(server.calls.some((call) => call.method === "DELETE"
+      && call.url.includes("force=true"))).toBe(true);
+    expect(await screen.findByText("No changes")).toBeInTheDocument();
+  });
+});
+
 describe("reverting a step", () => {
   it("offers revert only where there are commits, and reports a failure honestly", async () => {
     const user = userEvent.setup();

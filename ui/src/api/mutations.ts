@@ -139,8 +139,11 @@ export function useAgentMutations(sessionId: string) {
         api.saveAgent(sessionId, name, body),
       onSuccess: settle,
     }),
-    remove: useMutation({ mutationFn: (name: string) => api.deleteAgent(sessionId, name),
-                          onSuccess: settle }),
+    remove: useMutation({
+      mutationFn: ({ name, force = false }: { name: string; force?: boolean }) =>
+        api.deleteAgent(sessionId, name, force),
+      onSuccess: settle,
+    }),
     reset: useMutation({ mutationFn: (name: string) => api.resetAgent(sessionId, name),
                          onSuccess: settle }),
     draftPrompt: useMutation({ mutationFn: api.draftPrompt }),
@@ -164,7 +167,8 @@ export function usePresetMutations() {
         api.savePreset(name, body),
       onSuccess: settle,
     }),
-    remove: useMutation({ mutationFn: api.deletePreset, onSuccess: settle }),
+    remove: useMutation({ mutationFn: ({ name, force = false }: { name: string; force?: boolean }) =>
+        api.deletePreset(name, force), onSuccess: settle }),
     rename: useMutation({
       mutationFn: ({ name, to }: { name: string; to: string }) => api.renamePreset(name, to),
       onSuccess: settle,
@@ -185,7 +189,8 @@ export function useLoopMutations(sessionId: string) {
         api.saveLoop(sessionId, name, body),
       onSuccess: settle,
     }),
-    remove: useMutation({ mutationFn: (name: string) => api.deleteLoop(sessionId, name),
+    remove: useMutation({ mutationFn: ({ name, force = false }: { name: string; force?: boolean }) =>
+        api.deleteLoop(sessionId, name, force),
                           onSuccess: settle }),
   };
 }

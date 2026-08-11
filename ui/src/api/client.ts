@@ -98,8 +98,9 @@ export const api = {
   saveAgent: (sid: string, name: string, body: Partial<AgentRole>) =>
     request<AgentRole>(`/api/agents/${id(name)}${forProject(sid)}`,
       { method: "PUT", body }),
-  deleteAgent: (sid: string, name: string) =>
-    request<void>(`/api/agents/${id(name)}${forProject(sid)}`, { method: "DELETE" }),
+  deleteAgent: (sid: string, name: string, force = false) =>
+    request<void>(`/api/agents/${id(name)}${forProject(sid)}`
+      + (force ? "&force=true" : ""), { method: "DELETE" }),
   resetAgent: (sid: string, name: string) =>
     request<AgentRole>(`/api/agents/${id(name)}/reset${forProject(sid)}`,
       { method: "POST" }),
@@ -111,8 +112,9 @@ export const api = {
   presets: () => request<{ presets: ModelPreset[] }>("/api/presets"),
   savePreset: (name: string, body: Partial<ModelPreset>) =>
     request<ModelPreset>(`/api/presets/${id(name)}`, { method: "PUT", body }),
-  deletePreset: (name: string) =>
-    request<void>(`/api/presets/${id(name)}`, { method: "DELETE" }),
+  deletePreset: (name: string, force = false) =>
+    request<void>(`/api/presets/${id(name)}${force ? "?force=true" : ""}`,
+                  { method: "DELETE" }),
   renamePreset: (name: string, to: string) =>
     request<ModelPreset>(`/api/presets/${id(name)}/rename`, { method: "POST", body: { to } }),
   checkPreset: (name: string) =>
@@ -126,8 +128,9 @@ export const api = {
   loops: (sid: string) => request<{ loops: Loop[] }>(`/api/loops${forProject(sid)}`),
   saveLoop: (sid: string, name: string, body: Partial<Loop>) =>
     request<Loop>(`/api/loops/${id(name)}${forProject(sid)}`, { method: "PUT", body }),
-  deleteLoop: (sid: string, name: string) =>
-    request<void>(`/api/loops/${id(name)}${forProject(sid)}`, { method: "DELETE" }),
+  deleteLoop: (sid: string, name: string, force = false) =>
+    request<void>(`/api/loops/${id(name)}${forProject(sid)}`
+      + (force ? "&force=true" : ""), { method: "DELETE" }),
 
   // ----------------------------------------------------------- commands
   commands: (sid: string) => request<CommandLists>(`/api/commands${forProject(sid)}`),

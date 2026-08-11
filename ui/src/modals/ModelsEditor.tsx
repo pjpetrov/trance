@@ -10,7 +10,8 @@ import { usePresetMutations } from "@/api/mutations";
 import { useDraftLibrary } from "@/lib/useDraftLibrary";
 import { tokens } from "@/lib/format";
 import { Badge, Button, Empty, Field, Input, Select } from "@/components/ui/primitives";
-import { LibraryFooter, LibraryList } from "@/components/ui/Library";
+import { ForceConfirm, LibraryFooter, LibraryList, useForcedRemoval }
+  from "@/components/ui/Library";
 import { toast } from "@/components/Toaster";
 import type { ModelPreset } from "@/api/types";
 
@@ -34,10 +35,13 @@ export function ModelsEditor() {
   const draft = library.selected;
   const kinds = config.data?.kinds ?? {};
 
+  const removals = useForcedRemoval(
+    (name, force) => remove.mutateAsync({ name, force }));
+
   const apply = async () => {
     setApplying(true);
     try {
-      for (const name of library.removed) await remove.mutateAsync(name);
+      if (!(await removals.removeAll(library.removed))) return;
       for (const preset of library.changed) {
         // "***" is the redaction the server sends back; echoing it would store
         // the placeholder as the key.
@@ -191,6 +195,14 @@ export function ModelsEditor() {
       </div>
 
       <footer className="flex items-center gap-2 border-t border-line px-4 py-3">
+        <ForceConfirm
+          forcing={removals.forcing}
+          busy={remove.isPending}
+          onClose={removals.clear}
+          onConfirm={(name) => remove.mutateAsync({ name, force: true })
+            .then(() => { removals.clear(); return apply(); })
+            .catch((error) => toast.err(String(error)))}
+        />
         <LibraryFooter
           changeCount={library.changeCount}
           onApply={apply}

@@ -229,8 +229,12 @@ class FlowEngine:
         loop = self.loops.get(step.loop) if self.loops else None
         if loop is None:
             step.status = "failed"
-            step.summary = f"unknown loop {step.loop!r}"
-            self._emit("step_failed", step_id=step.id, payload={"reason": step.summary})
+            step.summary = (
+                f"this step's loop {step.loop!r} no longer exists — it was deleted "
+                f"or renamed after the plan was made. Pick another loop for the "
+                f"step, or recreate {step.loop!r} in the Loops editor.")
+            self._emit("step_failed", step_id=step.id,
+                       payload={"reason": step.summary, "message": step.summary})
             self._halt(step)
             return
 
@@ -251,8 +255,12 @@ class FlowEngine:
             role = self.session.role(node.role) or BUILTIN_ROLES.get(node.role)
             if role is None:
                 step.status = "failed"
-                step.summary = f"the {step.loop} loop names an unknown agent {node.role!r}"
-                self._emit("step_failed", step_id=step.id, payload={"reason": step.summary})
+                step.summary = (
+                    f"the {step.loop} loop names an agent {node.role!r} that no longer "
+                    f"exists — deleted or renamed after the loop was made. Fix the "
+                    f"loop's node in the Loops editor, or recreate the agent.")
+                self._emit("step_failed", step_id=step.id,
+                           payload={"reason": step.summary, "message": step.summary})
                 self._halt(step)
                 return
 
@@ -421,8 +429,12 @@ class FlowEngine:
         role = session.role(step.role)
         if role is None:
             step.status = "failed"
-            step.summary = f"unknown role {step.role!r}"
-            self._emit("step_failed", step_id=step.id, payload={"reason": step.summary})
+            step.summary = (
+                f"this step's agent {step.role!r} no longer exists — it was deleted "
+                f"or renamed after the plan was made. Assign another agent to the "
+                f"step, or recreate {step.role!r} in the Agents editor.")
+            self._emit("step_failed", step_id=step.id,
+                       payload={"reason": step.summary, "message": step.summary})
             return
 
         limit = self._tries_for(role, step)

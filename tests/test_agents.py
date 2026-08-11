@@ -3769,7 +3769,7 @@ def test_an_unknown_loop_halts_instead_of_running_nothing(tmp_path, monkeypatch)
                         lambda **kw: _Turn(None, "x", outcome=("SUCCESS", "")))
 
     engine._execute(step)
-    assert step.status == "failed" and "unknown loop" in step.summary
+    assert step.status == "failed" and "no longer exists" in step.summary
 
 
 def test_a_loop_is_validated_before_it_can_be_saved():
@@ -10767,3 +10767,116 @@ def test_the_fullstack_repairer_owns_both_sides_of_the_seam():
     # The test loop keeps its specialists: this is repair-shaped, not general.
     plain = next(l for l in default_loops() if l.name == "test-and-fix")
     assert all(n.role != "fullstack" for n in plain.nodes)
+
+
+# ==================== deleting is scoped, warned, approved — never walled
+
+def test_deleting_an_agent_is_blocked_only_by_this_projects_own_usage(tmp_path):
+    """"Referenced by other projects" was a leftover from the one-shared-
+    library era: those sessions read their own copies, and deleting here
+    cannot touch them."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    a = client.post("/api/sessions", json={"name": "game-a"}).json()["id"]
+    b = client.post("/api/sessions", json={"name": "game-b"}).json()["id"]
+    for sid in (a, b):
+        client.put(f"/api/agents/helper?session={sid}", json={
+            "title": "Helper", "description": "", "system_prompt": "p",
+            "paths": ["src/**"], "toolsets": ["files"]})
+    # Only B's plan uses its helper.
+    client.put(f"/api/sessions/{b}/flow",
+               json={"steps": [{"role": "helper", "task": "t"}]})
+
+    # A's helper deletes freely — B's usage is B's own copy, not A's problem.
+    assert client.delete(f"/api/agents/helper?session={a}").status_code == 200
+
+    # B's delete warns with the usage, and force is the approval.
+    warned = client.delete(f"/api/agents/helper?session={b}")
+    assert warned.status_code == 409
+    assert "step 1 of game-b" in warned.json()["detail"]
+    assert "fail when they run" in warned.json()["detail"]
+    assert client.delete(f"/api/agents/helper?session={b}&force=true").status_code == 200
+    assert not any(x["name"] == "helper"
+                   for x in client.get(f"/api/agents?session={b}").json()["agents"])
+
+
+def test_a_step_whose_agent_was_deleted_fails_saying_so(tmp_path, monkeypatch):
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Flow, Step
+    from trance.session import Session
+
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [BUILTIN_ROLES["frontend"]]
+    step = Step(role="helper", task="t")           # nobody by this name
+    session.flow = Flow(steps=[step])
+    bus = EventBus()
+    said = []
+    bus.subscribe_sync(lambda e: said.append(e.payload)
+                       if e.type == "step_failed" else None)
+
+    FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)._execute_agent(step)
+
+    assert step.status == "failed"
+    assert "deleted or renamed" in step.summary
+    assert "Agents editor" in step.summary
+    assert said and "deleted or renamed" in said[0]["message"]
+
+
+def test_a_loop_delete_warns_on_this_projects_steps_and_force_wins(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+    client.put(f"/api/sessions/{sid}/flow",
+               json={"steps": [{"role": "", "loop": "test-and-fix", "task": "t"}]})
+
+    warned = client.delete(f"/api/loops/test-and-fix?session={sid}")
+    assert warned.status_code == 409
+    assert "step 1 of game" in warned.json()["detail"]
+    assert client.delete(
+        f"/api/loops/test-and-fix?session={sid}&force=true").status_code == 200
+
+
+def test_a_preset_delete_warns_and_says_what_the_fallback_is(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    client.put("/api/presets/local-qwen", json={"kind": "llamacpp", "model": "q",
+                                                "base_url": "http://x/v1"})
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+    client.put(f"/api/agents/frontend?session={sid}", json={"preset": "local-qwen"})
+    # The team holds the assignment the warning looks for.
+    client.get(f"/api/sessions/{sid}")
+
+    warned = client.delete("/api/presets/local-qwen")
+    assert warned.status_code == 409
+    assert "fall back to the" in warned.json()["detail"]
+    assert client.delete("/api/presets/local-qwen?force=true").status_code == 200
