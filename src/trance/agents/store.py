@@ -397,10 +397,16 @@ def default_loops() -> list[Loop]:
             FAILED: Edge(target="n_repair", max_visits=3)},
     )
     repair = LoopNode(
-        id="n_repair", role="frontend",
-        focus=("The app does not look right. The visual tester's report says what was "
-               "on screen and what was wrong with it — fix the rendering, then it "
-               "looks again."),
+        id="n_repair", role="fullstack",
+        # Full-stack, learned the hard way: a repairer confined to the frontend
+        # answered a dead websocket by rewriting rendering, because the remit
+        # let it fix nothing else. The cause of a visual defect does not say
+        # which side it is on, so the repairer must reach both.
+        focus=("The app does not look right in the browser. The visual tester's "
+               "report says what was on screen and what was wrong with it. The cause "
+               "may be on either side — the server not sending, the client not "
+               "drawing, the seam between them — so find where it actually is before "
+               "fixing anything. Then it looks again."),
         on={SUCCESS: Edge(target="n_look", max_visits=3),
             FAILED: Edge(target=FAIL_LOOP)},
     )

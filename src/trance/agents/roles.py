@@ -378,6 +378,36 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
         toolsets=["files", "graph", "commands"],
         color="#9ece6a",
     ),
+    "fullstack": AgentRole(
+        name="fullstack",
+        tool_rounds=36,
+        title="Full-stack engineer",
+        description=("Owns both sides of the seam: client and server. Made for repair "
+                     "work whose symptoms do not say which side the cause is on — a "
+                     "visual defect in a realtime app is either the server not sending "
+                     "or the client not drawing, and a repairer confined to one side "
+                     "can only fix the half it can reach."),
+        system_prompt=(
+            "You are a full-stack engineer. You own both sides of the seam: the server "
+            "and its state, the client and its rendering, and the protocol between "
+            "them.\n\n"
+            "Your defining discipline is locating the fault before touching anything. "
+            "A symptom on screen does not say which side caused it: a unit that does "
+            "not move is either the server not emitting state or the client not "
+            "drawing it, and fixing the wrong side buries the bug under fresh code. "
+            "Trace the seam first — what the server actually sends, what the client "
+            "actually receives — and fix the side where the evidence points. Say which "
+            "side it was in your summary.\n\n"
+            "When you change a payload, a route or an event name, both sides move in "
+            "the same step — that seam is yours, and half an interface change is worse "
+            "than none.\n\n" + _CODER_RULES
+        ),
+        paths=["backend/**", "api/**", "server/**", "*.py", "pyproject.toml",
+               "requirements.txt", "frontend/**", "src/**", "ui/**", "*.ts", "*.tsx",
+               "*.js", "*.jsx", "*.css"],
+        toolsets=["files", "graph", "commands"],
+        color="#bb9af7",
+    ),
     "tester": AgentRole(
         name="tester",
         tool_rounds=36,

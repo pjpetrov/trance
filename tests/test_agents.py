@@ -3823,7 +3823,7 @@ def test_the_seeded_loop_is_valid_and_describes_the_common_shape(tmp_path):
     for loop in loops:
         assert validate(loop, set(R), verifiers) is None, loop.name
     assert loops[0].roles() == ["tester", "backend"]
-    assert loops[1].roles() == ["visual-tester", "frontend"]
+    assert loops[1].roles() == ["visual-tester", "fullstack"]
 
 
 def test_a_flow_step_can_name_a_loop_and_pulls_in_its_agents(tmp_path):
@@ -10665,23 +10665,23 @@ def test_a_loop_node_is_seeded_with_its_agents_checks_once(tmp_path):
     client = TestClient(app)
     sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
 
-    client.put(f"/api/agents/frontend?session={sid}",
+    client.put(f"/api/agents/fullstack?session={sid}",
                json={"checks": ["factchecker", "regression"]})
 
     loops = client.get(f"/api/loops?session={sid}").json()["loops"]
     visual = next(l for l in loops if l["name"] == "visual-test-and-fix")
-    repair = next(n for n in visual["nodes"] if n["role"] == "frontend")
+    repair = next(n for n in visual["nodes"] if n["role"] == "fullstack")
     assert repair["checks"] == ["factchecker", "regression"]
     assert repair["checks_seeded"] is True
 
     # Taking one off is a decision that sticks across reads.
     for node in visual["nodes"]:
-        if node["role"] == "frontend":
+        if node["role"] == "fullstack":
             node["checks"] = ["factchecker"]
     client.put(f"/api/loops/visual-test-and-fix?session={sid}", json=visual)
     again = next(l for l in client.get(f"/api/loops?session={sid}").json()["loops"]
                  if l["name"] == "visual-test-and-fix")
-    kept = next(n for n in again["nodes"] if n["role"] == "frontend")
+    kept = next(n for n in again["nodes"] if n["role"] == "fullstack")
     assert kept["checks"] == ["factchecker"]
 
 
@@ -10742,3 +10742,28 @@ def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
 
     assert asked == ["frontend", "factchecker", "regression"]
     assert step.status == "done"
+
+
+# ============================== the visual loop's repairer reaches both sides
+
+def test_the_fullstack_repairer_owns_both_sides_of_the_seam():
+    """Learned the hard way: a repairer confined to the frontend answered a
+    dead websocket by rewriting rendering, because the remit let it fix
+    nothing else. A visual symptom does not say which side its cause is on."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import default_loops
+
+    fullstack = BUILTIN_ROLES["fullstack"]
+    assert fullstack.may_write("backend/server.js")
+    assert fullstack.may_write("frontend/src/GameScene.js")
+    assert "locating the fault before touching anything" in fullstack.system_prompt
+    assert "both sides move in the same step" in fullstack.system_prompt
+    assert not fullstack.verifier
+
+    visual = next(l for l in default_loops() if l.name == "visual-test-and-fix")
+    repair = next(n for n in visual.nodes if n.id == "n_repair")
+    assert repair.role == "fullstack"
+    assert "either side" in repair.focus
+    # The test loop keeps its specialists: this is repair-shaped, not general.
+    plain = next(l for l in default_loops() if l.name == "test-and-fix")
+    assert all(n.role != "fullstack" for n in plain.nodes)
