@@ -9,6 +9,7 @@ on.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import tempfile
 
@@ -218,3 +219,89 @@ def test_the_proposal_reads_the_readme(tmp_path, monkeypatch):
     assert body["command"] == "pnpm --filter web dev"
     assert body["read_readme"] is True
     assert seen["prompt_had_readme"] is True
+
+
+# ----------------------------------- a preview survives the harness restarting
+
+def _sleeper():
+    import subprocess
+
+    return subprocess.Popen(["sleep", "60"], start_new_session=True,
+                            stdout=subprocess.DEVNULL)
+
+
+def test_a_dev_preview_is_found_again_after_a_restart(tmp_path, monkeypatch):
+    """The dev server runs in its own session and survives trance dying — so a
+    restart used to leave it running *and* forgotten: holding its port, absent
+    from the UI, with no button anywhere that could stop it. The record in the
+    project's .trance is how the next trance finds it."""
+    import os
+    from types import SimpleNamespace
+
+    client, app = _serve(tmp_path)
+    made = client.post("/api/sessions", json={"name": "app"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    project.mkdir(parents=True, exist_ok=True)
+
+    proc = _sleeper()
+    monkeypatch.setattr(
+        preview, "run_dev",
+        lambda where, command, log_dir=None: preview.DevServer(
+            command=command, root=str(where), port=5177, process=proc,
+            log=str(log_dir / "dev-server.log")))
+    client.post(f"/api/sessions/{sid}/preview",
+                json={"mode": "dev", "command": "npm run dev"})
+    assert (project / ".trance" / "preview.json").is_file()
+
+    # The restart: the registry is what dies with the process.
+    app.state.previews.clear()
+
+    body = client.get(f"/api/sessions/{sid}/preview").json()
+    assert body["dev"] is True
+    assert body["port"] == 5177
+    assert body["command"] == "npm run dev"
+
+    # And stop reaches the adopted process, not just the registry.
+    client.delete(f"/api/sessions/{sid}/preview")
+    proc.wait(timeout=10)
+    assert not (project / ".trance" / "preview.json").exists()
+
+
+def test_a_dev_server_that_died_while_trance_was_away_is_forgotten(tmp_path):
+    client, app = _serve(tmp_path)
+    made = client.post("/api/sessions", json={"name": "app"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    (project / ".trance").mkdir(parents=True, exist_ok=True)
+
+    dead = _sleeper()
+    dead.kill(); dead.wait()
+    (project / ".trance" / "preview.json").write_text(json.dumps({
+        "mode": "dev", "command": "npm run dev", "root": str(project),
+        "port": 5178, "pid": dead.pid}), encoding="utf8")
+
+    body = client.get(f"/api/sessions/{sid}/preview").json()
+    assert body["url"] == "" and body["port"] == 0
+    # The stale record is cleaned, not re-tried on every poll.
+    assert not (project / ".trance" / "preview.json").exists()
+
+
+def test_a_static_preview_is_served_again_after_a_restart(tmp_path):
+    """The static server is in-process and dies with trance; the user pressed
+    play and never pressed stop, so it is simply served again."""
+    client, app = _serve(tmp_path)
+    made = client.post("/api/sessions", json={"name": "app"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "index.html").write_text("<h1>hi</h1>", encoding="utf8")
+
+    client.post(f"/api/sessions/{sid}/preview", json={"path": "index.html"})
+    first = app.state.previews[sid]
+    port = first.port
+    first.stop()                              # what the restart does to it
+    app.state.previews.clear()
+
+    body = client.get(f"/api/sessions/{sid}/preview").json()
+    assert body["url"]
+    assert body["port"] == port               # same address where possible
+    assert app.state.previews[sid].alive()
+    client.delete(f"/api/sessions/{sid}/preview")

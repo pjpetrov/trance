@@ -84,6 +84,10 @@ class Preview:
     server: object
     thread: object
 
+    def alive(self) -> bool:
+        """In-process, so alive as long as its thread is."""
+        return getattr(self.thread, "is_alive", lambda: False)()
+
     @property
     def url(self) -> str:
         """The address to hand someone on another machine, when there is one."""
@@ -131,6 +135,14 @@ class DevServer:
     port: int
     process: object
     log: str
+    #: The group leader's pid — what a handle re-adopted after a harness
+    #: restart has instead of a Popen. The dev server runs in its own session,
+    #: so it survives trance dying; this is how the next trance finds it.
+    pid: int = 0
+
+    def __post_init__(self) -> None:
+        if self.process is not None and not self.pid:
+            self.pid = getattr(self.process, "pid", 0) or 0
 
     @property
     def url(self) -> str:
@@ -140,7 +152,17 @@ class DevServer:
         return f"http://{host or lan_address()}:{self.port}/"
 
     def alive(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+        if self.process is not None:
+            return self.process.poll() is None
+        if not self.pid:
+            return False
+        try:
+            os.kill(self.pid, 0)
+            return True
+        except PermissionError:
+            return True                    # exists, not ours to signal
+        except (ProcessLookupError, OSError):
+            return False
 
     def output(self, lines: int = 40) -> str:
         try:
@@ -158,17 +180,42 @@ class DevServer:
         """Kill the whole group. A dev server is a tree — npm spawns node, node
         spawns esbuild — and killing only the one trance started leaves the
         rest holding the port."""
-        process = self.process
-        if process is None:
+        pid = getattr(self.process, "pid", 0) or self.pid
+        if not pid:
             return
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            if self.process is not None:
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+            else:
+                # Re-adopted: nothing to wait on, so give it a moment and
+                # finish the job if it ignored the polite signal.
+                for _ in range(50):
+                    if not self.alive():
+                        break
+                    time.sleep(0.1)
+                else:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
+
+def adopt_dev(record: dict) -> DevServer | None:
+    """A handle to a dev server a previous trance started, if it still runs.
+
+    The dev server outlives the harness by design — it runs in its own session
+    — so a restart used to leave it running *and* forgotten: holding its port,
+    absent from the UI, with no button anywhere that could stop it.
+    """
+    pid = int(record.get("pid") or 0)
+    server = DevServer(command=str(record.get("command") or ""),
+                       root=str(record.get("root") or ""),
+                       port=int(record.get("port") or 0),
+                       process=None, log=str(record.get("log") or ""), pid=pid)
+    return server if pid and server.port and server.alive() else None
 
 
 class DevServerFailed(RuntimeError):

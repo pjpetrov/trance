@@ -1040,6 +1040,61 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     previews: dict[str, object] = {}
     app.state.previews = previews
 
+    def _preview_state(session) -> Path:
+        return Path(session.project_dir).expanduser() / ".trance" / "preview.json"
+
+    def _remember_preview(session, payload: dict) -> None:
+        """Write what is being served into the project's own state.
+
+        A dev server runs in its own session and survives trance dying; the
+        record is how the next trance knows it exists — rather than the port
+        being held by a process no page mentions and no button can stop.
+        """
+        path = _preview_state(session)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2), encoding="utf8")
+        except OSError:
+            pass                            # a preview that cannot persist still serves
+
+    def _forget_preview(session) -> None:
+        try:
+            _preview_state(session).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _revive_preview(session_id: str, session):
+        """Re-attach what a previous trance was serving, if anything.
+
+        The user pressed play and never pressed stop; a harness restart in
+        between is trance's business, not theirs. A dev server that survived
+        is adopted by pid; a static one died with the process, so it is simply
+        served again from the recorded folder, on the recorded port where
+        possible.
+        """
+        if session_id in previews:
+            return previews.get(session_id)
+        path = _preview_state(session)
+        try:
+            record = json.loads(path.read_text(encoding="utf8"))
+        except (OSError, ValueError):
+            return None
+        if record.get("mode") == "dev":
+            adopted = preview.adopt_dev(record)
+            if adopted is None:
+                _forget_preview(session)    # it died while trance was away
+                return None
+            previews[session_id] = adopted
+            return adopted
+        root = Path(record.get("root") or "")
+        if not root.is_dir():
+            _forget_preview(session)
+            return None
+        served = preview.serve(root, port=int(record.get("port") or 0))
+        previews[session_id] = served
+        preview_ports[(session_id, str(root))] = served.port
+        return served
+
     @app.post("/api/sessions/{session_id}/preview/plan")
     async def plan_preview(session_id: str):
         """Ask the orchestrator how this project is started.
@@ -1091,6 +1146,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                     "command": command, "output": exc.output, "message": str(exc)})
                 raise HTTPException(502, f"{exc}\n\n{exc.output}"[:4000]) from exc
             previews[session_id] = running
+            _remember_preview(session, {
+                "mode": "dev", "command": command, "root": running.root,
+                "port": running.port, "pid": running.pid, "log": running.log,
+            })
             here = running.at(request.url.hostname)
             bus.emit("preview", session_id, agent="you", payload={
                 "url": here, "root": running.root, "port": running.port,
@@ -1122,6 +1181,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 web_root, port=preview_ports.get((session_id, str(web_root)), 0))
             previews[session_id] = served
             preview_ports[(session_id, str(web_root))] = served.port
+        _remember_preview(session, {"mode": "static", "root": str(web_root),
+                                    "port": served.port})
 
         # Opened at the host this browser already used to reach trance, so a
         # phone on the same network gets a link that works from where it is.
@@ -1217,7 +1278,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.delete("/api/sessions/{session_id}/preview")
     def stop_preview(session_id: str):
-        _need(store, session_id)
+        session = _need(store, session_id)
+        _forget_preview(session)
+        # Revive before stopping: a dev server from before the restart is not
+        # in the registry, and "stop" that leaves it running is the old bug
+        # with a button on it.
+        _revive_preview(session_id, session)
         served = previews.pop(session_id, None)
         if served is not None:
             served.stop()
@@ -1229,9 +1295,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.get("/api/sessions/{session_id}/preview")
     def preview_status(session_id: str):
-        _need(store, session_id)
-        served = previews.get(session_id)
+        session = _need(store, session_id)
+        served = _revive_preview(session_id, session)
         if served is None:
+            return {"root": "", "port": 0, "url": "", "public": ""}
+        if not served.alive():
+            # It died on its own while nobody was serving the page. Forgetting
+            # it here keeps "running" honest.
+            previews.pop(session_id, None)
+            _forget_preview(session)
             return {"root": "", "port": 0, "url": "", "public": ""}
         return {"port": 0, **served.to_dict(),
                 "public": preview.public_url(served.port)}
