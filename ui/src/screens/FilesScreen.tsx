@@ -69,7 +69,6 @@ export function FilesScreen() {
   // What the orchestrator says starts this project, waiting to be confirmed.
   // Never run without that: it is a build on this machine, not a page.
   const [proposal, setProposal] = useState<RunPlan | null>(null);
-  const [asking, setAsking] = useState<string | null>(null);
   const [finishing, setFinishing] = useState(false);
 
   const tree = useMemo(() => buildTree(listing.data?.files ?? []), [listing.data]);
@@ -97,6 +96,34 @@ export function FilesScreen() {
           subtitle={listing.isLoading
             ? "reading…"
             : `${totals.files} files · ${totals.lines.toLocaleString()} lines`}
+          actions={!serving && (
+            <>
+              {/* The two answers to "how should this run", as buttons rather
+                  than a question. The modal that used to ask arrived only
+                  after finding the ▷ hidden on a file row. */}
+              <Button
+                size="sm" busy={start.isPending}
+                title="Hand the folder to a plain static server — instant, starts nothing.
+A Vite or webpack app will load and then fail on its first import; use Start app for those."
+                onClick={() => start.mutateAsync(undefined)
+                  .then((made) => { if (made?.open) window.open(made.open, "_blank"); })
+                  .catch((error) => toast.err(String(error)))}
+              >serve static</Button>
+              <Button
+                size="sm" variant="primary" busy={plan.isPending || run.isPending}
+                title="Ask the orchestrator how this project starts (it reads the README),
+show you the command, and run it after you confirm."
+                onClick={() => plan.mutateAsync()
+                  .then((answer) => {
+                    if (!answer.static_instead) return setProposal(answer);
+                    toast.ok("The orchestrator says this needs no server — serving the files.");
+                    return start.mutateAsync(undefined)
+                      .then((made) => { if (made?.open) window.open(made.open, "_blank"); });
+                  })
+                  .catch((error) => toast.err(String(error)))}
+              >start app</Button>
+            </>
+          )}
         />
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
           {tree.children.length
@@ -104,7 +131,9 @@ export function FilesScreen() {
                 <Branch
                   key={node.path} node={node} depth={0} selected={filePath}
                   onOpen={openFile}
-                  onPreview={(path) => setAsking(path)}
+                  onPreview={(path) => start.mutateAsync(path)
+                    .then((made) => { if (made?.open) window.open(made.open, "_blank"); })
+                    .catch((error) => toast.err(String(error)))}
                 />
               ))
             : <Empty title="Nothing yet." hint="Files appear as the agents write them." />}
@@ -240,57 +269,15 @@ export function FilesScreen() {
           .catch((error) => toast.err(String(error)))}
       />
 
-      {/* Two questions, in order: which kind of preview, then — if it is the
-          project's own server — the exact command, before it runs. Starting a
-          build on someone's machine is not something a play button may decide
-          on its own. */}
-      <Confirm
-        open={Boolean(asking) && !proposal}
-        title="How should this be served?"
-        confirmLabel="Serve the files"
-        busy={start.isPending || plan.isPending}
-        onClose={() => setAsking(null)}
-        onConfirm={() => {
-          const path = asking;
-          setAsking(null);
-          start.mutateAsync(path ?? undefined)
-            .then((made) => { if (made?.open) window.open(made.open, "_blank"); })
-            .catch((error) => toast.err(String(error)));
-        }}
-      >
-        <p>
-          <b>Serve the files</b> hands the folder to a plain static server. Instant,
-          and it starts nothing — but a page that imports bare module names, as a Vite
-          or webpack app does, will load and then fail on its first import.
-        </p>
-        <p>
-          <b>Run the project</b> asks the orchestrator to read the README and say what
-          starts it. You see that command before anything runs.
-        </p>
-        <Button
-          busy={plan.isPending}
-          onClick={() => plan.mutateAsync()
-            .then((answer) => {
-              if (!answer.static_instead) return setProposal(answer);
-              const path = asking;
-              setAsking(null);
-              toast.ok("The orchestrator says this needs no server — serving the files.");
-              return start.mutateAsync(path ?? undefined)
-                .then((made) => { if (made?.open) window.open(made.open, "_blank"); });
-            })
-            .catch((error) => toast.err(String(error)))}
-        >Run the project instead</Button>
-      </Confirm>
-
       <Confirm
         open={Boolean(proposal)}
         title="Run this?"
         confirmLabel="Run it"
         busy={run.isPending}
-        onClose={() => { setProposal(null); setAsking(null); }}
+        onClose={() => setProposal(null)}
         onConfirm={() => {
           const answer = proposal!;
-          setProposal(null); setAsking(null);
+          setProposal(null);
           run.mutateAsync({ command: answer.command, dir: answer.dir })
             .then((made) => {
               if (made?.open) window.open(made.open, "_blank");

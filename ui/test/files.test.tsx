@@ -154,6 +154,56 @@ describe("the files screen", () => {
     expect(useUi.getState().openStep).toBe("st_new");
   });
 
+  it("offers serve static and start app where they can be seen", async () => {
+    // The old entry was a ▷ hidden on each file row, opening a modal that
+    // asked which kind. The two kinds are the two buttons now, in the Files
+    // header, visible before any file is hovered.
+    const user = userEvent.setup();
+    const server = fakeServer(routes({
+      "/api/sessions/s1/preview": { ...IDLE_PREVIEW },
+    }));
+
+    renderWithQuery(<FilesScreen />);
+    await screen.findByText("index.html");
+    await user.click(screen.getByRole("button", { name: "serve static" }));
+
+    await waitFor(() => {
+      const started = server.calls.find(
+        (call) => call.method === "POST" && call.url.includes("/preview")
+                  && !call.url.includes("plan"));
+      expect(started).toBeTruthy();
+    });
+    expect(screen.queryByText("How should this be served?")).toBeNull();
+  });
+
+  it("start app shows the command and waits for a yes", async () => {
+    // Running a build on this machine is not something a button decides alone:
+    // the orchestrator's command is shown, and nothing runs until confirmed.
+    const user = userEvent.setup();
+    const server = fakeServer(routes({
+      "/api/sessions/s1/preview/plan": {
+        command: "npm run dev", dir: "", why: "the README says so",
+        static_instead: false, read_readme: true,
+      },
+    }));
+
+    renderWithQuery(<FilesScreen />);
+    await screen.findByText("index.html");
+    await user.click(screen.getByRole("button", { name: "start app" }));
+
+    expect(await screen.findByText(/npm run dev/)).toBeInTheDocument();
+    // Nothing has run yet.
+    expect(server.calls.some((call) => call.method === "POST"
+      && call.url.endsWith("/preview"))).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Run it" }));
+    await waitFor(() => {
+      const ran = server.calls.find((call) => call.method === "POST"
+        && call.url.endsWith("/preview"));
+      expect((ran?.body as { command: string }).command).toBe("npm run dev");
+    });
+  });
+
   it("offers nothing to share or stop when nothing is being served", async () => {
     fakeServer(routes());
     renderWithQuery(<FilesScreen />);
