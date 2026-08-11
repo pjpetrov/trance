@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 # PHASE 2: real LSP-backed resolution.
 lsp = ["python-lsp-jsonrpc>=1.1"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 
 [project.scripts]
 trance = "trance.cli:app"
@@ -32,3 +32,8 @@ packages = ["src/trance"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Parallel by default: measured 101.8s serial against 22.8s on -n auto, with
+# the time living in real Chrome sessions, dev-server startups and deliberate
+# sleeps — wall-clock costs that parallelise perfectly and that no language
+# rewrite would touch. Debugging a single test reads better serially: -n0.
+addopts = "-n auto"
