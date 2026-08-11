@@ -204,6 +204,25 @@ describe("the files screen", () => {
     });
   });
 
+  it("clears the generated files only after a plain-words confirmation", async () => {
+    const user = userEvent.setup();
+    const server = fakeServer(routes({}));
+
+    renderWithQuery(<FilesScreen />);
+    await screen.findByText("index.html");
+    await user.click(screen.getByRole("button", { name: "clear all" }));
+
+    // Nothing deleted yet — the confirm is the gate.
+    expect(server.calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect(await screen.findByText(/undoable act, not a shredder/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Clear them" }));
+    await waitFor(() => {
+      const cleared = server.calls.find((call) => call.method === "DELETE");
+      expect(cleared?.url).toContain("/files");
+    });
+  });
+
   it("offers nothing to share or stop when nothing is being served", async () => {
     fakeServer(routes());
     renderWithQuery(<FilesScreen />);

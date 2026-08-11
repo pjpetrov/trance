@@ -10103,6 +10103,7 @@ def test_clear_all_removes_the_generated_files_and_keeps_the_state(tmp_path):
 
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
     app = app_module.create_app(config, tmp_path / "sessions")
     client = TestClient(app)
 
@@ -10118,7 +10119,8 @@ def test_clear_all_removes_the_generated_files_and_keeps_the_state(tmp_path):
 
     out = client.delete(f"/api/sessions/{sid}/files").json()
 
-    assert out["removed"] == 2
+    # Three: the two written here plus the .gitignore ensure_repo added.
+    assert out["removed"] == 3
     assert not (project / "src").exists()
     assert not (project / "index.html").exists()
     assert (project / ".trance" / "memory.md").read_text() == "decisions"
@@ -10138,6 +10140,7 @@ def test_clear_all_refuses_while_the_run_is_writing(tmp_path):
 
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
     app = app_module.create_app(config, tmp_path / "sessions")
     client = TestClient(app)
 

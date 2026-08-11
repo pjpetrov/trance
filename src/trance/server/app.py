@@ -44,9 +44,9 @@ from ..providers import (
     client_for,
 )
 from ..session import ChatMessage, SessionStore
-from .. import paths, preview, vcs, workspace
+from .. import paths, preview, vcs
 from ..usage import UsageLedger
-from ..workspace import DefaultStores, Workspace, folder_for
+from ..workspace import STORE_DIR, DefaultStores, Workspace, folder_for
 from ..worker.client import BackendError
 
 #: The built UI. Source lives in ui/ and the build is committed here, so a
@@ -1022,7 +1022,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
         removed = 0
         for entry in sorted(project.iterdir()):
-            if entry.name in (workspace.STORE_DIR, ".git"):
+            if entry.name in (STORE_DIR, ".git"):
                 continue
             if entry.is_dir() and not entry.is_symlink():
                 removed += sum(1 for f in entry.rglob("*") if f.is_file())
