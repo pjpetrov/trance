@@ -5,7 +5,7 @@
  * fail reports here.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import { cn } from "@/lib/cn";
 
@@ -41,8 +41,33 @@ export const toast = {
 
 export function Toaster() {
   const toasts = useToasts((state) => state.toasts);
+  const box = useRef<HTMLDivElement>(null);
+
+  // The editors are <dialog>s, which live in the browser's top layer — above
+  // every z-index on the page, behind their own blurred backdrop. A toast
+  // fired while one was open landed under that blur: visible as a smudge,
+  // unreadable, which is exactly how a delete warning was lost. Popovers live
+  // in the top layer too, and re-showing on every change moves the toasts
+  // above whatever dialog opened since — the message you were just sent is
+  // never behind the window you were just using.
+  useEffect(() => {
+    const held = box.current;
+    if (!held || typeof held.showPopover !== "function") return;
+    try {
+      if (held.matches(":popover-open")) held.hidePopover();
+      if (toasts.length) held.showPopover();
+    } catch {
+      // An unsupported browser keeps the fixed-position fallback below.
+    }
+  }, [toasts]);
+
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2">
+    <div
+      ref={box}
+      popover="manual"
+      className="pointer-events-none fixed inset-auto bottom-4 right-4 z-50 m-0 flex
+                 w-80 flex-col gap-2 overflow-visible border-0 bg-transparent p-0"
+    >
       {toasts.map((item) => <ToastCard key={item.id} toast={item} />)}
     </div>
   );

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RunScreen } from "@/screens/RunScreen";
 import { Toaster } from "@/components/Toaster";
@@ -320,6 +320,21 @@ describe("the run screen", () => {
 
     renderWithQuery(<RunScreen />);
     expect(await screen.findByText(/only one ghost is visible/)).toBeInTheDocument();
+  });
+});
+
+describe("toasts above dialogs", () => {
+  it("renders the toast box as a popover, so the top layer cannot bury it", async () => {
+    // The editors are <dialog>s in the browser's top layer; a toast under
+    // their blurred backdrop was a smudge. jsdom has no Popover API, so this
+    // pins the wiring — the attribute and the guarded fallback.
+    const { toast } = await import("@/components/Toaster");
+    render(<Toaster />);
+    act(() => toast.err("the warning you must be able to read"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("the warning you must be able to read");
+    expect(alert.parentElement).toHaveAttribute("popover", "manual");
   });
 });
 
