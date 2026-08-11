@@ -377,8 +377,9 @@ def test_brief_states_the_absence_of_permissions_too():
     assert "pytest" not in reviewer                # so no allowlist is advertised
     assert "may NOT write any file" in reviewer    # files toolset, empty remit
 
+    # The planner writes documents now — its absence worth stating is code.
     planner = permissions_brief(BUILTIN_ROLES["planner"])
-    assert "NO file access" in planner
+    assert "docs/**" in planner
 
 
 def test_brief_reflects_a_custom_agents_actual_permissions():
@@ -4076,7 +4077,7 @@ def test_nothing_is_checked_where_nothing_is_written(tmp_path):
 
     proposal = {"summary": "s", "team": [], "steps": [
         {"role": "", "loop": "test-and-fix", "task": "test it", "check": None},
-        {"role": "planner", "loop": "", "task": "plan it", "check": None}]}
+        {"role": "visual-tester", "loop": "", "task": "look at it", "check": None}]}
     out = ensure_checks(proposal, roles=list(R.values()))
 
     assert [s["check"] for s in out["steps"]] == [None, None]
@@ -10254,3 +10255,22 @@ def test_a_shared_directory_is_not_wiped_out_from_under_the_other_session(tmp_pa
     ok = client.delete(f"/api/sessions/{first['id']}")
     assert ok.json()["deleted"] == first["id"]
     assert project.exists()
+
+
+def test_the_planner_can_write_the_documents_it_is_asked_for():
+    """Failed live, and diagnosed by the model itself: "planner has no write
+    tool... the required architecture/guidelines file cannot be created from
+    this step; grant it files + a path". Its product is documents, so its
+    remit is documents — and only documents, or it is a coder with a nicer
+    name. On the delegated backend the empty remit was double trouble: no
+    paths means read-only tools, so it could not even have tried."""
+    from trance.agents.roles import BUILTIN_ROLES
+
+    planner = BUILTIN_ROLES["planner"]
+    assert "files" in planner.toolsets
+    assert planner.may_write("ARCHITECTURE.md")
+    assert planner.may_write("docs/guidelines.md")
+    assert not planner.may_write("src/game.js")
+    assert not planner.may_write("package.json")
+    assert "Your product is documents" in planner.system_prompt
+    assert "do not write code" in planner.system_prompt

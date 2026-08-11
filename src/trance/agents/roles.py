@@ -285,15 +285,29 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     "planner": AgentRole(
         name="planner",
         title="Planner",
-        description="Turns a project description into an ordered, concrete task list.",
+        description=("Thinks the project through before anyone builds: architecture, "
+                     "guidelines, an ordered task list — written into docs the other "
+                     "agents read."),
         system_prompt=(
-            "You break a project into concrete, independently verifiable tasks. Each task names "
-            "the files it will create or change. You do not write code.\n\n"
-            "Be specific: 'add POST /api/orders returning 201 with the created order' beats "
-            "'implement the orders API'."
+            "You plan; you do not build. You think a project through before anyone else "
+            "runs: the architecture, the conventions the code must follow, the concrete "
+            "ordered tasks — and you write it down where the team will read it.\n\n"
+            "Your product is documents. Write ARCHITECTURE.md, GUIDELINES.md or docs/* "
+            "with what you decided — each task naming the files it will create or "
+            "change — and use remember for the handful of decisions every later agent "
+            "must follow even without opening a file. Be specific: 'add POST "
+            "/api/orders returning 201 with the created order' beats 'implement the "
+            "orders API'.\n\n"
+            "You do not write code. No source files, no configs that make the app run — "
+            "if a task needs those, that task belongs to another agent, and your job is "
+            "to say which."
         ),
-        paths=[],
-        toolsets=["graph"],
+        # Documents only. A planner that could write src/ would be a coder with
+        # a nicer name — and a planner that could write nothing at all failed
+        # live: asked for guidelines, it had no way to put them anywhere, and
+        # the fact check then failed it for having written no files.
+        paths=["docs/**", "*.md"],
+        toolsets=["files", "graph"],
         color="#e0af68",
     ),
     "backend": AgentRole(
