@@ -6,11 +6,13 @@ clicks, screenshots — and a vision model judges what is actually on screen.
 Every frame it saw, every question it asked, every key it decided to press is
 in the history, openable and checkable.
 
-![Driving the sedan it entered](docs/screens/gta2-driving.png)
+![The visual tester's history: presses, the frame it saw, the verdict](docs/screens/gta2-history.png)
 
-*The tester inside the car it just entered — the `[ E ] Exit vehicle` prompt
-and the SEDAN speed stat are the evidence its verdict cites. Game, tests and
-verdicts all from a local Qwen3.6-27B (64k context) on one RTX 3090.*
+*Straight from the run history: the tester presses D, W, E — "the screen
+changed" measured per press — then asks the vision model "is the player now
+driving a vehicle?", with the frame it captured and the answer underneath.
+Game, tests and verdicts all from a local Qwen3.6-27B (64k context) on one
+RTX 3090.*
 
 Built around one constraint: **keep the context small**, so ordinary local
 models can work on real codebases. A 33KB file is ~8,400 tokens; the function
@@ -305,22 +307,13 @@ loop), **look** — one screenshot, one question to a vision model — and
 for the questions a single picture cannot answer — does it move, flicker,
 snap back. The console plays the burst back as a flick-book.
 
-**A real session.** A GTA2-style game, every line of it written, tested and
-visually judged by a **local Qwen3.6-27B with a 64k context window, served by
-llama.cpp on a single RTX 3090** — no API, no cloud. The visual tester drives
-the game it is judging: walks the city with WASD, presses **E** beside a
-sedan, and asks the vision model pointed questions with the evidence demanded
-per check:
-
-![The visual tester walking the city](docs/screens/gta2-city.png)
-
-![Driving the sedan it entered](docs/screens/gta2-driving.png)
-
-The second frame is the tester *in the car it entered* — the `[ E ] Exit
-vehicle` prompt and the SEDAN speed stat on the HUD are the evidence its
-verdict cites. And when the game is broken, the same rigor cuts the other
-way — here it fails a step because pressing E produced no "Enter vehicle"
-prompt, with the on-screen evidence quoted line by line:
+**A real session.** A GTA2-style game, every line written, tested and
+visually judged by a **local Qwen3.6-27B (64k context) served by llama.cpp on
+a single RTX 3090** — no API, no cloud. The history card at the top of this
+README is the tester driving that game. And when the game is broken, the same
+rigor cuts the other way — here it fails a step because pressing E produced
+no "Enter vehicle" prompt, each check answered with the on-screen evidence
+quoted:
 
 ![The tester's verdict, evidence per check](docs/screens/gta2-console.png)
 

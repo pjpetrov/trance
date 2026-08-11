@@ -2289,26 +2289,35 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         held = stores_of(session)
         roles, loops = held.roles, held.loops
         steps = [Step.from_dict(s) for s in body.get("steps", [])]
-        for step in steps:
+        # Dangling names are warnings, not a wall. Rejecting the whole save
+        # because one step names a deleted loop made an approved deletion
+        # poison the plan: adding an unrelated step answered 400 until every
+        # old reference was hunted down. The deal deletion made is honoured
+        # here too — the save lands, and the step that still names the missing
+        # thing fails at run time saying it was deleted.
+        missing: list[str] = []
+        for n, step in enumerate(steps, 1):
             if step.loop:
-                # A step naming a loop that does not exist fails at run time,
-                # after everything before it has already run.
                 if loops.get(step.loop) is None:
-                    raise HTTPException(400, f"unknown loop {step.loop!r}")
+                    missing.append(f"step {n} runs the loop {step.loop!r}")
                 continue
             if not roles.get(step.role):
-                raise HTTPException(400, f"unknown agent {step.role!r}")
-            if step.checker:
-                role = roles.get(step.checker)
-                if role is None:
-                    raise HTTPException(400, f"unknown check {step.checker!r}")
-                if not role.verifier:
-                    allowed = [r.name for r in roles.all() if r.verifier]
-                    raise HTTPException(400, (
-                        f"{step.checker!r} cannot verify — it has no way to inspect a "
-                        f"result. Choose one of: {', '.join(allowed) or '(none configured)'}."))
+                missing.append(f"step {n} is assigned to {step.role!r}")
+            for name in step.checks:
+                gate = roles.get(name)
+                if gate is None:
+                    missing.append(f"step {n} is checked by {name!r}")
+                elif not gate.verifier:
+                    missing.append(f"step {n} is checked by {name!r}, which cannot verify")
             if step.on_fail and roles.get(step.on_fail) is None:
-                raise HTTPException(400, f"unknown fixing agent {step.on_fail!r}")
+                missing.append(f"step {n} is fixed by {step.on_fail!r}")
+        if missing:
+            bus.emit("warning", session_id, payload={
+                "message": ("The plan names things that no longer exist: "
+                            + "; ".join(missing[:6])
+                            + ". Those steps will fail when run — reassign them, "
+                            + "or recreate what they name."),
+            })
         # Same rule whether or not a run is live: only in-flight steps are
         # immutable. Editing a finished or failed step re-queues it.
         outcome = session.flow.apply_edits(steps)
@@ -2325,7 +2334,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         touch(session)
         if outcome["requeued"]:
             ensure_running(session)
-        return {**session.flow.to_dict(), **outcome,
+        return {**session.flow.to_dict(), **outcome, "missing": missing,
                 "team": [r.to_dict() for r in session.team]}
 
     @app.post("/api/sessions/{session_id}/steps/{step_id}/revert")

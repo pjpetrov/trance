@@ -3848,9 +3848,12 @@ def test_a_flow_step_can_name_a_loop_and_pulls_in_its_agents(tmp_path):
     team = {r["name"] for r in body["team"]}
     assert {"tester", "backend"} <= team
 
-    bad = client.put(f"/api/sessions/{sid}/flow",
-                     json={"steps": [{"role": "", "loop": "nope", "task": "t"}]})
-    assert bad.status_code == 400 and "unknown loop" in bad.json()["detail"]
+    # A dangling loop is a warning on the save, not a wall — the deal an
+    # approved deletion made; the step fails at run time saying so.
+    dangling = client.put(f"/api/sessions/{sid}/flow",
+                          json={"steps": [{"role": "", "loop": "nope", "task": "t"}]})
+    assert dangling.status_code == 200
+    assert any("nope" in m for m in dangling.json()["missing"])
 
 
 def test_a_loop_in_use_cannot_be_deleted(tmp_path):
@@ -10880,3 +10883,38 @@ def test_a_preset_delete_warns_and_says_what_the_fallback_is(tmp_path):
     assert warned.status_code == 409
     assert "fall back to the" in warned.json()["detail"]
     assert client.delete("/api/presets/local-qwen?force=true").status_code == 200
+
+
+def test_a_plan_naming_a_deleted_loop_still_saves_and_warns(tmp_path):
+    """Seen live: a force-deleted loop poisoned the plan — adding an
+    unrelated step answered 400 "unknown loop" until every old reference was
+    hunted down. Deletion's deal is honoured on the edit path too: the save
+    lands, the warning names the dangling steps, and they fail at run time
+    saying what was deleted."""
+    import pathlib as pathlib_module
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"role": "", "loop": "test-and-fix-frontend", "task": "old step"}]})
+    # Not in this project's library at all — the force-deleted shape.
+    client.delete(f"/api/loops/test-and-fix-frontend?session={sid}&force=true")
+
+    # Adding an unrelated step saves the whole plan, dangling reference included.
+    held = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"]
+    body = client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        *held, {"role": "frontend", "task": "the new step"}]})
+    assert body.status_code == 200
+    out = body.json()
+    assert any("test-and-fix-frontend" in m for m in out["missing"])
+    assert [s["task"] for s in out["steps"]][-1] == "the new step"

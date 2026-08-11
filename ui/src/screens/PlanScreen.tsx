@@ -211,6 +211,17 @@ export function PlanScreen() {
                           <option key={loop.name} value={`loop:${loop.name}`}>{loop.name}</option>
                         ))}
                       </optgroup>
+                      {/* A step can outlive what it names: a force-deleted
+                          loop or agent. An empty-looking select hid that; the
+                          name is shown, marked, and picking anything else is
+                          the fix. */}
+                      {step.loop && !loops.data?.some((l) => l.name === step.loop) && (
+                        <option value={`loop:${step.loop}`}>{step.loop} (deleted)</option>
+                      )}
+                      {!step.loop && step.role
+                        && !agents.data?.agents.some((r) => r.name === step.role) && (
+                        <option value={`role:${step.role}`}>{step.role} (deleted)</option>
+                      )}
                     </Select>
 
                     <Badge tone={stepTone(step.status)}>{step.status}</Badge>
