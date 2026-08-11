@@ -546,17 +546,33 @@ class FlowEngine:
                 # the agent can put it right if it is told what was missing.
                 # So this opens the loop like any other failure, and only the
                 # loop running out halts the flow.
+                #
+                # Named by whichever gate actually failed, not the first in
+                # the chain. Measured live: the factchecker passed, the
+                # reviewer rejected — and every message said "factchecker
+                # found otherwise", sending the person reading it to the
+                # wrong verdict.
+                objector = next(
+                    (g.gate for g in reversed(attempt.gate_results)
+                     if g.verdict == "FAIL"), step.checker)
                 attempt.outcome = "CHECK_FAILED"
                 attempt.outcome_reason = (
-                    f"{step.checker} checked the work and disagrees: {attempt.feedback}")
+                    f"{objector} checked the work and disagrees: {attempt.feedback}")
                 self._emit("check_failed", agent=role.name, step_id=step.id, payload={
-                    "checker": step.checker, "detail": attempt.feedback,
+                    "checker": objector, "detail": attempt.feedback,
                     "attempt": loop, "of": limit,
-                    "message": (f"{role.title} reported success but {step.checker} found "
-                                f"otherwise. {'Trying again.' if loop < limit else ''}"),
+                    # The truth about what happens next, in the same breath as
+                    # the rejection. "Goes back to be fixed" was promised at
+                    # the exact moment no tries remained, one line before
+                    # step_failed.
+                    "message": (f"{role.title} reported success but {objector} found "
+                                f"otherwise. "
+                                + ("Trying again." if loop < limit else
+                                   f"No tries left ({loop} of {limit} spent) — "
+                                   f"the step fails.")),
                 })
                 feedback = (
-                    f"You reported SUCCESS, and {step.checker} checked and disagreed:\n\n"
+                    f"You reported SUCCESS, and {objector} checked and disagreed:\n\n"
                     f"{attempt.feedback}\n\n"
                     f"Do not report success again until that is actually true. If it is "
                     f"something you did not finish, finish it; if you believe the check "
@@ -569,7 +585,7 @@ class FlowEngine:
                 carry = build_handoff(turn.transcript, turn.text)
                 self._emit("step_retry", agent=role.name, step_id=step.id, payload={
                     "attempt": loop, "feedback": feedback,
-                    "message": (f"{role.name} will try again with what {step.checker} "
+                    "message": (f"{role.name} will try again with what {objector} "
                                 f"found (try {loop + 1} of {limit})."),
                 })
                 continue
@@ -895,10 +911,13 @@ class FlowEngine:
                 attempt.verdict, attempt.feedback = "FAIL", turn.text
                 self._emit("gate_failed", agent=gate.name, step_id=step.id, payload={
                     "gate": name,
+                    # No routing promise: this code cannot see the try budget,
+                    # and "goes back to be fixed" was said one line before a
+                    # step_failed. Whether it runs again is the next event's
+                    # sentence to say.
                     "message": (
-                        f"{gate.title} rejected the work, so it goes back to "
-                        f"{step.role} to fix. The whole chain "
-                        f"({' → '.join(checks)}) runs again afterwards."),
+                        f"{gate.title} rejected the work (check {index + 1} of "
+                        f"{len(checks)}) — the chain stops here."),
                 })
                 return "FAIL"
             if verdict == "UNKNOWN":

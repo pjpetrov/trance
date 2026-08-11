@@ -10274,3 +10274,118 @@ def test_the_planner_can_write_the_documents_it_is_asked_for():
     assert not planner.may_write("package.json")
     assert "Your product is documents" in planner.system_prompt
     assert "do not write code" in planner.system_prompt
+
+
+# ==================== the check messages name the gate that actually objected
+
+def _turn_reporting_success():
+    class _Turn:
+        text = "did it\n\nOUTCOME: SUCCESS"
+        outcome = ("SUCCESS", "")
+        reported_outcome = True
+        files_written: list = []
+        remit_violations: list = []
+        model_event_ids: list = []
+        tool_calls = 0
+        usage: dict = {}
+        context: dict = {}
+        transcript: list = []
+        verdict = None
+        notes_written = 0
+    return _Turn()
+
+
+def test_a_rejection_names_the_gate_that_objected_and_tells_the_budget_truth(tmp_path, monkeypatch):
+    """Measured live: the factchecker passed, the reviewer rejected — and
+    every message said "factchecker found otherwise" while promising a return
+    trip at the exact moment no tries remained, one line before step_failed."""
+    from trance.agents.roles import AgentRole, BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Flow, Step
+    from trance.session import Session
+
+    class _Verdict:
+        def __init__(self, verdict):
+            self.verdict = verdict
+            self.text = f"VERDICT: {verdict}"
+            self.model_event_ids: list = []
+
+    def _ran(*, role, **_kw):
+        if role.name == "backend":
+            return _turn_reporting_success()
+        return _Verdict("PASS" if role.name == "factchecker" else "FAIL")
+
+    monkeypatch.setattr("trance.engine.run_agent", _ran)
+    backend = AgentRole(**{**BUILTIN_ROLES["backend"].to_dict(), "tries": 1})
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [backend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["reviewer"]]
+    step = Step.from_dict({"role": "backend", "task": "t",
+                           "checks": ["factchecker", "reviewer"]})
+    step.checks_seeded = True
+    session.flow = Flow(steps=[step])
+
+    bus = EventBus()
+    said = {}
+    bus.subscribe_sync(lambda e: said.setdefault(e.type, []).append(e.payload))
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    monkeypatch.setattr(engine, "_escalate", lambda *a, **k: False)
+    engine._execute_agent(step)
+
+    assert step.status == "failed"
+    rejected = said["check_failed"][-1]
+    assert rejected["checker"] == "reviewer"                # who actually objected
+    assert "reviewer found otherwise" in rejected["message"]
+    assert "No tries left" in rejected["message"]           # the budget truth
+    assert "Trying again" not in rejected["message"]
+    # And the gate's own line no longer promises a return trip it cannot see.
+    gate_line = said["gate_failed"][-1]["message"]
+    assert "runs again" not in gate_line
+    assert "chain stops here" in gate_line
+    # The recorded reason names the right gate too.
+    assert step.attempts[-1].outcome_reason.startswith("reviewer checked")
+
+
+def test_a_rejection_with_tries_left_still_promises_the_retry(tmp_path, monkeypatch):
+    from trance.agents.roles import AgentRole, BUILTIN_ROLES
+    from trance.config import Config
+    from trance.engine import FlowEngine
+    from trance.events import EventBus
+    from trance.flow import Flow, Step
+    from trance.session import Session
+
+    calls = {"n": 0}
+
+    class _Verdict:
+        def __init__(self, verdict):
+            self.verdict = verdict
+            self.text = f"VERDICT: {verdict}"
+            self.model_event_ids: list = []
+
+    def _ran(*, role, **_kw):
+        if role.name == "backend":
+            calls["n"] += 1
+            return _turn_reporting_success()
+        # Fails the first pass, passes the second — the retry earns its keep.
+        return _Verdict("FAIL" if calls["n"] == 1 else "PASS")
+
+    monkeypatch.setattr("trance.engine.run_agent", _ran)
+    backend = AgentRole(**{**BUILTIN_ROLES["backend"].to_dict(), "tries": 2})
+    session = Session(id="s1", name="p", project_dir=str(tmp_path))
+    session.team = [backend, BUILTIN_ROLES["reviewer"]]
+    step = Step.from_dict({"role": "backend", "task": "t", "checks": ["reviewer"]})
+    step.checks_seeded = True
+    session.flow = Flow(steps=[step])
+
+    bus = EventBus()
+    said = {}
+    bus.subscribe_sync(lambda e: said.setdefault(e.type, []).append(e.payload))
+    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._execute_agent(step)
+
+    assert step.status == "done"
+    assert "Trying again" in said["check_failed"][0]["message"]
+    assert "reviewer" in said["step_retry"][0]["message"]
