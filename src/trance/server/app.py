@@ -1221,6 +1221,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     #: Tunnels trance started, so it can stop them again. One per session: a
     #: second public URL for the same folder is only confusing.
     tunnels: dict[str, object] = {}
+    app.state.tunnels = tunnels
 
     @app.post("/api/sessions/{session_id}/share")
     def start_share(session_id: str, body: dict | None = None):
@@ -1254,6 +1255,23 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(409, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(502, str(exc)) from exc
+
+        # One agent, one tunnel: sharing this session re-aimed the same public
+        # URL, so any other session's share just stopped being what it was.
+        # Its badge kept saying "public link" while the link served someone
+        # else's project — dropped and announced instead, to whoever is
+        # watching that session.
+        for other_id, other in list(tunnels.items()):
+            if other_id == session_id:
+                continue
+            tunnels.pop(other_id, None)
+            bus.emit("share_replaced", other_id, agent="you", payload={
+                "url": other.url, "now_serving": served.root,
+                "message": (f"The public link now serves "
+                            f"{Path(served.root).name}/ — sharing moved to another "
+                            f"session (one ngrok tunnel is all the account allows). "
+                            f"Anyone holding {other.url} sees that project now."),
+            })
 
         tunnels[session_id] = tunnel
         # A tunnel to a dev server is refused by the dev server until its host

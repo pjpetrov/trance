@@ -305,3 +305,51 @@ def test_a_static_preview_is_served_again_after_a_restart(tmp_path):
     assert body["port"] == port               # same address where possible
     assert app.state.previews[sid].alive()
     client.delete(f"/api/sessions/{sid}/preview")
+
+
+# --------------------------------------------- one tunnel, said honestly
+
+def test_sharing_a_second_session_retires_the_firsts_share_and_says_so(tmp_path, monkeypatch):
+    """One ngrok agent is all the account allows, so sharing session B re-aims
+    the same public URL. Session A's badge kept saying "public link" while the
+    link served B's project — the record is dropped and the move announced."""
+    client, app = _serve(tmp_path)
+
+    ids = []
+    for name in ("starcraft", "gta2"):
+        made = client.post("/api/sessions", json={"name": name}).json()
+        project = pathlib.Path(made["project_dir"])
+        project.mkdir(parents=True, exist_ok=True)
+        (project / "index.html").write_text("<h1>hi</h1>", encoding="utf8")
+        client.post(f"/api/sessions/{made['id']}/preview", json={"path": "index.html"})
+        ids.append(made["id"])
+    first, second = ids
+
+    class _Tunnel:
+        def __init__(self, port):
+            self.port, self.url = port, "https://abc.ngrok-free.app"
+            self.running, self.policy = True, ""
+
+        def to_dict(self):
+            return {"url": self.url, "port": self.port, "running": True,
+                    "adopted": False, "protected": False}
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(preview, "start_tunnel", lambda port, policy="": _Tunnel(port))
+
+    said = []
+    app.state.bus.subscribe_sync(
+        lambda e: said.append(e) if e.type == "share_replaced" else None)
+
+    client.post(f"/api/sessions/{first}/share")
+    client.post(f"/api/sessions/{second}/share")
+
+    # The first session's share is gone from the registry, not lying in it.
+    assert first not in app.state.tunnels
+    assert second in app.state.tunnels
+    # And the person watching the first session was told where their link went.
+    told = [e for e in said if e.session_id == first]
+    assert told and "now serves" in told[0].payload["message"]
+    assert "abc.ngrok-free.app" in told[0].payload["message"]
