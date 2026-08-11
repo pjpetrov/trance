@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from .agents.store import CommandStore, LoopStore, RoleStore
@@ -57,6 +57,12 @@ class Settings:
     #: end with it — "always finish by looking at the running app" as a rule
     #: rather than a hope. Empty = the existing final-check guarantee alone.
     plan_close: str = ""
+    #: Verifiers run after every agent step, whatever the agent or the plan
+    #: says — "run the regressions after each step, catch the break early" as
+    #: one project-wide rule instead of a chip ticked onto every agent, which
+    #: silently misses the next agent added. Loops are exempt: their nodes
+    #: carry their own wiring.
+    always_check: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
