@@ -424,43 +424,64 @@ def test_a_config_shape_the_edit_cannot_read_still_gets_the_hint(tmp_path, monke
 
 # ------------------------------------------ routing around a squatted port
 
-def test_a_squatted_port_is_routed_around_with_a_free_one(tmp_path):
-    """Watched live: a Docker container held the backend's default port, the
-    kills that tried to free it could never work, and a five-minute fight
-    ended in code rewritten for a problem that was never code. The squatter is
-    not fought — the server is relaunched with PORT set to a free port."""
-    import socket as socket_module
+def test_every_dev_launch_gets_a_fresh_port_injected(tmp_path):
+    """The simple model, the user's design: find a free port, hand it to the
+    backend as PORT, let the frontend announce its own. The map is the process
+    handle; the run ends, the ports free themselves."""
+    project = _project()
+    (project / "server.py").write_text(
+        "import os, sys, time\n"
+        "port = int(os.environ['PORT'])\n"
+        "print(f'Local: http://127.0.0.1:{port}/')\n"
+        "sys.stdout.flush(); time.sleep(30)\n", encoding="utf8")
 
-    holder = socket_module.socket()
-    holder.bind(("127.0.0.1", 0))
-    taken = holder.getsockname()[1]
-    holder.listen(1)
+    running = preview.run_dev(project, "python3 server.py", wait_s=15)
     try:
-        project = _project()
-        (project / "server.py").write_text(
-            "import os, sys, time\n"
-            f"port = int(os.environ.get('PORT', {taken}))\n"
-            f"if port == {taken}:\n"
-            f"    print('Error: listen EADDRINUSE: address already in use :::{taken}')\n"
-            "    sys.exit(1)\n"
-            "print(f'Local: http://127.0.0.1:{port}/')\n"
-            "sys.stdout.flush(); time.sleep(30)\n", encoding="utf8")
-        # A config that hard-codes the squatted number: the one line PORT
-        # cannot reach, so the note has to name it.
-        (project / "vite.config.js").write_text(
-            f"export default {{ server: {{ proxy: {{ '/api': 'http://localhost:{taken}' }} }} }}",
-            encoding="utf8")
-
-        running = preview.run_dev(project, "python3 server.py", wait_s=15)
-        try:
-            assert running.port != taken
-            assert running.alive() is True
-            assert f"Port {taken} is held by something outside this project" in running.note
-            assert "vite.config.js still references" in running.note
-        finally:
-            running.stop()
+        assert running.port == running.env_port > 0
+        assert running.note == ""              # nothing to warn about
     finally:
-        holder.close()
+        running.stop()
+
+
+def test_a_config_targeting_a_port_this_run_is_not_on_is_named(tmp_path):
+    """The proxy line is the one thing PORT cannot reach: watched live, a
+    backend rerouted cleanly while vite kept proxying /ws at a corpse, and the
+    only symptom was websocket errors."""
+    project = _project()
+    (project / "server.py").write_text(
+        "import os, sys, time\n"
+        "print(f\"Local: http://127.0.0.1:{os.environ['PORT']}/\")\n"
+        "sys.stdout.flush(); time.sleep(30)\n", encoding="utf8")
+    (project / "vite.config.js").write_text(
+        "export default { server: { proxy: { '/ws': 'http://localhost:3002' } } }",
+        encoding="utf8")
+
+    running = preview.run_dev(project, "python3 server.py", wait_s=15)
+    try:
+        assert "localhost:3002" in running.note
+        assert f"PORT={running.env_port}" in running.note
+        assert "process.env.PORT" in running.note
+    finally:
+        running.stop()
+
+
+def test_a_child_dying_of_eaddrinuse_behind_the_announcement_is_said(tmp_path):
+    """concurrently keeps running when one child dies, so the launch looks
+    healthy while the backend is a corpse — the shape that produced an evening
+    of websocket errors reported as a working preview."""
+    project = _project()
+    (project / "server.py").write_text(
+        "import sys, time\n"
+        "print('Error: listen EADDRINUSE: address already in use :::3000')\n"
+        "print('Local: http://127.0.0.1:5177/')\n"
+        "sys.stdout.flush(); time.sleep(30)\n", encoding="utf8")
+
+    running = preview.run_dev(project, "python3 server.py", wait_s=15)
+    try:
+        assert "EADDRINUSE" in running.note and "half up" in running.note
+        assert "process.env.PORT" in running.note
+    finally:
+        running.stop()
 
 
 def test_a_failure_that_is_not_a_port_conflict_is_not_retried(tmp_path):
@@ -471,3 +492,39 @@ def test_a_failure_that_is_not_a_port_conflict_is_not_retried(tmp_path):
     with pytest.raises(preview.DevServerFailed) as raised:
         preview.run_dev(project, "python3 server.py", wait_s=15)
     assert "Cannot find module vite" in raised.value.output
+
+
+def test_starting_a_new_dev_preview_stops_the_survivor_from_before_a_restart(tmp_path, monkeypatch):
+    """After a restart the registry is empty while the old tree still runs;
+    replacing only the record leaked a whole dev stack — found live, twice
+    over, as two zergling trees with dead backends."""
+    import subprocess
+
+    from types import SimpleNamespace
+
+    client, app = _serve(tmp_path)
+    made = client.post("/api/sessions", json={"name": "app"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    project.mkdir(parents=True, exist_ok=True)
+
+    survivor = subprocess.Popen(["sleep", "60"], start_new_session=True,
+                                stdout=subprocess.DEVNULL)
+    (project / ".trance").mkdir(exist_ok=True)
+    (project / ".trance" / "preview.json").write_text(json.dumps({
+        "mode": "dev", "command": "npm run dev", "root": str(project),
+        "port": 5199, "pid": survivor.pid}), encoding="utf8")
+
+    monkeypatch.setattr(
+        preview, "run_dev",
+        lambda where, command, log_dir=None: SimpleNamespace(
+            port=5200, env_port=5201, root=str(where), command=command,
+            note="", pid=999999, log="", alive=lambda: True, stop=lambda: None,
+            at=lambda host: "http://x:5200/", url="http://x:5200/",
+            to_dict=lambda: {"port": 5200, "dev": True, "command": command,
+                             "root": str(where), "url": "http://x:5200/",
+                             "local": "http://localhost:5200/", "alive": True}))
+    client.post(f"/api/sessions/{sid}/preview",
+                json={"mode": "dev", "command": "npm run dev"})
+
+    survivor.wait(timeout=10)                   # revived, then stopped
+    assert survivor.returncode is not None

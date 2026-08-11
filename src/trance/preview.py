@@ -139,9 +139,12 @@ class DevServer:
     #: restart has instead of a Popen. The dev server runs in its own session,
     #: so it survives trance dying; this is how the next trance finds it.
     pid: int = 0
-    #: What the launcher wants said about how this server came up — a squatted
-    #: port it routed around, a config line that must follow. Empty usually.
+    #: What the launcher wants said about how this server came up — a half-up
+    #: stack, a config line that must follow. Empty usually.
     note: str = ""
+    #: The PORT this run's backend was told to use. Ephemeral by design: the
+    #: map for a run is the run's process handle, and freed ports free with it.
+    env_port: int = 0
 
     def __post_init__(self) -> None:
         if self.process is not None and not self.pid:
@@ -243,41 +246,54 @@ def free_port() -> int:
 
 
 def run_dev(directory: Path, command: str, *, wait_s: float = 90.0,
-            log_dir: Path | None = None, reroute_ports: bool = True) -> DevServer:
-    """Start a dev command and wait for it to say which port it is on.
+            log_dir: Path | None = None) -> DevServer:
+    """Start a dev command with a fresh free PORT injected, and wait for it to
+    say where it is.
 
-    Waiting for the announcement rather than assuming 5173: the port a dev
-    server settles on is not the one in its config when that one is taken, and
-    a preview pointed at the configured port then shows someone else's app.
+    The user's design, after the layered version proved too complicated: find
+    a free port, hand it to the backend as PORT, let the frontend dev server
+    find its own and announce it — the announcement is parsed either way. The
+    map lives only as this process handle; when the run ends the processes are
+    killed and the ports free themselves, and the next run allocates fresh.
 
-    A port squatted by something outside the project is routed around, not
-    fought: watched live, a Docker container held the backend's default port,
-    the kills that tried to free it could never work, and a five-minute fight
-    ended in code being rewritten for a problem that was never code. On
-    EADDRINUSE the server is relaunched once with PORT set to a free one —
-    which reaches every backend that reads PORT from the environment — and the
-    note says what happened, including the config line that has to follow when
-    a file still hard-codes the squatted number.
+    A backend that reads PORT can therefore never collide with a squatter. One
+    that hard-codes its port still can, and no retry fixes hard-coding — so
+    the failure modes are *said* instead: a child that died of EADDRINUSE
+    behind a successful announcement, or a config whose proxy targets a number
+    this run is not on.
     """
+    chosen = free_port()
+    server = _launch_dev(directory, command, wait_s=wait_s, log_dir=log_dir,
+                         env_extra={"PORT": str(chosen)})
+    server.env_port = chosen
+
+    notes = []
     try:
-        return _launch_dev(directory, command, wait_s=wait_s, log_dir=log_dir)
-    except DevServerFailed as failed:
-        taken = _PORT_TAKEN.search(failed.output or "")
-        if not reroute_ports or taken is None:
-            raise
-        squatted, chosen = int(taken.group(1)), free_port()
-        server = _launch_dev(directory, command, wait_s=wait_s, log_dir=log_dir,
-                             env_extra={"PORT": str(chosen)})
-        note = (f"Port {squatted} is held by something outside this project, so the "
-                f"server was started with PORT={chosen} instead.")
-        config = _vite_config(Path(directory))
-        if config is not None and str(squatted) in config.read_text(encoding="utf8",
-                                                                    errors="replace"):
-            note += (f" NOTE: {config.name} still references {squatted} (a proxy "
-                     f"target?) — that line must follow to {chosen}, or the frontend "
-                     f"will talk to the squatter.")
-        server.note = note
-        return server
+        said = Path(server.log).read_text(encoding="utf8", errors="replace")
+    except OSError:
+        said = ""
+    died = _PORT_TAKEN.search(said)
+    if died:
+        # concurrently keeps running when one child dies, so vite announces
+        # and the launch looks healthy while the backend is a corpse — the
+        # exact shape that produced an evening of websocket errors.
+        notes.append(
+            f"WARNING: part of this stack died of EADDRINUSE on port "
+            f"{died.group(1)} even though the dev server came up — the app is "
+            f"half up. Port {died.group(1)} is hard-coded somewhere; a server "
+            f"that reads process.env.PORT would have started on {chosen}.")
+    config = _vite_config(Path(directory))
+    if config is not None:
+        text = config.read_text(encoding="utf8", errors="replace")
+        strangers = sorted({p for p in re.findall(r"localhost:(\d{2,5})", text)
+                            if int(p) not in (chosen, server.port)})
+        if strangers:
+            notes.append(
+                f"NOTE: {config.name} targets localhost:{', localhost:'.join(strangers)} "
+                f"but this run's backend was started with PORT={chosen} — make the "
+                f"target read process.env.PORT so it follows.")
+    server.note = " ".join(notes)
+    return server
 
 
 def _launch_dev(directory: Path, command: str, *, wait_s: float,

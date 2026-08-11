@@ -1215,6 +1215,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             where = _inside(root, body.get("dir") or "") or root
             if not where.is_dir():
                 raise HTTPException(400, f"{body.get('dir')!r} is not a directory here.")
+            # Revive before replacing, exactly as stop does: after a restart
+            # the registry is empty while the survivor from before it is still
+            # running — replacing only the record leaked a whole dev tree.
+            _revive_preview(session_id, session)
             existing = previews.pop(session_id, None)
             if existing is not None:
                 existing.stop()
