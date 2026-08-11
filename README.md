@@ -58,10 +58,11 @@ trance serve            # http://localhost:8080
 
 ## Screens
 
-The run console, following a live step — every model call, command, diff and
-verdict, with the context gauge in the corner:
+What one chat request turned into — the sentence you typed, the plan it
+became, and the commits it produced, diffs and all. The audit trail from
+"make the map more interesting" to `src/city.js`:
 
-![The run console](docs/screens/run.png)
+![What came of this: request, plan, commits](docs/screens/gta2-request.png)
 
 Statistics — where the time and tokens actually went: working time charged per
 agent, tokens per model with the cached share called out, all of it live while
