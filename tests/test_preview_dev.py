@@ -353,3 +353,70 @@ def test_sharing_a_second_session_retires_the_firsts_share_and_says_so(tmp_path,
     told = [e for e in said if e.session_id == first]
     assert told and "now serves" in told[0].payload["message"]
     assert "abc.ngrok-free.app" in told[0].payload["message"]
+
+
+# ------------------------------------------- the tunnel's host allows itself
+
+def test_sharing_writes_the_hosts_into_the_vite_config(tmp_path, monkeypatch):
+    """The hint told the user which line to paste; every share against a dev
+    server then failed once with "Blocked request" while they pasted it. A
+    one-line edit with a known shape needs neither a person nor an agent."""
+    client, app = _serve(tmp_path)
+    made = client.post("/api/sessions", json={"name": "app"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "index.html").write_text("<h1>hi</h1>", encoding="utf8")
+    (project / "vite.config.ts").write_text(
+        "export default {\n  server: { port: 5173 },\n}\n", encoding="utf8")
+    client.post(f"/api/sessions/{sid}/preview", json={"path": "index.html"})
+
+    class _Tunnel:
+        port, url = 0, "https://sterilize-unscathed-pucker.ngrok-free.dev"
+        running, policy = True, ""
+        def to_dict(self):
+            return {"url": self.url, "port": self.port, "running": True,
+                    "adopted": False, "protected": False}
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(preview, "start_tunnel", lambda port, policy="": _Tunnel())
+    body = client.post(f"/api/sessions/{sid}/share").json()
+
+    written = (project / "vite.config.ts").read_text()
+    assert "allowedHosts: ['sterilize-unscathed-pucker.ngrok-free.dev']" in written
+    # No pasteable hint when nothing is left to paste.
+    assert body["hint"] == ""
+
+    # Sharing again does not stack the host a second time.
+    client.delete(f"/api/sessions/{sid}/share")
+    client.post(f"/api/sessions/{sid}/share")
+    assert written.count("sterilize-unscathed-pucker") == \
+        (project / "vite.config.ts").read_text().count("sterilize-unscathed-pucker")
+
+
+def test_a_config_shape_the_edit_cannot_read_still_gets_the_hint(tmp_path, monkeypatch):
+    client, app = _serve(tmp_path)
+    made = client.post("/api/sessions", json={"name": "app"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "index.html").write_text("x", encoding="utf8")
+    # A config built by a helper the regexes do not know.
+    (project / "vite.config.ts").write_text(
+        "import { makeConfig } from './tooling'\nexport default makeConfig()\n",
+        encoding="utf8")
+    client.post(f"/api/sessions/{sid}/preview", json={"path": "index.html"})
+
+    class _Tunnel:
+        port, url = 0, "https://abc.ngrok-free.dev"
+        running, policy = True, ""
+        def to_dict(self):
+            return {"url": self.url, "port": self.port, "running": True,
+                    "adopted": False, "protected": False}
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(preview, "start_tunnel", lambda port, policy="": _Tunnel())
+    body = client.post(f"/api/sessions/{sid}/share").json()
+
+    assert "makeConfig()" in (project / "vite.config.ts").read_text()  # untouched
+    assert "allowedHosts" in body["hint"]                              # told instead

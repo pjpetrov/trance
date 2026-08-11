@@ -1274,10 +1274,20 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             })
 
         tunnels[session_id] = tunnel
-        # A tunnel to a dev server is refused by the dev server until its host
-        # is allowed — Vite answers "Blocked request", which reads as a broken
-        # tunnel. Said here, with the line to paste, rather than discovered.
-        hint = preview.allowed_hosts_note(Path(served.root), tunnel.url)
+        # A tunnel to a dev server is refused until Vite knows the host —
+        # "Blocked request", which reads as a broken tunnel. A one-line edit
+        # with a known shape does not need a person or an agent: the host is
+        # written into the config here, and Vite restarts itself on config
+        # changes. The pasteable hint remains for the shapes the edit cannot
+        # recognise.
+        allowed = preview.allow_host(Path(served.root), tunnel.url)
+        hint = ("" if allowed["edited"] or allowed["note"]
+                else preview.allowed_hosts_note(Path(served.root), tunnel.url))
+        if allowed["edited"]:
+            bus.emit("preview", session_id, agent="you", payload={
+                "url": tunnel.url, "root": served.root, "port": served.port,
+                "message": allowed["note"].capitalize() + ".",
+            })
         bus.emit("preview", session_id, agent="you", payload={
             "url": tunnel.url, "root": served.root, "port": served.port,
             "message": (f"Sharing {Path(served.root).name}/ at {tunnel.url}"

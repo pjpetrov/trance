@@ -461,6 +461,75 @@ def public_url(port: int, api: str = NGROK_API, timeout: float = 0.4) -> str:
     return https or plain              # https for preference; both are offered
 
 
+def _vite_config(root: Path) -> Path | None:
+    """The Vite config governing `root` — beside it, or up to two levels up.
+
+    Beside is the usual place; up is real too: a workspace keeps one config at
+    the repo root and points the frontend at it with `--config ../vite.config.ts`.
+    """
+    here = Path(root)
+    for _ in range(3):
+        found = next((here / name for name in ("vite.config.js", "vite.config.ts",
+                                               "vite.config.mjs")
+                      if (here / name).is_file()), None)
+        if found is not None:
+            return found
+        if here.parent == here:
+            return None
+        here = here.parent
+    return None
+
+
+def allow_host(root: Path, public_url: str) -> dict:
+    """Put the tunnel's host into the Vite config, mechanically.
+
+    The note below told the user which line to paste; every share against a
+    dev server then failed once with "Blocked request" while they went and
+    pasted it. A one-line edit with a known shape does not need a person — or
+    an agent, which would spend a model call and a step's ceremony on it.
+    Vite watches its own config and restarts, so the edit takes effect alone.
+
+    Returns {"edited": bool, "file": str, "note": str}.
+    """
+    config = _vite_config(Path(root))
+    if config is None or not public_url:
+        return {"edited": False, "file": "", "note": ""}
+    host = public_url.split("://", 1)[-1].split("/", 1)[0]
+    try:
+        text = config.read_text(encoding="utf8")
+    except OSError:
+        return {"edited": False, "file": str(config), "note": ""}
+
+    if re.search(r"allowedHosts\s*:\s*true", text):
+        return {"edited": False, "file": str(config),
+                "note": "the config already allows every host"}
+    listed = re.search(r"allowedHosts\s*:\s*\[([^\]]*)\]", text)
+    if listed:
+        if host in listed.group(1):
+            return {"edited": False, "file": str(config),
+                    "note": f"{host} is already allowed"}
+        opening = listed.start(1)
+        edited = text[:opening] + f"'{host}', " + text[opening:]
+    else:
+        server = re.search(r"server\s*:\s*\{", text)
+        if server:
+            at = server.end()
+            edited = text[:at] + f" allowedHosts: ['{host}']," + text[at:]
+        else:
+            block = re.search(r"(defineConfig\s*\(\s*\{|export\s+default\s+\{)", text)
+            if not block:
+                return {"edited": False, "file": str(config), "note": ""}
+            at = block.end()
+            edited = text[:at] + f"\n  server: {{ allowedHosts: ['{host}'] }},"  + text[at:]
+    try:
+        config.write_text(edited, encoding="utf8")
+    except OSError:
+        return {"edited": False, "file": str(config), "note": ""}
+    return {"edited": True, "file": config.name,
+            "note": (f"added {host} to server.allowedHosts in {config.name} — "
+                     f"Vite restarts itself on config changes, so the link works now")}
+
+
 def allowed_hosts_note(root: Path, public_url: str) -> str:
     """What a Vite dev server needs before it will answer a tunnel.
 
@@ -469,10 +538,7 @@ def allowed_hosts_note(root: Path, public_url: str) -> str:
     about the config that reads like a broken tunnel. Only worth saying when
     there is a Vite config to say it about.
     """
-    root = Path(root)
-    config = next((root / name for name in ("vite.config.js", "vite.config.ts",
-                                            "vite.config.mjs")
-                   if (root / name).is_file()), None)
+    config = _vite_config(Path(root))
     if config is None or not public_url:
         return ""
     host = public_url.split("://", 1)[-1].split("/", 1)[0]
