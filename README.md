@@ -99,12 +99,31 @@ one thing to pick.
 | `llamacpp` | OpenAI-compatible, local (llama-server) |
 | `claudecode` | the local `claude` CLI, on its subscription — no key, no endpoint |
 
-**Claude Code as a backend.** `claudecode` reaches Claude through the local
-`claude` CLI, so the model comes from whatever that CLI is signed in to rather
-than from an API key. It does not work like the others, because it cannot: the
-CLI throttles programmatic use, and trance's ordinary loop is five or more calls
-per step. A burst of calls comes back `is_error` with zero duration, zero cost
-and no request made — while the same conversation succeeds when left alone.
+**Claude Code as a backend — read this before assigning it.** `claudecode`
+reaches Claude through the local `claude` CLI, on its subscription: no key, no
+endpoint. It is **not a standard model backend** — it is a cheap way to add a
+stronger brain to the harness for the steps that are one act of judgment:
+architecture and planning documents, reviews (the diff arrives in the prompt),
+a hard escalation after the local model failed twice.
+
+**Do not use it for ordinary coding steps.** The reasons are mechanical, all
+measured here:
+
+- The CLI throttles programmatic use, so trance cannot drive it round by
+  round — the whole step is handed over as **one opaque call**. No live
+  console, no context gauge, no steering mid-step; usage lands as one lump
+  when it exits.
+- It codes with **its own tools**. Remits and command allowlists are judged
+  from the git diff after the fact, not enforced as writes happen — the one
+  backend where trance's guardrails are post-hoc.
+- Cost scales with the square of step size: every internal turn re-sends the
+  whole conversation. Measured: 64–83 turns and 1.5–2.7M input tokens on
+  single coding steps, and **a retry pays the whole step again** — three
+  retries of one step burned 6.5M tokens in sixteen minutes of subscription.
+
+A burst of calls comes back `is_error` with zero duration, zero cost and no
+request made — the CLI refusing programmatic pace — while the same
+conversation succeeds when left alone.
 
 So a step on this model is **delegated**: one call, Claude Code's own loop, its
 own tools, its own context management. Measured at nine seconds and three
