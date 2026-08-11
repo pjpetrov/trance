@@ -98,40 +98,42 @@ export function FilesScreen() {
           subtitle={listing.isLoading
             ? "reading…"
             : `${totals.files} files · ${totals.lines.toLocaleString()} lines`}
-          actions={!serving && (
-            <>
-              {/* The two answers to "how should this run", as buttons rather
-                  than a question. The modal that used to ask arrived only
-                  after finding the ▷ hidden on a file row. */}
-              <Button
-                size="sm" busy={start.isPending}
-                title="Hand the folder to a plain static server — instant, starts nothing.
-A Vite or webpack app will load and then fail on its first import; use Start app for those."
-                onClick={() => start.mutateAsync(undefined)
-                  .then((made) => { if (made?.open) window.open(made.open, "_blank"); })
-                  .catch((error) => toast.err(String(error)))}
-              >serve static</Button>
-              <Button
-                size="sm" variant="primary" busy={plan.isPending || run.isPending}
-                title="Ask the orchestrator how this project starts (it reads the README),
-show you the command, and run it after you confirm."
-                onClick={() => plan.mutateAsync()
-                  .then((answer) => {
-                    if (!answer.static_instead) return setProposal(answer);
-                    toast.ok("The orchestrator says this needs no server — serving the files.");
-                    return start.mutateAsync(undefined)
-                      .then((made) => { if (made?.open) window.open(made.open, "_blank"); });
-                  })
-                  .catch((error) => toast.err(String(error)))}
-              >start app</Button>
-              <Button
-                size="sm" variant="ghost"
-                title="Remove every generated file. .trance and the git history stay, so it can be undone."
-                onClick={() => setClearing(true)}
-              >clear all</Button>
-            </>
-          )}
         />
+        {!serving && (
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-line
+                          px-2 py-1.5">
+            {/* The two answers to "how should this run", as buttons rather
+                than a question — and clear-all beside them, visibly the
+                opposite kind of act. */}
+            <Button
+              size="sm" busy={start.isPending}
+              title="Hand the folder to a plain static server — instant, starts nothing.
+A Vite or webpack app will load and then fail on its first import; use Start app for those."
+              onClick={() => start.mutateAsync(undefined)
+                .then((made) => { if (made?.open) window.open(made.open, "_blank"); })
+                .catch((error) => toast.err(String(error)))}
+            >serve static</Button>
+            <Button
+              size="sm" variant="primary" busy={plan.isPending || run.isPending}
+              title="Ask the orchestrator how this project starts (it reads the README),
+show you the command, and run it after you confirm."
+              onClick={() => plan.mutateAsync()
+                .then((answer) => {
+                  if (!answer.static_instead) return setProposal(answer);
+                  toast.ok("The orchestrator says this needs no server — serving the files.");
+                  return start.mutateAsync(undefined)
+                    .then((made) => { if (made?.open) window.open(made.open, "_blank"); });
+                })
+                .catch((error) => toast.err(String(error)))}
+            >start app</Button>
+            <div className="flex-1" />
+            <Button
+              size="sm" variant="ghost"
+              title="Remove every generated file. .trance and the git history stay, so it can be undone."
+              onClick={() => setClearing(true)}
+            >clear all</Button>
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
           {tree.children.length
             ? tree.children.map((node) => (
