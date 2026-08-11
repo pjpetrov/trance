@@ -1,16 +1,21 @@
 # trance
 
-A multi-agent coding harness built around one constraint: **keep the context
-small**, so ordinary local models can work on real codebases.
+A multi-agent coding harness that plans, builds, and **end-to-end tests** what
+it built: a visual tester drives the app in a **real headless Chrome** — keys,
+clicks, screenshots — and a vision model judges what is actually on screen.
+Every frame it saw, every question it asked, every key it decided to press is
+in the history, openable and checkable.
 
-The bet is that most of a coding agent's context window is waste. A 33KB file is
-~8,400 tokens; the function you need is 150. If you can name what a task touches,
-a call graph tells you which handful of symbols actually matter — and you can
-ship those instead of the files they live in.
+![Driving the sedan it entered](docs/screens/gta2-driving.png)
 
-Everything else in trance follows from that: agents that fetch code by name,
-edits that cost the size of the edit, a window gauge on screen while an agent
-works, and a trace that shows you the exact prompt every agent received.
+*The tester inside the car it just entered — the `[ E ] Exit vehicle` prompt
+and the SEDAN speed stat are the evidence its verdict cites. Game, tests and
+verdicts all from a local Qwen3.6-27B (64k context) on one RTX 3090.*
+
+Built around one constraint: **keep the context small**, so ordinary local
+models can work on real codebases. A 33KB file is ~8,400 tokens; the function
+you need is 150. A call graph names what a task touches, and agents fetch
+those symbols instead of the files they live in.
 
 ```
 trance serve            # http://localhost:8080
@@ -20,75 +25,32 @@ trance serve            # http://localhost:8080
 
 ## What it does
 
-**Plans work.** You describe a project; an orchestrator asks a couple of
-questions and proposes a team and an ordered flow. Edits to the plan save
-themselves. Steps come with size
-estimates, and anything too big to picture is broken up before you see it. The
-plan lands in an editor — reorder, rewrite, add, delete — and nothing runs until
-you press Run.
-
-**Runs it, visibly.** A live console shows what the working agent is doing:
-commands with their output, diffs as they are written, graph lookups, every
-model call. The step that is running says how full its context window is, and
-the run header says what it has asked of each model so far — tokens, per model,
-because that is the decision it informs.
-
-**Sees the app it builds.** A visual tester opens the project in a **real
-browser** — a headless Chrome, not a DOM stub — presses the keys, clicks the
-buttons, and judges what is actually on screen with a vision model. Every
-move is kept: the history shows each screenshot it took, the question it
-asked about it, the answer it got, and the key or click it decided on next —
-so "the tester said it works" is something you can open and check, frame by
-frame.
-
-**Keeps agents inside their lane.** Each agent owns path globs, a toolset, and a
-command allowlist, enforced at the tool boundary rather than asked for in a
-prompt. A backend agent writing to `frontend/` is refused, and told which agent
-owns that path.
-
-**Asks rather than refusing, when you are watching.** A refused write or command
-pauses that agent and puts the exact action on screen: allow once, allow always
-(which writes the decision into the policy), or refuse.
-
-**Lets you steer mid-run.** Type a hint and it reaches the working agent on its
-next round. Pause and click any console line to comment on that specific action.
-
-**Commits as it goes.** Every step runs between two commits, so `git log` is the
-record of what each agent did. Every step that committed has a **revert
-commits** button — one inverse commit, behind a confirmation — and **apply
-commits** to take a mistaken revert back; all three acts stay in history. The
-Commits page answers both questions: what each chat request turned into (its
-plan, how long it was worked on, its commits with diffs), and the plain git
-log of everything, including the commits no request owns.
-
-**Says where the effort went.** A Statistics page counts tokens per model and
-working time per agent — every attempt, fix and check charged to whoever ran —
-live while the run works, with the model that is answering right now pulsing.
-The topbar clock ticks through the whole session.
-
-**Frames every plan.** Two per-project settings name an agent whose step opens
-every generated plan (a planner going over the request before anyone builds)
-and an agent or loop that closes it (a final visual pass) — enforced by rule
-on every proposal, the way the fact check is, because what a plan must always
-have is not the model's to forget.
-
-**Cleans up honestly.** Nothing an agent starts outlives the run — Stop kills
-every tracked process, a finished command reaps what it left behind, and each
-reaped process is named in the console. **Clear all** on the Files page
-removes everything the run built while keeping `.trance/` and git history
-(the wipe is itself a commit, so it is undoable); deleting a session takes its
-whole directory, with the guards that make that safe.
-
-**Lets you review the result.** A Files screen with a real editor: read the code,
-click a line number to comment on it, and send the review as a step the flow
-runs. **Review history** then answers what was done about it, from git: every
-review you have sent, newest open and the rest folded, each listing the commits
-the agents made — click one for its patch. A page can be opened
-in a browser from there — trance serves its folder as static files, on your
-network as well as locally so you can look at it on a phone, and never builds
-your project to do it. One button further, it can put that preview behind an
-HTTPS tunnel so you can send the link to someone (see
-[Sharing a preview](#sharing-a-preview-optional)).
+- **End-to-end visual testing.** A real browser, driven: `open_page` starts
+  the project's own dev server on a free port, `press_key` / `click` /
+  `watch` interact and film, a vision model answers pointed questions with
+  evidence per check. Failures route to a full-stack repairer.
+- **Plans.** Describe a project; the orchestrator proposes a team and an
+  ordered flow. Editable, size-estimated, nothing runs until you press Run.
+- **Runs, visibly.** A live console: every model call, command, diff, lookup,
+  verdict — with a context gauge on the working step.
+- **Remits, enforced.** Each agent owns path globs, a toolset and a command
+  allowlist, checked at the tool boundary. Refusals can pause and ask you:
+  allow once, always, or refuse.
+- **Checks.** Verifier chains on every step — factchecker by rule on anything
+  that writes; regression, reviewer, or your own as chips on agents, steps
+  and loop nodes. A failed check sends the work back with the objection.
+- **Steering.** Type mid-run; it reaches the working agent on its next round.
+- **Git as the record.** Every step runs between two commits. Per-step
+  **revert commits** / **apply commits**, one inverse commit each, all acts
+  in history. The Commits page: per-request view or plain git log.
+- **Statistics.** Tokens per model, working time per agent — every attempt,
+  fix and check charged to whoever ran — live, with the answering model
+  pulsing.
+- **Cleanup.** Nothing an agent starts outlives the run; Stop means now.
+  **Clear all** wipes the build but keeps `.trance/` and history, as a
+  commit. Deleting a session takes its directory, guarded.
+- **Review.** Read the code, comment on lines, send the review as a step.
+  Serve any page on your network, run the real dev server, or tunnel it out.
 
 ---
 
