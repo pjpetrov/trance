@@ -177,6 +177,14 @@ class VisualSession:
             key, times=times,
             **({"hold_frames": hold_frames} if hold_frames else {})))
 
+    def click(self, text: str = "", x: float | None = None,
+              y: float | None = None) -> dict:
+        self._needs_a_page()
+        result = self.browser.click(x=x, y=y, text=text)
+        if not result.get("found", True):
+            return result                  # nothing happened; nothing to compare
+        return self._with_shots(result)
+
     def wait(self, frames: int = 120) -> dict:
         """Let the app run before judging it.
 

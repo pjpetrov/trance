@@ -178,6 +178,48 @@ _PROBE_JS = """
 #: only that it was sent. Capture phase and `once`-free: an app that calls
 #: stopPropagation in its own handler must not be able to hide the evidence.
 #: Installed once per page and reset on each press.
+_CLICK_HOOK_JS = """
+(() => {
+  window.__tranceClicks = [];
+  if (!window.__tranceClickHook) {
+    window.__tranceClickHook = true;
+    addEventListener('click',
+      e => window.__tranceClicks.push(Math.round(e.clientX) + ',' + Math.round(e.clientY)),
+      true);
+  }
+  return true;
+})()
+"""
+
+#: Find something clickable by the words on it. Obvious clickables first, so
+#: "Join" hits the Join button rather than a paragraph that mentions joining;
+#: any element with exactly that text is the fallback for div-soup UIs.
+_FIND_CLICK_JS = r"""
+(() => {
+  const want = %s.trim().toLowerCase();
+  const label = el => (el.innerText || el.value || el.getAttribute('aria-label') || '')
+    .trim().replace(/\s+/g, ' ');
+  const obvious = [...document.querySelectorAll(
+    'button, a, [role="button"], input[type="button"], input[type="submit"], ' +
+    'summary, label, [onclick]')];
+  let hit = obvious.find(el => label(el).toLowerCase() === want)
+         || obvious.find(el => label(el).toLowerCase().includes(want));
+  if (!hit) {
+    const all = [...document.querySelectorAll('body *')]
+      .filter(el => !el.children.length && label(el).toLowerCase() === want);
+    hit = all[0];
+  }
+  if (!hit) {
+    return {found: false,
+            candidates: [...new Set(obvious.map(label).filter(Boolean))].slice(0, 12)};
+  }
+  hit.scrollIntoView({block: 'center', inline: 'center'});
+  const r = hit.getBoundingClientRect();
+  return {found: true, x: r.x + r.width / 2, y: r.y + r.height / 2,
+          tag: hit.tagName.toLowerCase(), label: label(hit).slice(0, 60)};
+})()
+"""
+
 _KEY_HOOK_JS = """
 (() => {
   window.__tranceKeys = [];
@@ -589,6 +631,47 @@ class Browser:
         return {"key": key, "times": max(1, times), "delivered": [str(s) for s in seen],
                 "changed": _differs(before, after), "frames": frames, "probe": after,
                 "held_frames": held,
+                "png_before": shot_before, "png_after": self._safe_shot(after)}
+
+    def click(self, x: float | None = None, y: float | None = None, text: str = "",
+              settle_frames: int = PRESS_SETTLE_FRAMES) -> dict:
+        """Click the page the way a mouse would.
+
+        By the words on the thing, normally — "Join game", "Start" — because
+        that is what the agent can see; coordinates are for canvas UIs, where
+        the button is pixels. Same two questions as a keypress, because they
+        have different fixes: *delivered* is whether the page received a click
+        at all, *changed* is whether the picture then differed.
+        """
+        import json as _json
+
+        target = {}
+        if text:
+            spot = self._eval(_FIND_CLICK_JS % _json.dumps(str(text))) or {}
+            if not spot.get("found"):
+                return {"found": False, "text": text,
+                        "candidates": [str(c) for c in spot.get("candidates") or []]}
+            x, y = spot["x"], spot["y"]
+            target = {"tag": spot.get("tag", ""), "label": spot.get("label", "")}
+        if x is None or y is None:
+            raise ValueError("click needs the text on the thing, or x and y")
+
+        self._eval(_CLICK_HOOK_JS)
+        before = self.probe()
+        shot_before = self._safe_shot(before)
+        spot = {"x": float(x), "y": float(y), "button": "left", "clickCount": 1}
+        # The move first: plenty of UIs arm on hover, and a click that lands
+        # with no mouse ever having been near reads as untrusted input to some.
+        self._call("Input.dispatchMouseEvent",
+                   {"type": "mouseMoved", "x": float(x), "y": float(y)}, session=True)
+        self._call("Input.dispatchMouseEvent", {"type": "mousePressed", **spot}, session=True)
+        self._call("Input.dispatchMouseEvent", {"type": "mouseReleased", **spot}, session=True)
+        frames = self.wait_frames(settle_frames)
+        seen = self._eval("window.__tranceClicks || []") or []
+        after = self.probe()
+        return {"found": True, "x": round(float(x), 1), "y": round(float(y), 1), **target,
+                "delivered": bool(seen), "changed": _differs(before, after),
+                "frames": frames, "probe": after,
                 "png_before": shot_before, "png_after": self._safe_shot(after)}
 
     def _safe_shot(self, probe: dict) -> bytes:

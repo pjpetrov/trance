@@ -505,6 +505,22 @@ class AgentTools:
                                   "long way in one press — 60 frames is about a second "
                                   "of holding the key.")}},
                     ["key"]),
+                _fn("click",
+                    "Click a button or link by the words on it, the way a mouse "
+                    "would. A lobby or menu with buttons cannot be passed any other "
+                    "way. Give `text` for anything with visible words; give x and y "
+                    "(CSS pixels from the page's top left) for a button drawn on the "
+                    "canvas. The result says whether the page received the click and "
+                    "whether the picture changed.",
+                    {"text": {"type": "string",
+                              "description": ("The visible words on the thing to click "
+                                              "— 'Join game', 'Start'. Matched against "
+                                              "buttons and links first.")},
+                     "x": {"type": "number",
+                           "description": "CSS pixels from the left. Only with y."},
+                     "y": {"type": "number",
+                           "description": "CSS pixels from the top. Only with x."}},
+                    []),
                 _fn("wait",
                     "Let the app run for a number of animation frames before you judge "
                     "it. A screen is not finished the moment it appears — characters "
@@ -599,6 +615,7 @@ class AgentTools:
             "remember": self.remember,
             "open_page": self.open_page,
             "press_key": self.press_key,
+            "click": self.click,
             "wait": self.wait,
             "check_canvas": self.check_canvas,
             "look": self.look,
@@ -1076,6 +1093,61 @@ class AgentTools:
                     "shot_before": result.get("shot_before", ""),
                     "shot_after": result.get("shot_after", "")})
 
+    def click(self, text: str = "", x=None, y=None) -> ToolOutcome:
+        from ..browser import BrowserUnavailable
+
+        try:
+            x = None if x is None else float(x)
+            y = None if y is None else float(y)
+        except (TypeError, ValueError):
+            x = y = None
+        if not text and (x is None or y is None):
+            return ToolOutcome(
+                "Say what to click: the visible words on it (`text`), or both x and y.",
+                ok=False, detail={"kind": "click_failed", "error": "no target"})
+        try:
+            result = self.visual.click(text=str(text or ""), x=x, y=y)
+        except (BrowserUnavailable, ValueError) as exc:
+            return ToolOutcome(f"Could not click: {exc}", ok=False,
+                               detail={"kind": "click_failed", "error": str(exc)})
+
+        if not result.get("found", True):
+            options = result.get("candidates") or []
+            return ToolOutcome(
+                f"Nothing clickable says {text!r}."
+                + (f" What is clickable right now: {', '.join(options)}." if options
+                   else " Nothing with visible words is clickable right now — a button "
+                        "drawn on the canvas needs x and y instead."),
+                ok=False, detail={"kind": "click_failed", "error": "not found",
+                                  "text": str(text), "candidates": options})
+
+        where = (f"{result.get('label') or text!r} ({result.get('tag', 'element')})"
+                 if text else f"({result['x']}, {result['y']})")
+        lines = [f"Clicked {where}."]
+        if not result.get("delivered"):
+            lines.append("The page did not receive the click at all. That is a browser "
+                         "problem, not the app ignoring you.")
+        elif result.get("changed") is True:
+            lines.append(f"The page received it and the screen changed over "
+                         f"{result.get('frames', 0)} frames — the app responded.")
+        elif result.get("changed") is False:
+            lines.append(f"The page received it but the screen did not change over "
+                         f"{result.get('frames', 0)} frames. Either this control does "
+                         f"nothing right now, or the response needs longer — wait, then "
+                         f"look.")
+        described = (result.get("diff") or {}).get("described")
+        if described:
+            lines.append(described)
+        return ToolOutcome(
+            " ".join(lines), ok=True,
+            detail={"kind": "click", "text": str(text or ""),
+                    "x": result.get("x"), "y": result.get("y"),
+                    "label": result.get("label", ""),
+                    "delivered": result.get("delivered"), "changed": result.get("changed"),
+                    "frames": result.get("frames", 0), "diff": result.get("diff"),
+                    "shot_before": result.get("shot_before", ""),
+                    "shot_after": result.get("shot_after", "")})
+
     def wait(self, frames: int = 120) -> ToolOutcome:
         from ..browser import BrowserUnavailable
 
@@ -1135,8 +1207,14 @@ class AgentTools:
             lines.append("BLANK — a single flat colour, nothing drawn." if found["blank"] is True
                          else "Painted." if found["blank"] is False
                          else f"Could not read the canvas back ({found['note'] or 'unknown'}).")
-            lines.append("FROZEN — the picture did not change over "
-                         f"{found['frames']} frames; the render loop is not running."
+            # Not "frozen": a lobby waiting for a click looks exactly like a
+            # dead render loop from here, and asserting death sent an agent
+            # chasing a bug that was a menu. State the fact; offer both readings.
+            lines.append(f"STILL — the picture did not change over {found['frames']} "
+                         "frames. Either the render loop is dead, or this screen is "
+                         "simply waiting for input — a lobby or menu does not animate. "
+                         "If there is a button or a key hint on screen, click or press "
+                         "it before concluding anything is broken."
                          if found["moving"] is False
                          else f"Moving — the picture changed over {found['frames']} frames."
                          if found["moving"] else "Could not tell whether the picture is changing.")
@@ -1585,7 +1663,8 @@ def permissions_brief(role: AgentRole) -> str:
     if "browser" in role.toolsets:
         lines.append(
             "You may open this project in a real headless browser (open_page), send it keys "
-            "(press_key), measure its canvas (check_canvas) and photograph it for a vision "
+            "(press_key), click its buttons (click), measure its canvas (check_canvas) and "
+            "photograph it for a vision "
             "model to describe (look), or film a short burst for questions about motion "
             "(watch). A project that needs its own dev server (Vite and friends) gets its "
             "dev script from package.json started behind the page and stopped with your "

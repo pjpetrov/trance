@@ -365,6 +365,23 @@ function renderDetail(
       };
     }
 
+    case "click": {
+      const missed = detail.delivered === false;
+      return {
+        show: true, icon: "🖰", iconTone: missed ? "text-err" : "text-purple",
+        failed: missed, open: missed || detail.changed === false,
+        label: (
+          <span>
+            clicked <span className="text-accent">
+              {detail.label || detail.text || `(${detail.x}, ${detail.y})`}
+            </span>
+            {detail.changed === false && <span className="text-warn"> — no visible effect</span>}
+          </span>
+        ),
+        body: <ShotPair detail={detail} sessionId={sessionId} result={result} />,
+      };
+    }
+
     case "wait":
       return {
         show: true, icon: "⏱", iconTone: detail.stalled ? "text-err" : "text-purple",
@@ -584,7 +601,7 @@ function Diff({ diff }: { diff: string }) {
  *  and the digest of an empty buffer is a constant. */
 function ShotPair(
   { detail, sessionId, result }:
-  { detail: Extract<ToolDetail, { kind: "key" | "wait" }>; sessionId: string; result: string },
+  { detail: Extract<ToolDetail, { kind: "key" | "wait" | "click" }>; sessionId: string; result: string },
 ) {
   const diff = detail.diff as ImageDiff | null | undefined;
   return (

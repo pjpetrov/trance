@@ -1182,3 +1182,85 @@ def test_a_plain_page_is_still_served_statically(tmp_path, monkeypatch):
         assert session.dev_command == ""
     finally:
         session.close()
+
+
+# ------------------------------------------------------------------ clicking
+
+def test_click_is_offered_and_refuses_an_empty_target(tmp_path):
+    tools = AgentTools(tmp_path, _role())
+    names = {s["function"]["name"] for s in tools.specs()}
+    assert "click" in names
+
+    out = tools.call("click", {})
+    assert out.ok is False and "visible words" in out.text
+
+
+def test_a_click_that_finds_nothing_says_what_is_clickable(tmp_path):
+    """"Not found" strands the agent; the list of what *is* there is the next
+    move handed over."""
+    class _Visual:
+        def click(self, text="", x=None, y=None):
+            return {"found": False, "text": text,
+                    "candidates": ["Create game", "Join game", "Settings"]}
+
+    tools = AgentTools(tmp_path, _role())
+    tools._visual = _Visual()
+    out = tools.call("click", {"text": "Start"})
+    assert out.ok is False
+    assert "Create game" in out.text and "Join game" in out.text
+
+
+def test_a_still_screen_is_not_reported_as_a_dead_render_loop(tmp_path):
+    """Seen live: a multiplayer lobby, still because it was waiting for a
+    click, reported as "FROZEN — the render loop is not running" — and the
+    agent went chasing a bug that was a menu."""
+    class _Visual:
+        def check(self, frames):
+            return {"canvas": True, "canvases": 1, "size": "1280x800",
+                    "blank": False, "moving": False, "frames": frames,
+                    "read_via": "shot", "note": "",
+                    "errors": {"console": [], "requests": [], "page": []}}
+
+    tools = AgentTools(tmp_path, _role())
+    tools._visual = _Visual()
+    out = tools.call("check_canvas", {"frames": 30})
+    assert "FROZEN" not in out.text
+    assert "waiting for input" in out.text
+    assert "click or press" in out.text
+
+
+def test_the_procedure_tells_the_tester_a_still_lobby_is_not_a_bug():
+    from trance.agents.roles import BUILTIN_ROLES
+
+    prompt = BUILTIN_ROLES["visual-tester"].system_prompt
+    assert "click the button by the words on it" in prompt
+    assert "unchanging lobby is not a frozen app" in prompt
+
+
+@needs_chrome
+def test_a_real_button_can_be_clicked_by_its_words(tmp_path):
+    """End to end through a real Chrome: find the button by its text, click
+    it, and watch the page change."""
+    from trance.agents.visual import VisualSession
+
+    project = tmp_path / "lobby"
+    project.mkdir()
+    (project / "index.html").write_text("""
+<!doctype html><html><body>
+<h1>ZERGLING RUSH</h1>
+<button onclick="document.body.innerHTML='<h2 id=go>game on</h2>'">Join game</button>
+</body></html>""", encoding="utf8")
+
+    session = VisualSession(project)
+    try:
+        session.open("index.html", settle_frames=5)
+        result = session.click(text="join game")          # case-insensitive
+        assert result["found"] is True
+        assert result["label"] == "Join game"
+        assert result["delivered"] is True
+
+        missing = session.click(text="Quit")
+        assert missing["found"] is False
+        assert missing["candidates"] == []                # the button is gone: game on
+    finally:
+        session.close()
