@@ -532,9 +532,9 @@ describe("settings", () => {
     renderWithQuery(<SettingsPanel />);
     await screen.findByText("Git");
     // Its model and its prompt are both on its agent card. A second mention
-    // here — even an explanatory one — is a second place to look.
+    // here — even an explanatory one — is a second place to look. (The plan
+    // frame's selects choose agents and loops, which is a different thing.)
     expect(screen.queryByText(/orchestrator/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 
   it("reports what visual testing can do on this machine", async () => {

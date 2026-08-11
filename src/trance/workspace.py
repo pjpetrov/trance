@@ -49,6 +49,14 @@ class Settings:
     escalation_role: str = ""
     git_commits: bool = True
     git_auto_init: bool = True
+    #: An agent whose step opens every generated plan — a planner going over
+    #: the request before anyone builds. Empty = plans open with whatever the
+    #: orchestrator proposed.
+    plan_open: str = ""
+    #: An agent or loop appended to every generated plan that does not already
+    #: end with it — "always finish by looking at the running app" as a rule
+    #: rather than a hope. Empty = the existing final-check guarantee alone.
+    plan_close: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

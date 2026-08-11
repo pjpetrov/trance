@@ -9942,3 +9942,98 @@ def test_a_checks_time_is_charged_to_the_checker_not_the_worker(tmp_path, monkey
     assert session.agent_seconds.get("factchecker", 0) > 0
     assert "frontend" not in session.agent_seconds
     assert step.seconds > 0                     # the step pays for its checks too
+
+
+# ==================== a plan always opens and closes the way the project says
+
+def test_a_plan_opens_with_the_planner_and_closes_with_the_visual_pass():
+    """Asked for by a user who watched the orchestrator propose plans without
+    their planner and without a final visual pass. What a plan must always
+    have is a setting enforced by rule — the model's memory is a hope."""
+    from trance.agents.orchestrator import ensure_frame
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import LoopStore
+
+    roles = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["planner"],
+             BUILTIN_ROLES["visual-tester"]]
+
+    class _Loops:
+        def all(self):
+            return LoopStore.__new__(LoopStore) and []
+
+    proposal = {"summary": "s", "team": ["frontend"], "steps": [
+        {"role": "frontend", "loop": "", "task": "build the lobby"}]}
+    out = ensure_frame(dict(proposal, steps=list(proposal["steps"])),
+                       opening="planner", closing="visual-tester",
+                       roles=roles, loops=None)
+
+    assert out["steps"][0]["role"] == "planner"
+    assert "Do not implement" in out["steps"][0]["task"]
+    assert out["steps"][-1]["role"] == "visual-tester"
+    assert out["opened_with"] == "planner" and out["closed_with"] == "visual-tester"
+
+    # Idempotent: a plan already framed is not framed again.
+    again = ensure_frame(out, opening="planner", closing="visual-tester",
+                         roles=roles, loops=None)
+    assert [s["role"] for s in again["steps"]].count("planner") == 1
+    assert [s["role"] for s in again["steps"]].count("visual-tester") == 1
+
+
+def test_the_closing_can_be_a_loop_and_unknown_names_are_skipped(tmp_path):
+    from trance.agents.orchestrator import ensure_frame
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import LoopStore
+
+    loops = LoopStore(tmp_path / "loops.json")          # seeded with the builtins
+    roles = [BUILTIN_ROLES["frontend"]]
+
+    out = ensure_frame({"steps": [{"role": "frontend", "loop": "", "task": "t"}]},
+                       opening="claude",                # this project has no such agent
+                       closing="visual-test-and-fix",
+                       roles=roles, loops=loops)
+
+    assert out["steps"][0]["role"] == "frontend"        # nothing prepended
+    assert out["steps"][-1]["loop"] == "visual-test-and-fix"
+    assert out["steps"][-1]["role"] == ""
+
+
+def test_the_frame_is_applied_from_the_projects_settings(tmp_path, monkeypatch):
+    """Through the chat handler, which is where Generate arrives."""
+    from fastapi.testclient import TestClient
+
+    from trance.agents import orchestrator
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "starcraft", "project_dir": str(tmp_path / "sc")}).json()["id"]
+    client.put(f"/api/agents/claude?session={sid}", json={
+        "title": "Claude", "description": "planner", "system_prompt": "p",
+        "paths": [], "toolsets": ["files"],
+    })
+    client.put(f"/api/config/planning?session={sid}",
+               json={"plan_open": "claude", "plan_close": "visual-test-and-fix"})
+
+    def _proposed(**kwargs):
+        frame = orchestrator.ensure_frame(
+            {"summary": "s", "team": ["frontend"], "requirements": [],
+             "steps": [{"role": "frontend", "loop": "", "task": "build the lobby",
+                        "check": None, "checks": [], "on_fail": None,
+                        "max_loops": 0, "points": 2}]},
+            opening=getattr(kwargs.get("settings"), "plan_open", ""),
+            closing=getattr(kwargs.get("settings"), "plan_close", ""),
+            roles=kwargs.get("roles"), loops=kwargs.get("loops"))
+        return {"text": "planned", "truncated": False, "proposal": frame}
+
+    monkeypatch.setattr(orchestrator, "chat", _proposed)
+    body = client.post(f"/api/sessions/{sid}/chat",
+                       json={"message": "make a starcraft clone"}).json()
+
+    steps = body["flow"]["steps"]
+    assert steps[0]["role"] == "claude"
+    assert steps[-1]["loop"] == "visual-test-and-fix"

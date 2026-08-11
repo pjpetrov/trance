@@ -1,8 +1,44 @@
-import { useConfig, useSettings } from "@/api/queries";
+import { useAgents, useConfig, useLoops, useSettings } from "@/api/queries";
 import { useSettingsMutations } from "@/api/mutations";
 import { Checkbox, Empty } from "@/components/ui/primitives";
 import { useUi } from "@/store/ui";
 import { toast } from "@/components/Toaster";
+
+function FrameField(
+  { label, hint, value, onChange, agentsOnly }:
+  { label: string; hint: string; value: string;
+    onChange: (name: string) => void; agentsOnly?: boolean },
+) {
+  const sessionId = useUi((state) => state.sessionId) ?? "";
+  const agents = useAgents(sessionId);
+  const loops = useLoops(sessionId);
+  return (
+    <label className="flex items-center gap-2 text-sm" title={hint}>
+      <span className="w-24 text-xs text-muted">{label}</span>
+      <select
+        className="h-7 rounded-[--radius] border border-line bg-bg px-1 text-xs"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">— nothing —</option>
+        <optgroup label="agents">
+          {(agents.data?.agents ?? [])
+            .filter((role) => role.name !== "orchestrator")
+            .map((role) => (
+              <option key={role.name} value={role.name}>{role.name}</option>
+            ))}
+        </optgroup>
+        {!agentsOnly && (
+          <optgroup label="loops">
+            {(loops.data ?? []).map((loop) => (
+              <option key={loop.name} value={loop.name}>{loop.name}</option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+    </label>
+  );
+}
 
 export function SettingsPanel() {
   const sessionId = useUi((state) => state.sessionId) ?? "";
@@ -46,6 +82,27 @@ export function SettingsPanel() {
           label="Create a repository when the project is not one"
           checked={settings.data.git_auto_init}
           onChange={(event) => save({ git_auto_init: event.target.checked })}
+        />
+      </section>
+
+      <section className="space-y-2">
+        <h3 className="text-sm font-medium">Every plan, always</h3>
+        <p className="text-xs leading-relaxed text-muted">
+          Enforced on every generated plan, the way the fact check is — what a
+          plan must always have is not the model's to forget.
+        </p>
+        <FrameField
+          label="Opens with"
+          hint="A planner's step is put first: go over the request against the code, write down the decisions, build nothing."
+          value={settings.data.plan_open ?? ""}
+          agentsOnly
+          onChange={(name) => save({ plan_open: name })}
+        />
+        <FrameField
+          label="Ends with"
+          hint="Appended when the plan does not already end with it — a final visual pass over the running app, for instance."
+          value={settings.data.plan_close ?? ""}
+          onChange={(name) => save({ plan_close: name })}
         />
       </section>
 

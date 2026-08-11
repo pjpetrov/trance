@@ -32,6 +32,7 @@ from ..agents.tools import ALLOWED_COMMANDS, set_command_lists, set_command_poli
 from ..agents.visual import SHOTS_DIR, available as browser_available
 from ..vision import VISION_KINDS, image_block
 from ..config import Config
+import dataclasses
 from dataclasses import replace
 from ..engine import FlowEngine, check_project_dir
 from ..events import EventBus
@@ -125,7 +126,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         now per project — so it gets one that says what this project decided
         rather than what the machine last had in memory.
         """
-        return replace(config, **stores_of(session).settings.settings.to_dict())
+        # Only the fields Config actually has. Settings grew plan-shaped
+        # fields (what every plan opens and closes with) that the engine's
+        # Config never reads, and replace() rejects strangers.
+        known = {f.name for f in dataclasses.fields(Config)}
+        held = stores_of(session).settings.settings.to_dict()
+        return replace(config, **{k: v for k, v in held.items() if k in known})
 
     def publish_commands_of(session) -> None:
         """Point the tool layer at this project's allowlists.
@@ -871,6 +877,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         for flag in ("git_commits", "git_auto_init"):
             if flag in body:
                 changes[flag] = bool(body[flag])
+        for frame in ("plan_open", "plan_close"):
+            if frame in body:
+                name = (body.get(frame) or "").strip()
+                if name and roles.get(name) is None and held.loops.get(name) is None:
+                    raise HTTPException(400, f"unknown agent or loop {name!r}")
+                changes[frame] = name
 
         settings = held.settings.update(**changes)
         return {**settings.to_dict(), "scale": list(POINTS)}
@@ -2000,6 +2012,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 session_id=session_id,
                 roles=stores_of(session).roles.all(),
                 loops=stores_of(session).loops,
+                settings=stores_of(session).settings.settings,
             )
         except BackendError as exc:
             bus.emit("error", session_id, payload={"message": str(exc)})

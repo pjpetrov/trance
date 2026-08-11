@@ -263,6 +263,7 @@ def chat(
     session_id: str,
     roles: list | None = None,
     loops=None,
+    settings=None,
 ) -> dict:
     """One orchestrator turn. Returns {'text', 'proposal'|None}."""
     roles = list(roles or BUILTIN_ROLES.values())
@@ -340,6 +341,11 @@ def chat(
             truncated_call = True
             continue
         proposal = ensure_checks(_normalize(call.arguments, roles), roles=roles)
+        proposal = ensure_frame(
+            proposal,
+            opening=getattr(settings, "plan_open", "") or "",
+            closing=getattr(settings, "plan_close", "") or "",
+            roles=roles, loops=loops)
         proposal["requirements"] = [
             str(item).strip()
             for item in (call.arguments.get("requirements") or [])
@@ -472,6 +478,55 @@ def ensure_checks(proposal: dict, *, roles=None) -> dict:
         if DEFAULT_CHECK not in team:
             team.append(DEFAULT_CHECK)
         proposal["team"] = team
+    return proposal
+
+
+def ensure_frame(proposal: dict, *, opening: str = "", closing: str = "",
+                 roles=None, loops=None) -> dict:
+    """Open and close a generated plan with what the project always wants.
+
+    Prompting the orchestrator for this is a hope; the user watched it propose
+    a plan without their planner and without a final visual pass, twice. These
+    are settings, enforced by rule — the same shape as the fact check: what a
+    plan must always have is not the model's to forget.
+
+    A name the project does not actually have is skipped rather than fatal:
+    the defaults may name an agent only some projects define.
+    """
+    steps = proposal.get("steps")
+    if not steps:
+        return proposal
+    by_name = {r.name: r for r in (roles or [])}
+    known_loops = {l.name for l in (loops.all() if loops else [])}
+
+    if opening in by_name and (steps[0].get("role") or "") != opening:
+        steps.insert(0, {
+            "role": opening, "loop": "", "task": (
+                "Go over this request and the plan below before anyone builds. "
+                "Check the steps against the code as it actually is, and use "
+                "remember to write down the decisions and pitfalls the team "
+                "must follow. Do not implement anything."),
+            "check": None, "checks": [], "on_fail": None, "max_loops": 0,
+            "points": 1,
+        })
+        proposal["opened_with"] = opening
+
+    is_loop = closing in known_loops
+    if closing and (is_loop or closing in by_name):
+        last = steps[-1]
+        already = (last.get("loop") == closing if is_loop
+                   else last.get("role") == closing)
+        if not already:
+            steps.append({
+                "role": "" if is_loop else closing,
+                "loop": closing if is_loop else "",
+                "task": ("Visually verify everything this plan built, in the running "
+                         "app: work through what was asked for and judge it by what "
+                         "is actually on screen."),
+                "check": None, "checks": [], "on_fail": None, "max_loops": 0,
+                "points": 2,
+            })
+            proposal["closed_with"] = closing
     return proposal
 
 
