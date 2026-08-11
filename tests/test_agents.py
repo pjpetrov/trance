@@ -9685,3 +9685,69 @@ def test_a_huge_diff_is_clipped_and_says_so(tmp_path):
     body = task[task.index("```diff"):]
     assert len(body) < engine.GATE_DIFF_CHARS + 200
     assert "clipped" in task
+
+
+# =========================== a custom agent on a step actually reaches the run
+
+def test_a_custom_agent_on_a_step_joins_the_team(tmp_path):
+    """Seen live: an agent "claude" created in the library, put on a step, the
+    plan saved without complaint — and the run failed with "unknown role
+    'claude'". The team pull reached through loops only, so a plain step's own
+    role never joined; the built-ins masked it because the engine falls back
+    to them, and a custom agent has no fallback."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+    from trance.session import Session
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "starcraft", "project_dir": str(tmp_path / "sc")}).json()["id"]
+    client.put(f"/api/agents/claude?session={sid}", json={
+        "title": "Claude", "description": "", "system_prompt": "you are claude",
+        "paths": ["src/**"], "toolsets": ["files"],
+    })
+
+    body = client.put(f"/api/sessions/{sid}/flow",
+                      json={"steps": [{"role": "claude", "task": "build the lobby"}]}).json()
+    assert "claude" in [r["name"] for r in body["team"]]
+
+    # And the engine finds it the way the run will.
+    session = app.state.store.get(sid)
+    assert session.role("claude") is not None
+    assert session.role("claude").system_prompt == "you are claude"
+
+
+def test_a_session_saved_before_the_team_pull_heals_on_read(tmp_path):
+    """The user's existing session already has the broken shape on disk. The
+    next read repairs it, rather than requiring an edit they have no reason to
+    make."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.flow import Flow, Step
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    client.put(f"/api/agents/claude?session={sid}", json={
+        "title": "Claude", "description": "", "system_prompt": "p",
+        "paths": ["src/**"], "toolsets": ["files"],
+    })
+    # The broken shape: the step names the agent, the team has never heard of it.
+    session = app.state.store.get(sid)
+    session.flow = Flow(steps=[Step(role="claude", task="t")])
+    session.team = [r for r in session.team if r.name != "claude"]
+
+    body = client.get(f"/api/sessions/{sid}").json()
+    assert "claude" in [r["name"] for r in body["team"]]

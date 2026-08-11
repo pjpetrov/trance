@@ -330,6 +330,32 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             return list(getattr(role, "checks", None) or [])
         return of
 
+    def pull_flow_roles(session) -> bool:
+        """Put every agent the flow names onto the team. True if any was missing.
+
+        The team pull used to reach through loops only, so a plain step's own
+        role never joined — masked for months because the engine falls back to
+        the built-ins, until the first *custom* agent ("claude", on a step,
+        saved fine, then "unknown role 'claude'" at run time — the library knew
+        it and the session did not).
+        """
+        roles = stores_of(session).roles
+        loop_store = stores_of(session).loops
+        wanted = list(session.team)
+        added = False
+        names: list[str] = []
+        for step in session.flow.steps:
+            loop = loop_store.get(step.loop) if step.loop else None
+            names += list(loop.roles()) if loop else [step.role]
+            names += list(step.checks) + ([step.on_fail] if step.on_fail else [])
+        for name in names:
+            if name and all(r.name != name for r in wanted) and roles.get(name):
+                wanted.append(roles.get(name))
+                added = True
+        if added:
+            session.team = roles.resolve_team(wanted)
+        return added
+
     def refresh_team(session):
         """Re-bind a session's team to its project's agent definitions.
 
@@ -340,7 +366,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         step stays off.
         """
         session.team = stores_of(session).roles.resolve_team(session.team)
-        if seed_checks(session.flow, checks_for(session)):
+        # Heals sessions saved before the team pull below existed, on the next
+        # read rather than on the next edit.
+        grew = pull_flow_roles(session)
+        if seed_checks(session.flow, checks_for(session)) or grew:
             touch(session)
         return session
 
@@ -1997,17 +2026,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 raise HTTPException(400, f"unknown fixing agent {step.on_fail!r}")
         # Same rule whether or not a run is live: only in-flight steps are
         # immutable. Editing a finished or failed step re-queues it.
-        # Pull in every agent the flow can reach, loops included — otherwise a
-        # loop calls an agent this session has never heard of.
-        wanted = list(session.team)
-        for step in steps:
-            loop = loops.get(step.loop) if step.loop else None
-            for name in (loop.roles() if loop else []):
-                if all(r.name != name for r in wanted) and roles.get(name):
-                    wanted.append(roles.get(name))
-        session.team = roles.resolve_team(wanted)
-
         outcome = session.flow.apply_edits(steps)
+        # Pull in every agent the flow can reach — the steps' own roles, their
+        # checks, their fixers, and everything inside loops. A session that can
+        # name an agent it has never heard of fails at run time, after
+        # everything before it has already run.
+        pull_flow_roles(session)
         # A step added here is answered with its agent's checks already on it,
         # rather than showing an empty row until the next read seeds it.
         seed_checks(session.flow, checks_for(session))
