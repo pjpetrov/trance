@@ -36,6 +36,13 @@ const ALL_TIME = {
   calls: 4664,
 };
 
+const WAITING = {
+  id: "ev9", type: "model_waiting", session_id: "s1", step_id: "st2",
+  ts: "2026-08-11T12:00:00Z", agent: "frontend",
+  payload: { preset: "Qwen3.6-llama.cpp", model: "unsloth/Qwen3.6-27B-GGUF:IQ4_XS",
+             round: 3, message: "waiting for Qwen3.6-llama.cpp" },
+};
+
 const serve = (over: Record<string, unknown> = {}) => fakeServer({
   "/api/sessions/s1": session({
     run_seconds: 3725,
@@ -127,6 +134,35 @@ describe("the statistics page", () => {
     const row = screen.getByText("visual-tester").closest("tr")!;
     expect(within(row).getByText("16m 40s")).toBeInTheDocument();
     expect(within(row).getByText("27%")).toBeInTheDocument();
+  });
+
+  it("marks the model and agent that are answering right now", async () => {
+    // The counted numbers refresh every few seconds; the pulse is instant.
+    // The newest event being a model_waiting is exactly the call that has
+    // not come back — the same rule the console's spinner uses.
+    serve({
+      "/api/sessions/s1": session({
+        run_seconds: 100,
+        agent_seconds: { frontend: 80, factchecker: 20 },
+        flow: { steps: [], cursor: 0 },
+      }),
+      "/api/sessions/s1/events": { events: [WAITING], total: 1, shown: 1 },
+    });
+    renderWithQuery(<StatsScreen />);
+
+    expect((await screen.findAllByTitle("answering right now")).length).toBe(1);
+    expect(screen.getByTitle("working right now")).toBeInTheDocument();
+  });
+
+  it("shows no pulse when the newest event is an answer, not a wait", async () => {
+    serve({
+      "/api/sessions/s1/events": {
+        events: [{ ...WAITING, type: "model_call" }], total: 1, shown: 1,
+      },
+    });
+    renderWithQuery(<StatsScreen />);
+    await screen.findAllByText("Qwen3.6-llama.cpp");
+    expect(screen.queryByTitle("answering right now")).toBeNull();
   });
 
   it("says nothing has been asked rather than showing an empty table", async () => {

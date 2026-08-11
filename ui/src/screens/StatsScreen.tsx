@@ -10,11 +10,11 @@
  * writes: measured on one run here, 43.4M in against 700K out.
  */
 
-import { useLifetimeUsage, useSession, useUsage } from "@/api/queries";
+import { useEventTail, useLifetimeUsage, useSession, useUsage } from "@/api/queries";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { duration, tokens } from "@/lib/format";
-import { Empty, Panel, PanelHeader, Spinner } from "@/components/ui/primitives";
+import { Dot, Empty, Panel, PanelHeader, Spinner } from "@/components/ui/primitives";
 import type { ModelSpend, Usage } from "@/api/types";
 
 export function StatsScreen() {
@@ -22,6 +22,16 @@ export function StatsScreen() {
   const session = useSession(sessionId);
   const here = useUsage(sessionId);
   const ever = useLifetimeUsage();
+  // Who is answering right now. The tail is socket-fed, so this is instant
+  // where the counted numbers above are a few seconds behind: the newest
+  // event being a model_waiting is exactly the call that has not come back.
+  const tail = useEventTail(sessionId);
+  const last = tail.data?.[tail.data.length - 1];
+  const active = last?.type === "model_waiting"
+    ? { name: String((last.payload as { preset?: string; model?: string }).preset
+                     ?? (last.payload as { model?: string }).model ?? ""),
+        agent: last.agent ?? "" }
+    : null;
 
   if (!sessionId) return <Empty title="No session selected." />;
 
@@ -52,13 +62,14 @@ export function StatsScreen() {
           </div>
         </Panel>
 
-        <Effort agents={session.data?.agent_seconds ?? {}} />
+        <Effort agents={session.data?.agent_seconds ?? {}} activeAgent={active?.agent} />
 
         <Spend
           title="By model, this session"
           subtitle="every call the agents and the orchestrator made"
           usage={here.data}
           loading={here.isLoading}
+          active={active?.name}
         />
 
         <Spend
@@ -81,7 +92,10 @@ export function StatsScreen() {
 /** Who the working time went to. The session clock always counted the whole
  *  run; this is the difference between "7h 53m" and knowing the visual tester
  *  ate five of them. */
-function Effort({ agents }: { agents: Record<string, number> }) {
+function Effort(
+  { agents, activeAgent }:
+  { agents: Record<string, number>; activeAgent?: string },
+) {
   const rows = Object.entries(agents)
     .filter(([, seconds]) => seconds > 0)
     .sort(([, a], [, b]) => b - a);
@@ -106,7 +120,14 @@ function Effort({ agents }: { agents: Record<string, number> }) {
                     style={{ width: `${Math.round((seconds / most) * 100)}%` }}
                     aria-hidden
                   />
-                  <span className="relative font-code text-xs">{name}</span>
+                  <span className="relative inline-flex items-center gap-1.5 font-code text-xs">
+                    {name === activeAgent && (
+                      <span title="working right now">
+                        <Dot tone="accent" pulse />
+                      </span>
+                    )}
+                    {name}
+                  </span>
                 </td>
                 <td className="px-2 py-1.5 text-right tabular-nums">{duration(seconds)}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-muted">
@@ -134,8 +155,9 @@ function Figure(
 }
 
 function Spend(
-  { title, subtitle, usage, loading }:
-  { title: string; subtitle: string; usage: Usage | undefined; loading: boolean },
+  { title, subtitle, usage, loading, active }:
+  { title: string; subtitle: string; usage: Usage | undefined; loading: boolean;
+    active?: string },
 ) {
   const rows = usage?.models ?? [];
   const most = Math.max(1, ...rows.map((row) => row.total));
@@ -161,7 +183,10 @@ function Spend(
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => <Row key={row.model} row={row} most={most} />)}
+              {rows.map((row) => (
+                <Row key={row.model} row={row} most={most}
+                     active={row.model === active} />
+              ))}
             </tbody>
           </table>
         </div>
@@ -170,7 +195,9 @@ function Spend(
   );
 }
 
-function Row({ row, most }: { row: ModelSpend; most: number }) {
+function Row(
+  { row, most, active }: { row: ModelSpend; most: number; active?: boolean },
+) {
   // The share bar sits behind the name rather than in a column of its own:
   // the question it answers — "which of these is the expensive one" — is about
   // the row, and a separate column of bars reads as a second table.
@@ -186,7 +213,14 @@ function Row({ row, most }: { row: ModelSpend; most: number }) {
           style={{ width: `${share}%` }}
           aria-hidden
         />
-        <span className="relative font-code text-xs">{row.model}</span>
+        <span className="relative inline-flex items-center gap-1.5 font-code text-xs">
+          {active && (
+            <span title="answering right now">
+              <Dot tone="accent" pulse />
+            </span>
+          )}
+          {row.model}
+        </span>
       </td>
       <td className="px-2 py-1.5 text-right tabular-nums text-muted">
         {row.calls.toLocaleString()}

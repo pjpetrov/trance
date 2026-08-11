@@ -187,7 +187,9 @@ export function useUsage(sessionId: string | null) {
     queryKey: keys.usage(sessionId ?? ""),
     queryFn: () => api.usage(sessionId!),
     enabled: Boolean(sessionId),
-    refetchInterval: 10_000,
+    // Live enough to watch a run spend: the socket says *that* something is
+    // happening instantly; these numbers say how much, a few seconds behind.
+    refetchInterval: 4_000,
   });
 }
 
@@ -197,7 +199,7 @@ export function useLifetimeUsage() {
   return useQuery<Usage>({
     queryKey: keys.lifetimeUsage,
     queryFn: () => api.lifetimeUsage(),
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
   });
 }
 
