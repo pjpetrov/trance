@@ -499,6 +499,7 @@ function Console(
           ? blocks.map((block, index) => (
               <AgentBlock
                 key={block.key} block={block} sessionId={sessionId!}
+                stepId={stepId!} canRerun={session.data?.status !== "running"}
                 // The one still going is what you are watching; the finished
                 // ones fold to a line saying how they went. A run of eight
                 // blocks is otherwise a wall you have to scroll past to reach
@@ -593,13 +594,15 @@ function ModelState({ events, going }: { events: TranceEvent[]; going: boolean }
  *  Folded it says who ran, how it went and one line of why — which is what you
  *  want from the seven blocks you are not currently reading. */
 function AgentBlock(
-  { block, sessionId, openByDefault, liveId, liveCommand }:
+  { block, sessionId, stepId, canRerun, openByDefault, liveId, liveCommand }:
   {
-    block: Block; sessionId: string; openByDefault: boolean;
-    liveId: string | null; liveCommand: string | null;
+    block: Block; sessionId: string; stepId: string; canRerun: boolean;
+    openByDefault: boolean; liveId: string | null; liveCommand: string | null;
   },
 ) {
   const [open, setOpen] = useState(openByDefault);
+  const { rerunBlock } = useStepActions(sessionId);
+  const [confirming, setConfirming] = useState(false);
   // What it spent itself on. On the header rather than inside, because the
   // question it answers — "what is it doing so much?" — is asked about a block
   // you have not opened.
@@ -609,32 +612,72 @@ function AgentBlock(
   useEffect(() => { if (openByDefault) setOpen(true); }, [openByDefault]);
 
   const good = /SUCCESS|PASS/.test(block.outcome);
+  // Which attempt this block was, engine-numbered — the handle "rerun from
+  // here" needs. Only loop blocks carry it, and only ones recorded since the
+  // engine started stamping it.
+  const marker = block.events[0];
+  const attempt = marker?.type === "loop_node"
+    ? (marker.payload as { attempt?: number })?.attempt : undefined;
 
   return (
     <div className={cn("rounded-[--radius] border",
                        open ? "border-line" : "border-transparent",
                        block.running && "border-accent/40")}>
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-panel-2"
+      <div className="flex w-full items-center gap-2 hover:bg-panel-2">
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+        >
+          <span className="w-3 shrink-0 text-xs text-muted">{open ? "▾" : "▸"}</span>
+          <span className="shrink-0 text-xs font-medium">{block.label}</span>
+          {block.running
+            ? <Badge tone="accent">running</Badge>
+            : block.outcome
+              ? <Badge tone={good ? "ok" : "err"}>{block.outcome}</Badge>
+              : <Badge>done</Badge>}
+          {!open && block.summary && (
+            <span className="min-w-0 flex-1 truncate text-xs text-muted">{block.summary}</span>
+          )}
+          {tally && (
+            <span className="shrink-0 text-[11px] text-muted/80">{tally}</span>
+          )}
+          <span className="ml-auto shrink-0 text-[11px] text-muted">
+            {timeOf(block.startedAt)}
+          </span>
+        </button>
+        {attempt !== undefined && canRerun && !block.running && (
+          <Button
+            size="sm" variant="ghost" className="mr-1 shrink-0"
+            title={`Rewind to this block and run ${block.agent} again with the same handoff — `
+              + "change its model in Agents first if that is the point"}
+            onClick={() => setConfirming(true)}
+          >↻ rerun</Button>
+        )}
+      </div>
+
+      <Confirm
+        open={confirming}
+        title={`Rerun ${block.agent} from this block?`}
+        confirmLabel="Rewind and rerun"
+        danger
+        busy={rerunBlock.isPending}
+        onClose={() => setConfirming(false)}
+        onConfirm={() => {
+          setConfirming(false);
+          rerunBlock.mutateAsync({ stepId, attempt: attempt! })
+            .then(() => toast.ok(
+              `Rewound to ${block.agent}'s block — the loop continues from there.`))
+            .catch((error) => toast.err(String(error)));
+        }}
       >
-        <span className="w-3 shrink-0 text-xs text-muted">{open ? "▾" : "▸"}</span>
-        <span className="shrink-0 text-xs font-medium">{block.label}</span>
-        {block.running
-          ? <Badge tone="accent">running</Badge>
-          : block.outcome
-            ? <Badge tone={good ? "ok" : "err"}>{block.outcome}</Badge>
-            : <Badge>done</Badge>}
-        {!open && block.summary && (
-          <span className="min-w-0 flex-1 truncate text-xs text-muted">{block.summary}</span>
-        )}
-        {tally && (
-          <span className="shrink-0 text-[11px] text-muted/80">{tally}</span>
-        )}
-        <span className="ml-auto shrink-0 text-[11px] text-muted">
-          {timeOf(block.startedAt)}
-        </span>
-      </button>
+        <p>
+          Commits from this block on are undone as one inverse commit,{" "}
+          <b>{block.agent}</b> runs again with the same handoff it had, and the
+          loop routes on from its outcome — so the new result is still judged.
+          To try a different model, change {block.agent} in Agents before
+          confirming.
+        </p>
+      </Confirm>
 
       {open && (
         <div className="space-y-px px-1 pb-1">

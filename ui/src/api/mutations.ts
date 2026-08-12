@@ -81,6 +81,17 @@ export function useStepActions(sessionId: string) {
       mutationFn: (stepId: string) => api.skipStep(sessionId, stepId),
       onSuccess: settle,
     }),
+    // Rewinds commits as well as re-queuing the step, so files and the commit
+    // log are stale the moment it lands.
+    rerunBlock: useMutation({
+      mutationFn: ({ stepId, attempt }: { stepId: string; attempt: number }) =>
+        api.rerunBlock(sessionId, stepId, attempt),
+      onSuccess: () => {
+        void client.invalidateQueries({ queryKey: keys.session(sessionId) });
+        void client.invalidateQueries({ queryKey: keys.files(sessionId) });
+        void client.invalidateQueries({ queryKey: ["commitLog", sessionId] });
+      },
+    }),
     split: useMutation({
       mutationFn: (stepId: string) => api.splitStep(sessionId, stepId),
       onSuccess: () => client.invalidateQueries({ queryKey: keys.session(sessionId) }),

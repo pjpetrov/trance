@@ -246,6 +246,28 @@ class FlowEngine:
         walked = 0
         on_backup_route = False        # set by a route that asks for the backup
 
+        # "Rerun from this block": re-enter where the user pointed, replaying
+        # the handoff that block received the first time — same input, fresh
+        # visit budgets, and routing continues normally from its outcome.
+        asked, step.resume_node = step.resume_node, ""
+        replay, step.resume_handoff = step.resume_handoff, ""
+        if asked:
+            wanted = loop.node(asked)
+            if wanted is not None:
+                node = wanted
+                if replay:
+                    carry = Handoff(body=replay, chars=len(replay))
+                self._emit("loop_resumed", agent=wanted.role, step_id=step.id, payload={
+                    "loop": loop.name, "node": wanted.id, "role": wanted.role,
+                    "message": (f"Back to {wanted.role}'s block, with the same "
+                                f"handoff it had — the loop continues from there."),
+                })
+            else:
+                self._emit("warning", step_id=step.id, payload={
+                    "message": (f"The block to rerun is no longer in the "
+                                f"{loop.name} loop — starting from the top "
+                                f"instead.")})
+
         while node is not None and walked < loop.max_steps:
             self.session.wait_if_paused()
             if self.session.stopping:
@@ -266,12 +288,13 @@ class FlowEngine:
 
             walked += 1
             step.status = "running"
-            attempt = Attempt(n=len(step.attempts) + 1)
+            attempt = Attempt(n=len(step.attempts) + 1, node=node.id)
             attempt.checkpoint = self._checkpoint(
                 f"before {role.name} in {loop.name} — block {walked}")
             step.attempts.append(attempt)
             self._emit("loop_node", agent=role.name, step_id=step.id, payload={
                 "loop": loop.name, "node": node.id, "role": role.name,
+                "attempt": attempt.n,
                 "visit": walked, "of": loop.max_steps, "focus": node.focus,
                 "message": f"{loop.name}: {role.name} (block {walked} of at most {loop.max_steps})",
             })
@@ -280,6 +303,7 @@ class FlowEngine:
             steering = step.take_steering()
             if carry and carry.body:
                 steering.append(f"What the previous block did:\n{carry.body}")
+                attempt.handoff = carry.body
 
             runs[role.name] = runs.get(role.name, 0) + 1
             # A route's backup applies to the block it points at, and only that

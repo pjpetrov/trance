@@ -2362,8 +2362,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         step = next((s for s in session.flow.steps if s.id == step_id), None)
         if step is None:
             raise HTTPException(404, "no such step")
+        # Attempts already undone — a loop's revert_on_fail, or a block rewind —
+        # are skipped: reverting an already-reverted commit would apply it back.
         shas = list(dict.fromkeys(
-            a.commit for a in step.attempts if a.commit))
+            a.commit for a in step.attempts if a.commit and not a.reverted))
         if not shas:
             raise HTTPException(400, "this step recorded no commits to revert")
 
@@ -2420,6 +2422,66 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         })
         touch(session)
         return {"applied": True, "sha": made.sha}
+
+    @app.post("/api/sessions/{session_id}/steps/{step_id}/blocks/{attempt_n}/rerun")
+    def rerun_block(session_id: str, step_id: str, attempt_n: int):
+        """Go back to one block of a loop and run it again from there.
+
+        For when the tester described the fault precisely and the fixer
+        fumbled it: change the fixer's model in Agents if you like, then rerun
+        its block — it gets the very handoff it got the first time, on the
+        very code the previous block judged. Commits from that block on are
+        undone first as one inverse commit, and routing continues normally
+        afterwards, so the fix still has to face its judge.
+        """
+        session = _need(store, session_id)
+        if session.status == "running":
+            raise HTTPException(409, "the run is writing right now — stop it first")
+        step = session.flow.find(step_id)
+        if step is None:
+            raise HTTPException(404, "no such step")
+        if not step.runs_a_loop:
+            raise HTTPException(400, "only loop steps have blocks — use rerun for this step")
+        attempt = next((a for a in step.attempts if a.n == attempt_n), None)
+        if attempt is None or not attempt.node:
+            raise HTTPException(404, (
+                "this block was not recorded with its place in the loop — "
+                "blocks run before this trance version cannot be rerun"))
+
+        later = [a for a in step.attempts if a.n >= attempt_n]
+        shas = list(dict.fromkeys(
+            a.commit for a in later if a.commit and not a.reverted))
+        if shas:
+            project = _project_of(session)
+            made = vcs.revert_commits(
+                project, shas, f"user: rewound to block {attempt_n} to rerun it")
+            if not made:
+                raise HTTPException(409, (
+                    f"could not rewind to that block — nothing was changed. "
+                    f"{made.detail[:400]}"))
+            for undone in later:
+                if undone.commit:
+                    undone.reverted = True
+            bus.emit("git", session_id, agent="you", step_id=step_id, payload={
+                "action": "revert", "ok": True, "sha": made.sha,
+                "message": (f"Rewound {len(shas)} commit(s) as {made.sha[:8]} — the "
+                            f"code is back to what this block started from."),
+            })
+
+        step.resume_node = attempt.node
+        step.resume_handoff = attempt.handoff
+        step.status = "pending"
+        was_paused = session.paused
+        session.resume()
+        bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
+        touch(session)
+        restarted = ensure_running(session)
+        if restarted:
+            bus.emit("run_started", session_id, payload={
+                "reason": f"rerun of a {step.loop} block", "steps": 1,
+                "message": f"Rerunning a {step.loop} block: {(step.task or '')[:60]}"})
+        return {**step.to_dict(), "restarted": restarted, "rewound": shas,
+                "resumed": was_paused, "status_now": session.status}
 
     @app.post("/api/sessions/{session_id}/resume-pending")
     def resume_pending(session_id: str):

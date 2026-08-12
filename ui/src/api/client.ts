@@ -183,6 +183,10 @@ export const api = {
       { method: "POST", body: body ?? {} }),
   skipStep: (sid: string, stepId: string) =>
     request<Session>(`/api/sessions/${id(sid)}/steps/${id(stepId)}/skip`, { method: "POST" }),
+  rerunBlock: (sid: string, stepId: string, attempt: number) =>
+    request<{ restarted: boolean; rewound: string[] }>(
+      `/api/sessions/${id(sid)}/steps/${id(stepId)}/blocks/${attempt}/rerun`,
+      { method: "POST" }),
 
   approvals: (sid: string) =>
     request<{ pending: Approval[]; enabled: boolean; timeout_s: number }>(

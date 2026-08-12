@@ -10996,3 +10996,169 @@ def test_a_seeing_model_gets_the_screenshot_a_blind_one_gets_told(tmp_path, monk
     told = seen["first"]
     assert isinstance(told, str)
     assert "cannot be shown images" in told and "chat/bug.png" in told
+
+
+# ==================================== rerunning one block of a loop
+
+def test_a_block_records_its_node_and_the_handoff_it_received(tmp_path, monkeypatch):
+    """Node and handoff together are the address of a block: enough to go
+    back later and run it again with the same input."""
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    step = Step(role="", loop="test-and-fix", task="t")
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        failing = kw["role"].name == "tester" and order.count("tester") == 1
+        return _Turn(None,
+                     "the ball passes through the paddle" if failing else "x",
+                     outcome=("FAILED", "broken") if failing else ("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert [a.node for a in step.attempts] == ["n_test", "n_fix", "n_test"]
+    assert step.attempts[0].handoff == ""                # the entry got no carry
+    assert "ball passes through" in step.attempts[1].handoff   # the fixer's input
+
+
+def test_rerun_from_a_block_replays_the_handoff_and_routes_on(tmp_path, monkeypatch):
+    """The user's move: the fixer fumbled, so change its model and run its
+    block again — same input, and the tester still judges the result."""
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    step = Step(role="", loop="test-and-fix", task="t")
+    step.resume_node = "n_fix"
+    step.resume_handoff = "the tester saw: ball passes through the paddle"
+    seen, order = {}, []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        seen.setdefault(kw["role"].name, list(kw.get("steering") or []))
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert order == ["backend", "tester"]     # in at the fixer, judged after
+    assert any("ball passes through" in note for note in seen["backend"])
+    assert step.status == "done"
+    assert step.resume_node == "" and step.resume_handoff == ""   # spent, not sticky
+
+
+def test_rerunning_a_block_the_loop_no_longer_has_starts_from_the_top(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    step = Step(role="", loop="test-and-fix", task="t")
+    step.resume_node = "n_gone"
+    order = []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert order[0] == "tester"
+    warned = [e for e in engine.bus.history(engine.session.id) if e.type == "warning"]
+    assert any("no longer in the" in e.payload["message"] for e in warned)
+
+
+def _block_rerun_app(tmp_path, monkeypatch):
+    import pathlib
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    class FakeEngine:
+        def __init__(self, session, config, bus, on_change=None, **kwargs):
+            self.session = session
+
+        def start(self):
+            self.session.status = "running"
+
+    monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    made = client.post("/api/sessions", json={"name": "game"}).json()
+    return client, app, made["id"], pathlib.Path(made["project_dir"])
+
+
+def test_one_block_of_a_loop_can_be_rerun_from_where_it_stood(tmp_path, monkeypatch):
+    """Rewinding to a block undoes its commits and everything after as one
+    inverse commit, then queues the step to re-enter the loop right there
+    with the handoff the block had."""
+    from trance import vcs
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _block_rerun_app(tmp_path, monkeypatch)
+    project.mkdir(parents=True, exist_ok=True)
+    vcs.ensure_repo(project)
+    (project / "game.js").write_text("v0\n", encoding="utf8")
+    vcs.commit_all(project, "start")
+    (project / "game.js").write_text("the fix, fumbled\n", encoding="utf8")
+    fumbled = vcs.commit_all(project, "backend: fix [SUCCESS]")
+    (project / "game.js").write_text("judged, still broken\n", encoding="utf8")
+    judged = vcs.commit_all(project, "tester: check [FAILED]")
+
+    session = app.state.store.get(sid)
+    step = Step(role="", loop="test-and-fix", task="t")
+    step.attempts = [
+        Attempt(n=1, node="n_test"),
+        Attempt(n=2, node="n_fix", commit=fumbled.sha,
+                handoff="the tester saw: ball passes through"),
+        Attempt(n=3, node="n_test", commit=judged.sha),
+    ]
+    session.flow = Flow(steps=[step])
+
+    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/2/rerun")
+    assert out.status_code == 200
+    assert out.json()["rewound"] == [fumbled.sha, judged.sha]
+    assert (project / "game.js").read_text() == "v0\n"     # back to what block 2 saw
+    assert step.resume_node == "n_fix"
+    assert "ball passes through" in step.resume_handoff
+    subjects = [c["subject"] for c in vcs.log(project)]
+    assert any("rewound to block 2" in s for s in subjects)
+    assert any("fix [SUCCESS]" in s for s in subjects)      # the work stays in history
+
+    # Rewinding again must not double-revert — that would apply the fix back.
+    step.status = "failed"
+    session.status = "idle"
+    again = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/2/rerun")
+    assert again.status_code == 200
+    assert again.json()["rewound"] == []
+    assert (project / "game.js").read_text() == "v0\n"
+
+
+def test_rerunning_a_block_refuses_the_wrong_targets(tmp_path, monkeypatch):
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _block_rerun_app(tmp_path, monkeypatch)
+    project.mkdir(parents=True, exist_ok=True)
+    session = app.state.store.get(sid)
+    plain = Step(role="backend", task="t")
+    plain.attempts = [Attempt(n=1)]
+    looped = Step(role="", loop="test-and-fix", task="t")
+    looped.attempts = [Attempt(n=1)]                # recorded before nodes were kept
+    session.flow = Flow(steps=[plain, looped])
+
+    not_a_loop = client.post(f"/api/sessions/{sid}/steps/{plain.id}/blocks/1/rerun")
+    assert not_a_loop.status_code == 400
+    assert "only loop steps" in not_a_loop.json()["detail"]
+
+    unaddressed = client.post(f"/api/sessions/{sid}/steps/{looped.id}/blocks/1/rerun")
+    assert unaddressed.status_code == 404
+
+    session.status = "running"
+    busy = client.post(f"/api/sessions/{sid}/steps/{looped.id}/blocks/1/rerun")
+    assert busy.status_code == 409

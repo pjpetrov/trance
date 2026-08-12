@@ -61,6 +61,10 @@ class Attempt:
     #: The step's own outcome, as reported by the agent that did the work.
     outcome: str = ""
     outcome_reason: str = ""
+    #: For a loop block: which node it was, and the handoff it received —
+    #: together, enough to go back and run the block again with the same input.
+    node: str = ""
+    handoff: str = ""
 
     @property
     def failed_gate(self) -> str | None:
@@ -153,6 +157,10 @@ class Step:
     runs: int = 0
     #: User steering notes waiting to reach this step's agent.
     steering: list[str] = field(default_factory=list)
+    #: Set by "rerun from this block": where the next execution of this loop
+    #: step re-enters, and the handoff to replay there. Consumed on entry.
+    resume_node: str = ""
+    resume_handoff: str = ""
 
     def take_steering(self) -> list[str]:
         """Hand over every waiting note, exactly once."""
