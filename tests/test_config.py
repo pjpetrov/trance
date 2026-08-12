@@ -33,3 +33,24 @@ def test_output_room_is_capped_on_a_huge_window():
     assert default_output_tokens(1_000_000, 4096) == MAX_OUTPUT_TOKENS
     assert default_output_tokens(200_000, 4096) == 25_000
     assert default_output_tokens(8_000, 4096) == 4096      # never below the floor
+
+
+def test_a_top_level_key_below_a_section_header_still_lands(tmp_path):
+    """TOML makes everything after a [section] header a key of that section —
+    so `system_dir` appended at the bottom of the file landed inside
+    [curator] and silently did nothing, while the server provisioned every
+    new project from the legacy state it was supposed to leave behind."""
+    from trance.config import Config
+
+    path = tmp_path / "trance.toml"
+    path.write_text(
+        "[curator]\n"
+        "max_hops = 2\n"
+        "runs_dir = \"elsewhere\"\n"
+        "system_dir = \"~/.trance-test\"\n",
+        encoding="utf8")
+
+    cfg = Config.load(path)
+    assert cfg.system_dir == "~/.trance-test"
+    assert cfg.runs_dir == "elsewhere"
+    assert cfg.curator.max_hops == 2          # the section's own keys stay its

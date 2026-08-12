@@ -231,6 +231,20 @@ class Config:
         _apply(cfg.curator, data.get("curator", {}))
         _apply(cfg, {k: v for k, v in data.items()
                      if k not in ("worker", "orchestrator", "curator", "providers")})
+        # A top-level key written below a [section] header belongs to that
+        # section, says TOML — so `system_dir` added at the bottom of the file
+        # landed inside [curator] and silently did nothing. A key that is not
+        # the section's but is Config's own is applied where it was meant.
+        top_level = {f.name for f in fields(cls)}
+        for section, holder in (("worker", cfg.worker),
+                                ("orchestrator", cfg.orchestrator),
+                                ("curator", cfg.curator)):
+            held = data.get(section) or {}
+            section_fields = {f.name for f in fields(holder)}
+            strays = {k: v for k, v in held.items()
+                      if k in top_level and k not in section_fields}
+            if strays:
+                _apply(cfg, strays)
 
         # A bare TRANCE_BASE_URL/TRANCE_MODEL retargets the default provider —
         # the common "just point it somewhere else" case.

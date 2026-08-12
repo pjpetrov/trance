@@ -14,6 +14,13 @@
 # against. Set it too high and the endpoint 500s mid-run; too low and you waste
 # capacity. For llama-server it is the per-slot n_ctx (check /props).
 
+runs_dir = "runs"
+# Machine-wide state: models, settings, the Default scope new projects are
+# provisioned from, the usage ledger. One set per machine, whatever the
+# workspace.
+system_dir = "~/.trance"
+max_recurate_rounds = 2
+
 [providers.llama]
 kind = "llamacpp"
 label = "llama-server (local)"
@@ -63,9 +70,3 @@ token_budget = 8000
 include_callers = false
 skip_ambiguous = false
 
-max_recurate_rounds = 2
-runs_dir = "runs"
-# Machine-wide state: models, settings, the Default scope new projects are
-# provisioned from, the usage ledger. One set per machine, whatever the
-# workspace.
-system_dir = "~/.trance"
