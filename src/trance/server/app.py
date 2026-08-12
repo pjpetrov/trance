@@ -77,25 +77,49 @@ def engine_alive(session) -> bool:
     return bool(thread is not None and thread.is_alive())
 
 
+def _adopt_runs_state(state_dir: Path, runs_dir: Path) -> None:
+    """Copy the machine-global files into the workspace's own .trance, once.
+
+    Models, the Default scope and the usage ledger used to live in runs/ —
+    one set for the whole machine, which is why switching workspaces changed
+    the session list and nothing else. A workspace with no state of its own
+    inherits what the machine had, so the move is invisible on the setup that
+    already exists. Copies rather than moves: a second workspace adopting
+    later must find the legacy files still there.
+    """
+    if not runs_dir.is_dir() or state_dir.resolve() == runs_dir.resolve():
+        return
+    for name in ("providers.json", "agents.json", "loops.json",
+                 "commands.json", "settings.json", "usage.json"):
+        source, target = runs_dir / name, state_dir / name
+        if source.exists() and not target.exists():
+            state_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+
 def create_app(config: Config | None = None, sessions_dir: Path | None = None) -> FastAPI:
     config = config or Config.load()
+    # Everything the workspace is — its models, its Default scope, its usage
+    # ledger — lives in the workspace's own .trance, so switching workspaces
+    # switches all of it. Without a configured workspace the runs dir keeps
+    # its old double duty.
+    state_dir = (config.workspace_root / STORE_DIR if config.workspace
+                 else Path(config.runs_dir))
+    _adopt_runs_state(state_dir, Path(config.runs_dir))
     store = SessionStore(sessions_dir or Path(config.runs_dir) / "sessions",
                          workspace=config.workspace_root)
     # trance.toml seeds the registry once; after that the JSON store is the
     # source of truth so provider edits made in the UI survive a restart.
-    providers = ProviderStore(Path(config.runs_dir) / "providers.json", seed=config.providers)
+    providers = ProviderStore(state_dir / "providers.json", seed=config.providers)
     providers.seed_presets_from_providers()  # never show an empty model picker
-    # The workspace-wide files. They are no longer what a run reads — each
-    # project keeps its own under .trance/ — but they are what a project with
-    # none yet is seeded from, so the setup you already have carries forward.
-    roles = RoleStore(Path(config.runs_dir) / "agents.json")
-    commands = CommandStore(Path(config.runs_dir) / "commands.json")
-    loops = LoopStore(Path(config.runs_dir) / "loops.json")
-    workspace = Workspace(defaults=Path(config.runs_dir))
     # The workspace-wide files, addressable so they can be edited. Every new
-    # project is a copy of these, and until now the only way to change what the
-    # next project starts from was a text editor.
-    defaults_stores = DefaultStores(Path(config.runs_dir))
+    # project is a copy of these; they are not what a run reads — each project
+    # keeps its own under .trance/.
+    defaults_stores = DefaultStores(state_dir)
+    roles = defaults_stores.roles
+    commands = defaults_stores.commands
+    loops = defaults_stores.loops
+    workspace = Workspace(defaults=state_dir)
     set_command_policy(commands.policy)
     set_command_lists(commands.lists)
 
@@ -175,7 +199,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     #: What each model has been asked to do — this run, and in total. Counted
     #: from the bus so the orchestrator's calls count too, not only the agents'.
-    ledger = UsageLedger(Path(config.runs_dir) / "usage.json")
+    ledger = UsageLedger(state_dir / "usage.json")
     bus.subscribe_sync(ledger.on_event)
 
     def history_for(session_id: str):
@@ -2533,8 +2557,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if session.flow.next_pending() is None:
             raise HTTPException(409, "every step is finished — rerun one first")
         session.error = None
+        # The project's own loops, not the workspace defaults — the same store
+        # ensure_running hands over, so both start paths run the same wiring.
         FlowEngine(session, config, bus, on_change=lambda: touch(session),
-                   approve=broker_for(session).ask, loops=loops).start()
+                   approve=broker_for(session).ask,
+                   loops=stores_of(session).loops).start()
         return session.to_dict()
 
     @app.get("/api/sessions/{session_id}/approvals")

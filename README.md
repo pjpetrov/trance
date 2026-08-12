@@ -432,16 +432,17 @@ simply served again on the same port.
 A project keeps its own configuration in `<repo>/.trance/` — `agents.json`,
 `loops.json`, `commands.json`, `settings.json` — so copying that folder copies
 the way the project is built, and tuning an agent for one project leaves every
-other alone. The **Default** scope (what new projects start from) lives in
-`runs/` and overlays trance's shipped definitions.
+other alone. Sessions live there too, under `.trance/sessions/`: the chat, the
+plan, the run trace, all travelling with the project.
 
-Models are the exception and stay in `runs/providers.json`. They carry API
-keys, and a folder you copy, zip and share is the last place for one; a
-project names a model and the trance it lands in resolves that name against
-its own.
+The workspace keeps everything else in `<workspace>/.trance/`: the models
+(`providers.json`, with their API keys — deliberately never copied into a
+project, which is a folder you zip and share), the **Default** scope new
+projects start from (an overlay on trance's shipped definitions), and the
+usage ledger. Switching workspaces switches all of it; a workspace with no
+state of its own adopts what the machine's legacy `runs/` had, once.
 
-The graph index is `<repo>/.trance/graph.db`; sessions and their traces live
-under `runs/`.
+The graph index is `<repo>/.trance/graph.db`.
 
 ## Tests
 
