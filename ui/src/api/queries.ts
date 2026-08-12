@@ -77,7 +77,11 @@ export function useAgents(sessionId: string | null) {
 export function usePresets() {
   return useQuery({
     queryKey: keys.presets,
-    queryFn: async () => (await api.presets()).presets,
+    queryFn: async () => {
+      const out = await api.presets();
+      // The default rides on each row, so a checkbox can read and edit it.
+      return out.presets.map((m) => ({ ...m, default: m.name === out.default }));
+    },
     staleTime: CONFIG_STALE,
   });
 }

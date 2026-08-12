@@ -132,6 +132,9 @@ class Config:
     #: Empty = beside the runs dir, where this state always was; point it at
     #: ~/.trance to give it a fixed home.
     system_dir: str = ""
+    #: The preset an agent falls back to when its own names nothing that
+    #: exists. Kept in the model registry; published here beside `presets`.
+    default_preset: str = ""
     #: Root for new projects. Empty means "the directory trance was started in".
     workspace: str = ""
 
@@ -164,10 +167,12 @@ class Config:
         """
         chosen_preset = self.presets.get(preset or "") if preset else None
         # An agent naming no model, or one since deleted, gets a defined one
-        # rather than an invented endpoint. There is no "default model": with
-        # providers gone the fallback was a localhost nobody had configured.
+        # rather than an invented endpoint — the *chosen* default when there
+        # is one, because "first in the file" once meant a deleted preset
+        # could silently reroute an agent to whatever happened to sort first.
         if chosen_preset is None and self.presets:
-            chosen_preset = next(iter(self.presets.values()))
+            chosen_preset = (self.presets.get(self.default_preset)
+                             or next(iter(self.presets.values())))
         if chosen_preset is not None:
             provider = chosen_preset.provider
             model = model or chosen_preset.model

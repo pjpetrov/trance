@@ -156,6 +156,22 @@ export function ModelsEditor() {
               </Field>
             </div>
 
+            <label className="flex items-center gap-2 text-sm"
+                   title="The model an agent falls back to when its own is deleted or missing — instead of whichever model happens to be first in the file">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.default) || (presets.data?.length ?? 0) === 1}
+                disabled={(presets.data?.length ?? 0) <= 1}
+                onChange={(e) => library.edit({ default: e.target.checked })}
+              />
+              <span>Default model</span>
+              <span className="text-xs text-muted">
+                {(presets.data?.length ?? 0) <= 1
+                  ? "— the only model, so obviously the fallback"
+                  : "— the fallback for any agent whose own model is missing"}
+              </span>
+            </label>
+
             <Field label="API key"
                    hint={draft.has_key ? "A key is stored. Leave blank to keep it."
                                        : "No key stored."}>

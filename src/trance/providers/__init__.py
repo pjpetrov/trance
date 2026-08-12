@@ -61,6 +61,10 @@ class ProviderStore:
         self._presets: dict[str, ModelPreset] = {}
         #: Names the user deleted, so nothing recreates them.
         self._dismissed: set[str] = set()
+        #: The model an agent falls back to when its own preset is missing.
+        #: Explicit, because "the first one in the file" once meant a deleted
+        #: preset could silently reroute a chatty agent to an expensive model.
+        self._default_preset: str = ""
 
         if self.path.exists():
             self._load()
@@ -94,6 +98,7 @@ class ProviderStore:
                 continue
             self._presets[preset.name] = preset
         self._dismissed = {str(n) for n in data.get("dismissed", []) if n}
+        self._default_preset = str(data.get("default_preset") or "")
 
     def _save(self) -> None:
         # redact=False, or the file gets "***" where the key was and the next
@@ -106,6 +111,7 @@ class ProviderStore:
             #: was thrown away — a model derived from a provider, or from
             #: trance.toml, otherwise reappears on every restart.
             "dismissed": sorted(self._dismissed),
+            "default_preset": self._default_preset,
         }
         for entry in payload["providers"] + payload["presets"]:
             entry.pop("has_key", None)
@@ -152,6 +158,23 @@ class ProviderStore:
     def all_presets(self) -> list[ModelPreset]:
         return sorted(self._presets.values(), key=lambda m: m.name)
 
+    def default_preset_name(self) -> str:
+        """The fallback model, by name. A lone preset is obviously it; an
+        explicit choice wins once there are several; else nobody is."""
+        if self._default_preset and self._default_preset in self._presets:
+            return self._default_preset
+        if len(self._presets) == 1:
+            return next(iter(self._presets))
+        return ""
+
+    def set_default_preset(self, name: str) -> bool:
+        with self._lock:
+            if name and name not in self._presets:
+                return False
+            self._default_preset = name
+            self._save()
+        return True
+
     def preset(self, name: str | None) -> ModelPreset | None:
         return self._presets.get(name) if name else None
 
@@ -172,6 +195,8 @@ class ProviderStore:
                 return None
             preset.name = new
             self._presets[new] = preset
+            if self._default_preset == old:
+                self._default_preset = new
             self._save()
         return preset
 
@@ -182,6 +207,8 @@ class ProviderStore:
             # seeding would recreate has to stick.
             self._dismissed.add(name)
             self._providers.pop(name, None)
+            if self._default_preset == name:
+                self._default_preset = ""
             self._save()
         return removed
 

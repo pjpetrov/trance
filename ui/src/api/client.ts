@@ -109,7 +109,7 @@ export const api = {
       { method: "POST", body }),
 
   // ------------------------------------------------------------- models
-  presets: () => request<{ presets: ModelPreset[] }>("/api/presets"),
+  presets: () => request<{ presets: ModelPreset[]; default: string }>("/api/presets"),
   savePreset: (name: string, body: Partial<ModelPreset>) =>
     request<ModelPreset>(`/api/presets/${id(name)}`, { method: "PUT", body }),
   deletePreset: (name: string, force = false) =>

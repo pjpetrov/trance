@@ -168,6 +168,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         set_command_lists(held.lists)
     config.providers = {p.name: p for p in providers.all()}
     config.presets = {m.name: m for m in providers.all_presets()}
+    config.default_preset = providers.default_preset_name()
     bus = EventBus()
 
     #: The trace on disk, one log per session. Without it a restart leaves a
@@ -458,6 +459,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         """Re-publish the registry into the live config."""
         config.providers = {p.name: p for p in providers.all()}
         config.presets = {m.name: m for m in providers.all_presets()}
+        config.default_preset = providers.default_preset_name()
 
     def _follow_orchestrator(role) -> None:
         """Keep the orchestrator's model where every other agent's model is.
@@ -781,7 +783,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     def list_presets():
         lifetime = ledger.lifetime()
         return {"presets": [{**m.to_dict(), "spend": lifetime.get(m.name)}
-                            for m in providers.all_presets()]}
+                            for m in providers.all_presets()],
+                "default": providers.default_preset_name()}
 
     @app.put("/api/presets/{name}")
     def upsert_preset(name: str, body: dict):
@@ -817,8 +820,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 f"a {window}-token window for context. Keep it under {window // 2}."))
         saved = providers.upsert_preset(ModelPreset.from_dict(
             {**body, "name": name, "model": model, "context_window": window}))
+        # The checkbox: true makes this the fallback model, false steps down.
+        if body.get("default") is True:
+            providers.set_default_preset(name)
+        elif body.get("default") is False and providers.default_preset_name() == name:
+            providers.set_default_preset("")
         _sync()
-        return saved.to_dict()
+        return {**saved.to_dict(),
+                "default": providers.default_preset_name() == name}
 
     @app.post("/api/presets/{name}/rename")
     def rename_preset(name: str, body: dict):
@@ -862,10 +871,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             in_use = sorted({f"{r.name} ({s.name})" for s in store.all()
                              for r in s.team if r.preset == name})
             if in_use:
+                fallback = providers.default_preset_name()
+                falls_to = (f"fall back to {fallback!r}" if fallback and fallback != name
+                            else "fall back to whichever model is marked default "
+                                 "— mark one in Models")
                 raise HTTPException(409, (
                     f"model {name!r} is assigned to: {', '.join(in_use[:6])}. "
-                    f"Delete it anyway and those agents fall back to the "
-                    f"default worker model."))
+                    f"Delete it anyway and those agents {falls_to}."))
         if not providers.delete_preset(name):
             raise HTTPException(404, "no such model")
         _sync()

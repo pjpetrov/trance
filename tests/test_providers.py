@@ -941,3 +941,68 @@ def test_an_agents_backup_model_is_saved(tmp_path):
 
     assert saved["backup_preset"] == "clever" and saved["backup_after"] == 2
     assert saved["system_prompt"]                      # the partial update kept the rest
+
+
+# ---------------------------------------------- the default model is a choice
+
+def test_the_default_model_is_chosen_not_first_in_the_file(tmp_path):
+    """"First preset in the file" as the fallback meant a deleted preset could
+    silently reroute a chatty agent to whatever happened to sort first — on a
+    machine where that is an expensive hosted model, real money before anyone
+    reads a console line."""
+    from trance.providers import ProviderStore
+    from trance.providers.base import ModelPreset
+
+    store = ProviderStore(tmp_path / "providers.json")
+    store.upsert_preset(ModelPreset(name="a-costly", kind="anthropic", model="opus"))
+    store.upsert_preset(ModelPreset(name="local", kind="llamacpp", model="qwen"))
+    assert store.default_preset_name() == ""            # several, none chosen
+
+    assert store.set_default_preset("local") is True
+    assert store.default_preset_name() == "local"
+    again = ProviderStore(tmp_path / "providers.json")   # survives a restart
+    assert again.default_preset_name() == "local"
+
+    assert store.set_default_preset("no-such") is False
+
+
+def test_a_lone_model_is_obviously_the_default(tmp_path):
+    from trance.providers import ProviderStore
+    from trance.providers.base import ModelPreset
+
+    store = ProviderStore(tmp_path / "providers.json")
+    store.upsert_preset(ModelPreset(name="only", kind="llamacpp", model="qwen"))
+    assert store.default_preset_name() == "only"
+
+
+def test_resolve_falls_back_to_the_chosen_default(tmp_path):
+    from trance.config import Config
+    from trance.providers.base import ModelPreset
+
+    cfg = Config.load(tmp_path / "none.toml")
+    cfg.presets = {
+        "a-costly": ModelPreset(name="a-costly", kind="anthropic", model="opus"),
+        "local": ModelPreset(name="local", kind="llamacpp", model="qwen"),
+    }
+    cfg.default_preset = "local"
+    resolved = cfg.resolve(cfg.worker, preset="deleted-one")
+    assert resolved.model == "qwen"                     # the choice, not the sort
+
+    cfg.default_preset = ""
+    unguided = cfg.resolve(cfg.worker, preset="deleted-one")
+    assert unguided.model == "opus"                     # old behaviour, unmarked
+
+
+def test_deleting_the_default_clears_it_and_renaming_follows_it(tmp_path):
+    from trance.providers import ProviderStore
+    from trance.providers.base import ModelPreset
+
+    store = ProviderStore(tmp_path / "providers.json")
+    store.upsert_preset(ModelPreset(name="local", kind="llamacpp", model="qwen"))
+    store.upsert_preset(ModelPreset(name="other", kind="llamacpp", model="phi"))
+    store.set_default_preset("local")
+
+    store.rename_preset("local", "local-qwen")
+    assert store.default_preset_name() == "local-qwen"
+    store.delete_preset("local-qwen")
+    assert store.default_preset_name() == "other"       # the lone survivor

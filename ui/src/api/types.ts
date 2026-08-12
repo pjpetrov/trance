@@ -85,6 +85,8 @@ export interface ModelPreset {
   description?: string;
   has_key: boolean;
   self_contained: boolean;
+  /** The fallback model for any agent whose own preset is missing. */
+  default?: boolean;
   spend?: Spend | null;
 }
 
