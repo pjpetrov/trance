@@ -193,9 +193,9 @@ immediately — a model that is down does not recover from being asked again.
 the agent is made to stop and report. Running out mid-way is how a step ends
 half-written with a summary of what it meant to do, so the shipped numbers come
 from measuring real runs rather than from intuition: the tester ran out on every
-attempt, backend on 83% and frontend on half, while devops never exceeded seven
-rounds. So tester, backend and frontend get 24, the reviewer 20, and everything
-else the default twelve. Override it per agent.
+attempt, backend on 83% of attempts and frontend on half. So tester, backend and
+frontend get 24, the reviewer 20, and everything else the default twelve.
+Override it per agent.
 
 Toolsets: `files` (read/write within the remit), `graph` (symbol lookups),
 `commands` (allowlisted programs), `inspect` (file existence and size only — for
@@ -209,8 +209,10 @@ tests" lives here, not ticked onto twenty steps by hand.
 
 Ships with backend, frontend, fullstack (both remits — the visual loop's
 repairer, because a symptom on screen does not say which side its cause is
-on), tester, devops, reviewer, planner (whose product is documents: docs/**
-and *.md), factchecker, regression and the orchestrator. All editable; new
+on), tester, reviewer, planner (whose product is documents: docs/** and
+*.md), factchecker, regression and the orchestrator. The coders own their
+manifests and build config too — scaffolding is part of the first coding
+step, not a separate agent's. All editable; new
 ones can be added — a new agent starts from a template with the parts to
 replace marked «like this», and one button drafts a first prompt from the
 name you gave it.

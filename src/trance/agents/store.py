@@ -91,6 +91,12 @@ class RoleStore:
                         setattr(role, field, getattr(builtin, field))
             if "definition_edited" in item:
                 self._definition_edited[role.name] = bool(item["definition_edited"])
+            if builtin is None and self._definition_edited.get(role.name) is False:
+                # A retired built-in the user never made theirs. Unedited meant
+                # the definition was trance's to improve — and retiring it is
+                # the last improvement. An edited copy is the user's and stays.
+                self._definition_edited.pop(role.name, None)
+                continue
             if (self.overlay and builtin is not None
                     and self._definition_edited.get(role.name) is False):
                 # Unedited here means: the definition is trance's to improve.
@@ -219,7 +225,7 @@ DEFAULT_LIST = "default"
 class CommandStore:
     """Named command allowlists, persisted so UI edits survive a restart.
 
-    One global list was the wrong shape: a tester needs npx and jest, devops
+    One global list was the wrong shape: a tester needs npx and jest, a coder
     needs npm and docker, and a reviewer needs neither. Naming the lists lets an
     agent point at the one that fits instead of everyone sharing the union of
     everything anyone ever needed.

@@ -1034,8 +1034,8 @@ class FlowEngine:
     def _owner_of(self, path: str) -> str | None:
         """Which agent may write this path — on the team, or in the library.
 
-        Looking only at the team is how "nobody owns .gitignore" became
-        "unassigned" when the answer was "add devops to the team".
+        Looking only at the team is how "nobody owns package.json" became
+        "unassigned" when the answer was "add the frontend to the team".
         """
         on_team = next((r.name for r in self.session.team if r.may_write(path)), None)
         if on_team:

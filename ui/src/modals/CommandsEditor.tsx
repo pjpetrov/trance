@@ -1,8 +1,8 @@
 /** The allowlists: which programs an agent may run.
  *
  * Named lists rather than one global set, because a tester needs npx and jest,
- * devops needs npm and docker, and a reviewer needs neither — one list meant
- * everyone shared the union of everything anyone ever needed.
+ * a coder needs npm, and a reviewer needs neither — one list meant everyone
+ * shared the union of everything anyone ever needed.
  */
 
 import { useState } from "react";

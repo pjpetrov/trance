@@ -2722,25 +2722,34 @@ def test_the_plan_is_written_where_a_person_can_read_it(tmp_path):
     assert not (tmp_path / "README.md").exists()
 
 
-# --------------------------- files that belong to nobody: the devops agent
+# ------------------------- the coders own their manifests and build config
 
 def test_the_scaffolding_files_have_an_owner():
-    """Regression: a step asked backend to create package.json and .gitignore.
-    Neither was in any agent's remit, so every write was refused and the run
-    halted after burning its loop limit."""
-    devops = BUILTIN_ROLES["devops"]
-    for path in ["package.json", ".gitignore", "README.md", "Dockerfile",
-                 "tsconfig.json", "requirements.txt", ".github/workflows/ci.yml"]:
-        assert devops.may_write(path), path
+    """Regression, twice over. First a step asked backend to create
+    package.json and nobody's remit allowed it. Then the fix — a devops role
+    owning all repo files — meant the coder that discovered a missing
+    dependency was not allowed to declare it: the manifest failed in its step
+    and only devops could touch the file. The coders own their own
+    scaffolding now, because the one who adds the import is the one who knows
+    the dependency."""
+    for owner, path in [("frontend", "package.json"), ("frontend", "tsconfig.json"),
+                        ("frontend", "vite.config.ts"), ("frontend", "index.html"),
+                        ("frontend", "package-lock.json"), ("frontend", ".gitignore"),
+                        ("backend", "package.json"), ("backend", "requirements.txt"),
+                        ("backend", "pyproject.toml"), ("backend", ".gitignore"),
+                        ("fullstack", "package.json"), ("fullstack", "vite.config.ts"),
+                        ("planner", "README.md")]:
+        assert BUILTIN_ROLES[owner].may_write(path), (owner, path)
 
 
-def test_devops_does_not_become_a_way_around_every_remit():
-    """A role that may write anything is a bypass the orchestrator will reach
-    for the moment a step is awkward."""
-    devops = BUILTIN_ROLES["devops"]
-    for path in ["server/routes/data.js", "src/App.tsx", "services/binance.js",
-                 "tests/test_api.py"]:
-        assert not devops.may_write(path), path
+def test_devops_is_gone_and_the_widening_stayed_narrow():
+    """The role is retired everywhere, and folding its files into the coders
+    must not have handed anyone the other side's code."""
+    assert "devops" not in BUILTIN_ROLES
+    assert not BUILTIN_ROLES["frontend"].may_write("server/app.py")
+    assert not BUILTIN_ROLES["backend"].may_write("src/App.tsx")
+    for verifier in ("factchecker", "reviewer", "regression"):
+        assert not BUILTIN_ROLES[verifier].may_write("package.json")
 
 
 def test_the_orchestrator_is_told_what_each_agent_may_write(tmp_path, monkeypatch):
@@ -2763,9 +2772,8 @@ def test_the_orchestrator_is_told_what_each_agent_may_write(tmp_path, monkeypatc
                       project_dir=tmp_path, config=ModelConfig(), bus=EventBus(),
                       session_id="s")
 
-    assert "may write: package.json" in captured["system"]
+    assert "package.json" in captured["system"]
     assert "REFUSED by the system" in captured["system"]
-    assert "devops" in captured["system"]
 
 
 def test_a_step_refused_by_the_remit_says_who_owns_the_files(tmp_path, monkeypatch):
@@ -2773,12 +2781,12 @@ def test_a_step_refused_by_the_remit_says_who_owns_the_files(tmp_path, monkeypat
     rather than failing — no number of loops makes them land."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "devops"])
-    step = Step(role="backend", task="create package.json and .gitignore", max_loops=2)
+    engine = _engine(tmp_path, ["tester", "frontend"])
+    step = Step(role="tester", task="write the game and its tests", max_loops=2)
 
     def fake(**kw):
         turn = _Turn(None, "could not write them", outcome=("FAILED", "refused"))
-        turn.remit_violations = ["package.json", ".gitignore"]
+        turn.remit_violations = ["src/game.js", "package.json"]
         return turn
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
@@ -2787,26 +2795,30 @@ def test_a_step_refused_by_the_remit_says_who_owns_the_files(tmp_path, monkeypat
     assert step.status == "failed"
     halted = next(e for e in engine.bus.history(engine.session.id)
                   if e.type == "run_halted")
-    assert "package.json" in halted.payload["message"]
-    assert "devops owns" in halted.payload["hint"]
+    assert "src/game.js" in halted.payload["message"]
+    assert "frontend owns" in halted.payload["hint"]
     assert "Looping cannot fix this" in halted.payload["hint"]
 
 
 def test_the_owner_is_found_even_when_it_is_not_on_the_team(tmp_path, monkeypatch):
-    """Answering 'unassigned' when the answer is 'add devops' helps nobody."""
+    """Answering 'unassigned' when the answer is 'add the frontend' helps
+    nobody."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])          # no devops on this team
-    assert engine._owner_of(".gitignore") == "devops"
+    engine = _engine(tmp_path, ["tester"])           # no coder on this team
+    assert engine._owner_of("src/App.tsx") == "frontend"
     assert engine._owner_of("server/app.js") == "backend"
     assert engine._owner_of("nothing/owns/this.weird") is None
 
 
-def test_a_manifest_has_exactly_one_owner():
-    """Two owners for package.json is how a dependency gets added by one agent
-    and overwritten by the other."""
-    owners = [name for name, role in BUILTIN_ROLES.items() if role.may_write("package.json")]
-    assert owners == ["devops"]
+def test_the_manifests_belong_to_the_coders_and_nobody_else():
+    """A deliberate trade: shared ownership between sequential coders beats a
+    single owner who has to guess dependencies before the code exists. The
+    verifiers still cannot touch the manifests — a checker that can edit
+    package.json can make its own claim true."""
+    owners = {name for name, role in BUILTIN_ROLES.items()
+              if role.may_write("package.json")}
+    assert owners == {"backend", "frontend", "fullstack"}
 
 
 def test_an_empty_memory_says_so_rather_than_being_hidden(tmp_path, monkeypatch):
@@ -3138,7 +3150,7 @@ def test_stripping_never_touches_real_code():
 
 def test_a_markdown_file_keeps_its_fences(tmp_path):
     """A fence in a README is content, not a wrapper."""
-    tools = _tools(tmp_path, "devops")
+    tools = _tools(tmp_path, "planner")
     body = "```bash\nnpm test\n```"
     tools.call("write_file", {"path": "README.md", "content": body})
     assert (tmp_path / "README.md").read_text() == body
@@ -4124,8 +4136,9 @@ def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
         def complete(self, messages, tools=None, **kw):
             return ChatResponse(text="", tool_calls=[ToolCall(
                 id="c", name="propose_flow", arguments={
-                    "summary": "s", "team": ["devops", "backend"], "steps": [
-                        {"role": "devops", "task": "scaffold", "points": 2},
+                    "summary": "s", "team": ["frontend", "backend"], "steps": [
+                        {"role": "frontend", "task": "scaffold and build the UI",
+                         "points": 2},
                         {"role": "backend", "task": "build the API", "points": 3}]})])
 
     monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
@@ -4136,7 +4149,7 @@ def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
     steps = result["proposal"]["steps"]
     assert [s["check"] for s in steps[:2]] == ["factchecker", "factchecker"]
     assert steps[-1]["loop"] == "test-and-fix"
-    assert {"devops", "backend", "factchecker", "tester"} <= set(result["proposal"]["team"])
+    assert {"frontend", "backend", "factchecker", "tester"} <= set(result["proposal"]["team"])
 
 
 def test_a_step_keeps_the_window_reading_it_ended_on(tmp_path, monkeypatch):
@@ -7116,7 +7129,7 @@ def test_the_shipped_budgets_match_what_the_roles_actually_use():
 
     # The ones that were not keep the default, because a budget is a ceiling,
     # not an allowance to spend.
-    for name in ("devops", "factchecker", "orchestrator", "planner"):
+    for name in ("factchecker", "orchestrator", "planner"):
         assert BUILTIN_ROLES[name].tool_rounds == 0, name
 
 
@@ -7146,15 +7159,15 @@ def test_a_setting_added_after_the_file_was_written_is_inherited(tmp_path):
     old = {"agents": [
         {"name": "tester", "title": "Tester", "description": "d", "system_prompt": "p",
          "paths": [], "toolsets": ["commands"]},          # no tool_rounds at all
-        {"name": "devops", "title": "DevOps", "description": "d", "system_prompt": "p",
-         "paths": [], "toolsets": ["commands"]},
+        {"name": "factchecker", "title": "Checker", "description": "d",
+         "system_prompt": "p", "paths": [], "toolsets": ["commands"]},
     ]}
     path = tmp_path / "agents.json"
     path.write_text(json.dumps(old))
 
     store = RoleStore(path)
     assert store.get("tester").tool_rounds == BUILTIN_ROLES["tester"].tool_rounds == 36
-    assert store.get("devops").tool_rounds == 0           # its built-in has none either
+    assert store.get("factchecker").tool_rounds == 0      # its built-in has none either
 
 
 def test_a_setting_that_was_chosen_is_left_alone(tmp_path):
@@ -11262,3 +11275,25 @@ def test_a_turn_reports_the_screenshots_its_browser_saved(tmp_path):
 
     tools._visual = session
     assert tools.shots_taken() == [first, second]
+
+
+def test_a_retired_builtin_disappears_unless_the_user_edited_it(tmp_path):
+    """Unedited meant the definition was trance's to improve, and retiring it
+    is the last improvement. An edited copy is the user's and stays."""
+    import json
+
+    from trance.agents.store import RoleStore
+
+    path = tmp_path / "agents.json"
+    path.write_text(json.dumps({"agents": [
+        {"name": "devops", "title": "DevOps", "description": "d",
+         "system_prompt": "p", "paths": [], "toolsets": ["files"],
+         "definition_edited": False},
+        {"name": "my-devops", "title": "Mine", "description": "d",
+         "system_prompt": "my own take", "paths": ["**"], "toolsets": ["files"],
+         "definition_edited": True},
+    ]}))
+
+    store = RoleStore(path)
+    assert store.get("devops") is None                # retired, never made theirs
+    assert store.get("my-devops") is not None         # edited: the user's, kept
