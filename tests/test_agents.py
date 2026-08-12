@@ -2697,7 +2697,7 @@ def test_the_goal_survives_a_restart(tmp_path):
     from trance.session import SessionStore
 
     store = SessionStore(tmp_path)
-    session = store.create("p", "/tmp/p")
+    session = store.create("p", str(tmp_path / "p"))
     session.goal = "A crypto backtester."
     store.save(session)
     assert SessionStore(tmp_path).get(session.id).goal == "A crypto backtester."
@@ -4198,7 +4198,7 @@ def test_what_a_step_did_survives_a_restart(tmp_path):
     from trance.session import SessionStore
 
     store = SessionStore(tmp_path)
-    session = store.create("p", "/tmp/p")
+    session = store.create("p", str(tmp_path / "p"))
     session.flow.steps = [Step(role="backend", task="a", status="done")]
     session.flow.steps[0].attempts = [Attempt(
         n=1, outcome="SUCCESS", files_written=["server.js"],
@@ -4659,6 +4659,10 @@ def test_a_finished_step_can_still_be_explored_after_a_restart(tmp_path):
 
     config = Config.load(tmp_path / "none.toml")
     config.runs_dir = str(tmp_path / "runs")
+    # The restart finds sessions by scanning the workspace's projects, so the
+    # project has to live in one — a session outside the workspace is exactly
+    # what a restart is now supposed to leave behind.
+    config.workspace = str(tmp_path)
     sessions = tmp_path / "sessions"
 
     app = app_module.create_app(config, sessions)
@@ -6491,6 +6495,7 @@ def test_an_index_already_committed_is_untracked_not_deleted(tmp_path):
 
     vcs.ensure_repo(project)
     (project / ".gitignore").unlink()                  # a repo from before this existed
+    (project / ".git" / "info" / "exclude").unlink()   # and before the exclude mirror
     vcs.commit_all(project, "with the index in it")
     assert ".trance/graph.db" in vcs._run(project, "ls-files")[1]
 
@@ -9919,9 +9924,9 @@ def test_working_time_is_charged_to_the_agent_and_the_step(tmp_path, monkeypatch
     assert step.seconds > 0
     assert session.agent_seconds.get("frontend", 0) > 0
     # And the split survives a save/load, or the stats page forgets on restart.
-    session.save(tmp_path / "sessions")
+    saved = session.save()
     from trance.session import Session as S
-    back = S.load(tmp_path / "sessions" / "s1" / "session.json")
+    back = S.load(saved)
     assert back.agent_seconds.get("frontend", 0) > 0
 
 

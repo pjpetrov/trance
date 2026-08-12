@@ -107,7 +107,13 @@ IGNORED = (".trance/graph.db", ".trance/graph.db-shm", ".trance/graph.db-wal",
            # still travel with the directory, which is how a project is handed
            # over; git is not the channel.
            ".trance/agents.json", ".trance/loops.json",
-           ".trance/commands.json", ".trance/settings.json")
+           ".trance/commands.json", ".trance/settings.json",
+           # The session itself — chat, flow, event trace. It lives in the
+           # project so the workspace's session list is the workspace's
+           # projects, but it is a record *about* the work: committed, every
+           # step's commit would carry a rewrite of the session file, and a
+           # revert would try to revert the bookkeeping too.
+           ".trance/sessions/")
 _IGNORE_HEADER = "# trance's index — regenerated, not source"
 
 
@@ -122,6 +128,13 @@ def ignore_trance_files(project: Path) -> bool:
     PLAN.md and memory.md are deliberately *not* ignored: they are written for
     you to read, and their history is part of the record of the run.
     """
+    # Also mirrored into .git/info/exclude, which is never tracked: the
+    # .gitignore itself rides in commits, so reverting the commit that
+    # introduced it deletes it from the tree mid-revert — at which point the
+    # very next `git add -A` swept the no-longer-ignored session state into
+    # the revert commit. Found live: "apply commits" then refused to touch
+    # the tree because the event log it had accidentally tracked kept moving.
+    _write_exclude(project)
     path = Path(project) / ".gitignore"
     try:
         current = path.read_text(encoding="utf8") if path.exists() else ""
@@ -135,6 +148,25 @@ def ignore_trance_files(project: Path) -> bool:
     except OSError:
         return False
     return True
+
+
+def _write_exclude(project: Path) -> None:
+    """Keep trance's entries in .git/info/exclude, out of git's own reach."""
+    git_dir = Path(project) / ".git"
+    if not git_dir.is_dir():
+        return                       # a subdir of a larger repo: .gitignore only
+    path = git_dir / "info" / "exclude"
+    try:
+        current = path.read_text(encoding="utf8") if path.exists() else ""
+        listed = {line.strip() for line in current.splitlines()}
+        missing = [entry for entry in IGNORED if entry not in listed]
+        if not missing:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        prefix = "" if not current or current.endswith("\n") else "\n"
+        path.write_text(current + prefix + "\n".join(missing) + "\n", encoding="utf8")
+    except OSError:
+        pass
 
 
 def untrack_ignored(project: Path) -> list[str]:

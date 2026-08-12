@@ -5,7 +5,7 @@ from trance.session import SessionStore
 
 def test_sessions_survive_a_restart(tmp_path):
     store = SessionStore(tmp_path)
-    session = store.create("orders", "/tmp/orders")
+    session = store.create("orders", str(tmp_path / "orders"))
     assert SessionStore(tmp_path).get(session.id) is not None
 
 
@@ -13,18 +13,18 @@ def test_delete_removes_the_session_from_disk(tmp_path):
     """Regression: popping the in-memory entry alone left the directory, so a
     deleted session reappeared the next time the store loaded from disk."""
     store = SessionStore(tmp_path)
-    session = store.create("orders", "/tmp/orders")
-    assert (tmp_path / session.id / "session.json").exists()
+    session = store.create("orders", str(tmp_path / "orders"))
+    assert (session.store_dir / "session.json").exists()
 
     assert store.delete(session.id) is True
-    assert not (tmp_path / session.id).exists()
+    assert not session.store_dir.exists()
     assert store.get(session.id) is None
     assert SessionStore(tmp_path).get(session.id) is None  # stays deleted
 
 
 def test_delete_signals_a_running_session_to_stop(tmp_path):
     store = SessionStore(tmp_path)
-    session = store.create("orders", "/tmp/orders")
+    session = store.create("orders", str(tmp_path / "orders"))
     session.status = "running"
     store.delete(session.id)
     assert session.stopping  # the engine unwinds instead of writing to a gone dir
@@ -32,15 +32,15 @@ def test_delete_signals_a_running_session_to_stop(tmp_path):
 
 def test_delete_is_idempotent(tmp_path):
     store = SessionStore(tmp_path)
-    session = store.create("orders", "/tmp/orders")
+    session = store.create("orders", str(tmp_path / "orders"))
     assert store.delete(session.id) is True
     assert store.delete(session.id) is False
 
 
 def test_deleting_one_session_leaves_the_others(tmp_path):
     store = SessionStore(tmp_path)
-    keep = store.create("keep", "/tmp/keep")
-    drop = store.create("drop", "/tmp/drop")
+    keep = store.create("keep", str(tmp_path / "keep"))
+    drop = store.create("drop", str(tmp_path / "drop"))
     store.delete(drop.id)
     assert [s.id for s in SessionStore(tmp_path).all()] == [keep.id]
 
@@ -459,7 +459,7 @@ def test_the_total_survives_a_restart(tmp_path):
     from trance.session import SessionStore
 
     store = SessionStore(tmp_path)
-    session = store.create("p", "/tmp/p")
+    session = store.create("p", str(tmp_path / "p"))
     session.start_clock()
     time.sleep(0.15)
     session.stop_clock()
@@ -494,3 +494,114 @@ def test_the_engine_runs_the_clock(tmp_path, monkeypatch):
 
     assert session.elapsed > 0
     assert session.working is False                 # the clock stopped with the run
+
+
+# ---------------------- sessions live in their project, listed per workspace
+
+def test_a_new_workspace_starts_with_no_sessions(tmp_path):
+    """The list is what the workspace holds. It used to come from one global
+    dir that changing the workspace never touched — so a fresh workspace
+    greeted its user with every session from every other one."""
+    from trance.session import SessionStore
+
+    old_ws, new_ws = tmp_path / "old_ws", tmp_path / "new_ws"
+    new_ws.mkdir()
+    root = tmp_path / "runs" / "sessions"
+
+    session = SessionStore(root, workspace=old_ws).create(
+        "gta2", str(old_ws / "gta2"))
+
+    assert SessionStore(root, workspace=new_ws).all() == []
+    back = SessionStore(root, workspace=old_ws)          # switching back
+    assert back.get(session.id) is not None
+
+
+def test_session_state_lives_inside_the_project(tmp_path):
+    from trance.session import SessionStore
+
+    store = SessionStore(tmp_path / "runs", workspace=tmp_path)
+    session = store.create("p", str(tmp_path / "p"))
+    assert (tmp_path / "p" / ".trance" / "sessions" / session.id
+            / "session.json").exists()
+
+
+def test_old_flat_sessions_move_into_their_project(tmp_path):
+    """One-time adoption: the global dir's sessions land in their project —
+    trace and all — so nothing recorded before the move is lost by it."""
+    import json
+
+    from trance.session import Session, SessionStore
+
+    ws = tmp_path / "ws"
+    project = ws / "gta2"
+    project.mkdir(parents=True)
+    root = tmp_path / "runs" / "sessions"
+    legacy = Session(name="gta2", project_dir=str(project))
+    old_dir = root / legacy.id
+    old_dir.mkdir(parents=True)
+    (old_dir / "session.json").write_text(
+        json.dumps(legacy.to_dict()), encoding="utf8")
+    (old_dir / "events.jsonl").write_text('{"type":"x"}\n', encoding="utf8")
+
+    store = SessionStore(root, workspace=ws)
+
+    assert store.get(legacy.id) is not None
+    kept = project / ".trance" / "sessions" / legacy.id
+    assert (kept / "session.json").exists()
+    assert (kept / "events.jsonl").exists()              # the trace travelled
+    assert not old_dir.exists()
+
+
+def test_a_legacy_session_whose_project_is_gone_is_not_listed(tmp_path):
+    import json
+
+    from trance.session import Session, SessionStore
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    root = tmp_path / "runs" / "sessions"
+    husk = Session(name="deleted", project_dir=str(tmp_path / "no-such-dir"))
+    old_dir = root / husk.id
+    old_dir.mkdir(parents=True)
+    (old_dir / "session.json").write_text(json.dumps(husk.to_dict()), encoding="utf8")
+
+    store = SessionStore(root, workspace=ws)
+
+    assert store.get(husk.id) is None
+    assert (old_dir / "session.json").exists()           # kept, not destroyed
+
+
+def test_a_renamed_project_keeps_its_session(tmp_path):
+    """The stored project_dir is the only thing still pointing at the old
+    name; the scan knows where the session actually lives."""
+    from trance.session import SessionStore
+
+    store = SessionStore(tmp_path / "runs", workspace=tmp_path)
+    session = store.create("p", str(tmp_path / "old-name"))
+    (tmp_path / "old-name").rename(tmp_path / "new-name")
+
+    found = SessionStore(tmp_path / "runs", workspace=tmp_path).get(session.id)
+    assert found is not None
+    assert found.project_dir == str(tmp_path / "new-name")
+
+
+def test_trances_ignores_survive_a_revert_of_the_gitignore(tmp_path):
+    """.git/info/exclude mirrors the entries: reverting the commit that
+    introduced .gitignore must not let the next `git add -A` sweep the
+    session state into the revert commit."""
+    from trance import vcs
+
+    project = tmp_path / "p"
+    project.mkdir()
+    vcs.ensure_repo(project)
+    exclude = (project / ".git" / "info" / "exclude").read_text(encoding="utf8")
+    assert ".trance/sessions/" in exclude
+
+    (project / "app.js").write_text("1\n", encoding="utf8")
+    first = vcs.commit_all(project, "the step")          # carries .gitignore too
+    (project / ".trance" / "sessions" / "s_x").mkdir(parents=True)
+    (project / ".trance" / "sessions" / "s_x" / "session.json").write_text("{}")
+
+    vcs.revert_commits(project, [first.sha], "user: reverted")
+    tracked = vcs._run(project, "ls-files")[1]
+    assert ".trance/sessions" not in tracked

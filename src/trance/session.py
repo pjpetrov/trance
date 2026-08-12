@@ -174,8 +174,19 @@ class Session:
             data["progress"] = self.flow.progress
         return data
 
-    def save(self, root: Path) -> Path:
-        path = Path(root) / self.id / "session.json"
+    @property
+    def store_dir(self) -> Path:
+        """Where this session's state lives: inside its own project.
+
+        Everything about a session — the chat, the flow, the trace — belongs
+        to the project it drove, so the session list is whatever the current
+        workspace holds: a fresh workspace starts empty, and a project carried
+        elsewhere carries its history with it.
+        """
+        return Path(self.project_dir) / ".trance" / "sessions" / self.id
+
+    def save(self) -> Path:
+        path = self.store_dir / "session.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf8")
         return path
@@ -207,21 +218,60 @@ class Session:
 
 
 class SessionStore:
-    """In-memory registry, persisted to disk so runs survive a restart."""
+    """In-memory registry of the workspace's sessions.
 
-    def __init__(self, root: Path):
+    Session state lives inside each project (`.trance/sessions/<id>/`), so
+    the store *discovers* rather than owns: it scans the workspace's projects
+    on startup, and what it finds is what the UI lists. `root` is the old
+    flat store, kept only to migrate what it still holds and to receive the
+    trace of a session that has been deleted mid-run.
+    """
+
+    def __init__(self, root: Path, workspace: Path | None = None):
         self.root = Path(root)
+        self.workspace = Path(workspace) if workspace else self.root
         self.root.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
+        self._adopt_legacy()
         self._load_existing()
 
-    def _load_existing(self) -> None:
+    def _adopt_legacy(self) -> None:
+        """Move sessions stored the old way — one global dir keyed by id —
+        into their project, where they belong.
+
+        The old layout is why a new workspace greeted its user with every
+        session from every other one: the list came from a global dir that
+        changing the workspace never touched. Whole-directory moves, so the
+        event trace travels with the state. A session whose project is gone
+        stays where it is, listed nowhere: there is nothing to attach it to,
+        and deleting it is not this code's decision to make.
+        """
         for path in sorted(self.root.glob("*/session.json")):
+            try:
+                session = Session.load(path)
+                target = session.store_dir
+                if target.exists():                # adopted on an earlier start
+                    shutil.rmtree(path.parent, ignore_errors=True)
+                    continue
+                if not Path(session.project_dir).is_dir():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path.parent), str(target))
+            except Exception:                      # noqa: BLE001 — a broken entry
+                continue                           # must not block the rest
+
+    def _load_existing(self) -> None:
+        for path in sorted(self.workspace.glob("*/.trance/sessions/*/session.json")):
             try:
                 session = Session.load(path)
             except Exception:
                 continue
+            # A renamed or moved project still holds its sessions; the stored
+            # project_dir is the only thing pointing at the old name.
+            lives_in = path.parents[3]
+            if Path(session.project_dir).resolve() != lives_in.resolve():
+                session.project_dir = str(lives_in)
             if session.status in ("running", "paused"):
                 session.status = "ready"  # nothing is running after a restart
             self._sessions[session.id] = session
@@ -230,7 +280,7 @@ class SessionStore:
         session = Session(name=name, project_dir=project_dir)
         with self._lock:
             self._sessions[session.id] = session
-        session.save(self.root)
+        session.save()
         return session
 
     def get(self, session_id: str) -> Session | None:
@@ -240,7 +290,7 @@ class SessionStore:
         return sorted(self._sessions.values(), key=lambda s: s.created_at, reverse=True)
 
     def save(self, session: Session) -> None:
-        session.save(self.root)
+        session.save()
 
     def delete(self, session_id: str) -> bool:
         """Forget a session and remove it from disk.
@@ -254,5 +304,7 @@ class SessionStore:
         if session is None:
             return False
         session.stop()
+        shutil.rmtree(session.store_dir, ignore_errors=True)
+        # And whatever the old flat layout still holds under this id.
         shutil.rmtree(self.root / session_id, ignore_errors=True)
         return True

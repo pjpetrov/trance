@@ -79,7 +79,8 @@ def engine_alive(session) -> bool:
 
 def create_app(config: Config | None = None, sessions_dir: Path | None = None) -> FastAPI:
     config = config or Config.load()
-    store = SessionStore(sessions_dir or Path(config.runs_dir) / "sessions")
+    store = SessionStore(sessions_dir or Path(config.runs_dir) / "sessions",
+                         workspace=config.workspace_root)
     # trance.toml seeds the registry once; after that the JSON store is the
     # source of truth so provider edits made in the UI survive a restart.
     providers = ProviderStore(Path(config.runs_dir) / "providers.json", seed=config.providers)
@@ -156,7 +157,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         with logs_lock:
             existing = logs.get(session_id)
             if existing is None:
-                existing = SessionLog(store.root / session_id)
+                # The trace lives with the session, in its project. Only a
+                # session the store no longer knows — deleted mid-run, say —
+                # falls back to the old flat dir, so its last events land
+                # somewhere rather than nowhere.
+                session = store.get(session_id)
+                where = session.store_dir if session else store.root / session_id
+                existing = SessionLog(where)
                 logs[session_id] = existing
             return existing
 
