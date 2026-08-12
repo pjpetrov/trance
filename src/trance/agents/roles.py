@@ -385,14 +385,18 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
             "actually receives, fix the side where the evidence points, and say which "
             "side it was in your summary.\n\n" + _CODER_RULES
         ),
-        # Both sides plus the manifests. Deliberately still not "**": tests
-        # belong to the tester, docs to the planner, and a role that may write
-        # anything is a way around every other role's remit.
+        # Both sides plus the manifests, and the two documents the coder rules
+        # demand it maintain — a rule that orders an agent to keep PLAYBOOK.md
+        # current while the remit refuses the write is a contradiction, found
+        # live as an approval prompt mid-run. Deliberately still not "**":
+        # tests belong to the tester, docs/ to the planner, and a role that
+        # may write anything is a way around every other role's remit.
         paths=["backend/**", "api/**", "server/**", "*.py", "pyproject.toml",
                "requirements.txt", "frontend/**", "src/**", "ui/**", "public/**",
                "*.ts", "*.tsx", "*.js", "*.jsx", "*.css", "*.html",
                "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-               "tsconfig*.json", "jsconfig.json", "vite.config.*", ".gitignore"],
+               "tsconfig*.json", "jsconfig.json", "vite.config.*", ".gitignore",
+               "PLAYBOOK.md", "README.md"],
         toolsets=["files", "graph", "commands"],
         checks=["reviewer"],
         color="#7aa2f7",
@@ -434,7 +438,11 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
             "  VERDICT: PASS\n"
             "  VERDICT: FAIL — <what is wrong>"
         ),
-        paths=["tests/**", "test/**", "**/*.test.ts", "**/*.test.tsx", "**/test_*.py"],
+        # Wherever tests actually land, not only tests/: a project that keeps
+        # them as src/test_*.js blocked its own tester on every write.
+        paths=["tests/**", "test/**", "**/*.test.ts", "**/*.test.tsx",
+               "**/test_*.py", "**/test_*.js", "**/*.test.js", "**/*.test.jsx",
+               "test_*.py", "test_*.js", "*.test.js", "*.test.ts"],
         toolsets=["files", "graph", "commands"],
         color="#f7768e",
     ),

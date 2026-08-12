@@ -57,6 +57,19 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 #: Operators that start a new command; a redirect target is not a program.
 _STARTS_COMMAND = {"|", "||", "&&", ";", "&", "\n"}
 _REDIRECTS = {">", ">>", "<", "<<", "2>", "2>>"}
+#: Shell reserved words are not programs — `for f in *.js; do node $f; done`
+#: runs node, not a program called "do". Split by what follows each keyword:
+#: after these, the actual command comes next;
+_SHELL_BEFORE_COMMAND = {"if", "elif", "while", "until", "then", "else", "do", "time", "!", "{"}
+#: after these, ordinary words (a loop variable, patterns) — not a command;
+_SHELL_TAKES_WORDS = {"for", "case", "select", "function"}
+#: and these close a block, with a separator or nothing after them.
+_SHELL_CLOSES = {"done", "fi", "esac", "}"}
+#: Programs that run their argument: `timeout 5 npx vite` invokes npx too, and
+#: an allowlist that stopped reading at the wrapper would let anything hide
+#: behind it. The wrapper is checked AND whatever follows its own flags.
+_WRAPPERS = {"timeout", "nice", "stdbuf", "nohup", "time", "env"}
+_WRAPPER_ARG = re.compile(r"^(-|\d+(\.\d+)?[smhd]?$)")
 
 
 def programs_in(command: str) -> list[str]:
@@ -76,6 +89,7 @@ def programs_in(command: str) -> list[str]:
 
     found: list[str] = []
     expect_program = True
+    in_wrapper = False
     skip_next = False
     for token in tokens:
         if skip_next:                       # the target of a redirect
@@ -86,11 +100,26 @@ def programs_in(command: str) -> list[str]:
             continue
         if token in _STARTS_COMMAND:
             expect_program = True
+            in_wrapper = False
             continue
+        if expect_program and token in _SHELL_BEFORE_COMMAND:
+            continue                        # the real command follows it
+        if expect_program and token in _SHELL_TAKES_WORDS:
+            expect_program = False          # `for f in a b` — words, not programs
+            continue
+        if expect_program and token in _SHELL_CLOSES:
+            expect_program = False
+            continue
+        if in_wrapper and _WRAPPER_ARG.match(token):
+            continue                        # the wrapper's own flags and duration
         if not expect_program or _ENV_ASSIGN.match(token):
             continue
         found.append(token)
+        if token in _WRAPPERS:
+            in_wrapper = True               # what it wraps comes next — check it too
+            continue
         expect_program = False
+        in_wrapper = False
     return found
 
 
@@ -103,6 +132,8 @@ ALLOWED_COMMANDS = {
     "stat", "file", "tree", "sort", "uniq", "cut", "awk", "sed", "which", "env",
     # small edits to scaffolding
     "mkdir", "touch", "cp", "mv", "echo", "printf", "true", "false", "test",
+    # bounding a command in time is safety, not power
+    "timeout", "sleep",
     # version control, read-mostly
     "git",
 }

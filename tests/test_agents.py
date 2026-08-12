@@ -11371,3 +11371,46 @@ def test_a_stored_shipped_loop_still_naming_old_coders_is_rewired(tmp_path):
                   if n.id == "n_repair")
     assert fix.role == "developer" and repair.role == "developer"
     assert again.get("my-loop").nodes[0].role == "backend"   # the user's, kept
+
+
+# ==================== the four holes one real session actually hit
+
+def test_the_developer_may_write_the_documents_its_rules_demand():
+    """The coder rules order it to keep PLAYBOOK.md current and to add the
+    test script line to the README; a remit that refuses both turned each of
+    those into a mid-run approval prompt."""
+    developer = BUILTIN_ROLES["developer"]
+    assert developer.may_write("PLAYBOOK.md")
+    assert developer.may_write("README.md")
+    assert not developer.may_write("docs/plan.md")     # docs stay the planner's
+
+
+def test_the_tester_owns_tests_wherever_the_project_keeps_them():
+    tester = BUILTIN_ROLES["tester"]
+    for path in ["src/test_wasd_movement.js", "test_input.js",
+                 "src/Game.test.js", "app.test.ts", "src/ui/Menu.test.jsx"]:
+        assert tester.may_write(path), path
+    assert not tester.may_write("src/Game.js")         # the code under test
+
+
+def test_shell_keywords_are_not_programs():
+    """`for f in *.js; do node $f; done` runs node — the allowlist prompt for
+    a program called "do" was the parser reading loop syntax as commands."""
+    from trance.agents.tools import programs_in
+
+    assert programs_in("for f in a.js b.js; do node $f; done") == ["node"]
+    assert programs_in("if grep -q x f.txt; then echo found; fi") == ["grep", "echo"]
+    assert programs_in("while true; do pytest -q; done") == ["true", "pytest"]
+    # And a program merely *named* in a string is still not invoked.
+    assert programs_in("echo 'for do done'") == ["echo"]
+
+
+def test_bounding_a_command_in_time_needs_no_approval():
+    from trance.agents.tools import ALLOWED_COMMANDS, programs_in
+
+    assert "timeout" in ALLOWED_COMMANDS and "sleep" in ALLOWED_COMMANDS
+    # The wrapper is transparent: what it wraps is still seen and checked, so
+    # nothing rides through the allowlist hidden behind a timeout.
+    assert programs_in("timeout 5 npx vite --host") == ["timeout", "npx"]
+    assert programs_in("timeout -k 2 10s rm -rf /") == ["timeout", "rm"]
+    assert programs_in("env FOO=1 pytest -q") == ["env", "pytest"]
