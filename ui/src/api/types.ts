@@ -161,6 +161,8 @@ export interface Step {
   seconds?: number;
   /** The inverse commit of the last user revert, when one is outstanding. */
   reverted_sha?: string;
+  /** Screenshots attached to the request this step came from. */
+  images?: string[];
   attempts: Attempt[];
   /** Executions, not attempts: one press of Start or Rerun, holding every
    *  retry and every loop block inside it. */

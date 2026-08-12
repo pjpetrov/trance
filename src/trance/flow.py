@@ -138,6 +138,10 @@ class Step:
     entry: str = ""
     status: StepStatus = "pending"
     attempts: list[Attempt] = field(default_factory=list)
+    #: Screenshots the user attached to the request this step came from,
+    #: as paths under .trance/shots. The evidence belongs to the task, not the
+    #: run: retries, fixers and checks all see the same pictures.
+    images: list[str] = field(default_factory=list)
     #: Working time this step has cost, in seconds, across every attempt,
     #: fixer pass and check. What "how long was this iteration worked on"
     #: sums over.

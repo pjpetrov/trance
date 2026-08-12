@@ -225,6 +225,12 @@ export function PlanScreen() {
                     </Select>
 
                     <Badge tone={stepTone(step.status)}>{step.status}</Badge>
+                    {(step.images?.length ?? 0) > 0 && (
+                      <span
+                        className="text-xs text-muted"
+                        title={`${step.images!.length} screenshot(s) from the chat request travel with this step — every agent that can see images gets them`}
+                      >📎{step.images!.length}</span>
+                    )}
 
                     <div className="flex-1" />
 

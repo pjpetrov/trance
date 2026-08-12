@@ -2232,6 +2232,17 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             reply = session.chat[-1]
             reply.steps = [step.id for step in session.flow.steps
                            if step.id not in was]
+            # The screenshots that came with the request reach the agents who
+            # will act on it. The orchestrator saw them; the frontend dev
+            # fixing what the picture shows was working from a one-sentence
+            # paraphrase of it.
+            asked_with = next(
+                (list(m.images) for m in reversed(session.chat[:-1])
+                 if m.role == "user"), [])
+            if asked_with:
+                for step in session.flow.steps:
+                    if step.id in reply.steps:
+                        step.images = asked_with[:3]
             root = Path(session.project_dir).expanduser()
             reply.base = vcs.head(root) if vcs.is_repo(root) else ""
             # Not while it is running. The orchestrator can propose more work

@@ -192,6 +192,40 @@ def _remember_prompt(turn, memory) -> str:
     )
 
 
+def _with_user_images(text: str, images: list[str], project: Path, config) -> str | list:
+    """The user's screenshots, in the shape this model can take.
+
+    A model that can see gets them as image blocks after the prompt — the
+    same wire shape the orchestrator and the vision checks already use. One
+    that cannot is told they exist and where they are, because an agent
+    answering about a screenshot it never received is worse than one that
+    says it cannot see. Capped at three: each rides every attempt.
+    """
+    from ..vision import VISION_KINDS, image_block
+
+    kept = [name for name in images if name][:3]
+    if not kept:
+        return text
+    kind = getattr(config, "kind", "") or "llamacpp"
+    if kind not in VISION_KINDS:
+        return (text + f"\n\n[The user attached {len(kept)} screenshot(s) to this "
+                f"request ({', '.join(kept)}), but this model cannot be shown "
+                f"images. Ask the visual tester about them, or reason from the "
+                f"task text.]")
+    blocks: list[dict] = [{"type": "text", "text": (
+        text + f"\n\nThe user attached {len(kept)} screenshot(s) to this request; "
+               f"they follow. What they show is part of the task.")}]
+    shown = 0
+    for name in kept:
+        try:
+            png = (Path(project) / ".trance" / "shots" / name).read_bytes()
+        except OSError:
+            continue
+        blocks.append(image_block(png, "anthropic" if kind == "anthropic" else "openai"))
+        shown += 1
+    return blocks if shown else text
+
+
 def _should_ask_to_remember(turn, role, already_asked: bool) -> bool:
     """Only nudge an agent that did work, has the tool, and wrote nothing."""
     if already_asked or turn.notes_written:
@@ -433,6 +467,10 @@ def _run_agent(
     approve=None,
     reindex=None,
     steering_inbox=None,
+    #: Screenshots the user attached to the request this step came from —
+    #: project-relative paths. Shown as image blocks to a model that can see,
+    #: said in words to one that cannot; never silently dropped.
+    images: list[str] | None = None,
     #: This turn is a check on someone else's work, so its answer is a VERDICT
     #: line. Two things follow: it is not asked to record decisions — it made
     #: none — and a reply without a verdict is worth one short question rather
@@ -451,6 +489,13 @@ def _run_agent(
     # call instead of a dozen, judged the same way — see agents/delegate.py for
     # what that trades away.
     if delegate.delegated(getattr(model_config, "kind", "")):
+        if images:
+            # One image per internal turn would multiply badly on this
+            # backend; it gets the fact and the paths instead, and can read
+            # the files itself if its tools allow.
+            task = (task + f"\n\nThe user attached screenshot(s) to this request: "
+                    + ", ".join(f".trance/shots/{name}" for name in images[:3])
+                    + ". What they show is part of the task.")
         handed = delegate.run_delegated(
             role=role, task=task, project=project, config=model_config, bus=bus,
             session_id=session_id, step_id=step_id, memory=memory, goal=goal,
@@ -532,9 +577,13 @@ def _run_agent(
     for note in steering or []:
         user_parts.append(f"## Steering from the user (follow this)\n{note}")
 
+    first_user: str | list = "\n\n".join(user_parts)
+    if images:
+        first_user = _with_user_images(first_user, images, project, model_config)
+
     messages = [
         {"role": "system", "content": role.system_prompt},
-        {"role": "user", "content": "\n\n".join(user_parts)},
+        {"role": "user", "content": first_user},
     ]
 
     turn = AgentTurn(text="")

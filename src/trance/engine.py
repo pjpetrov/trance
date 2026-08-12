@@ -289,7 +289,7 @@ class FlowEngine:
                 role, step, runs[role.name], force_backup=forced)
             node_t0 = time.monotonic()
             turn = run_agent(
-                role=role,
+                role=role, images=step.images,
                 # Three prompts, narrowing: what the project is, what this step
                 # asks for, and what this agent's part in the loop is.
                 task=f"{step.task}\n\n## Your part in this block\n{node.focus or role.description}",
@@ -482,6 +482,7 @@ class FlowEngine:
             try:
                 turn = run_agent(
                     role=role, task=step.task, project=self.project,
+                    images=step.images,
                     config=model_config, bus=self.bus,
                     session_id=session.id, step_id=step.id, context_bundle=bundle_text,
                     steering=steering, history=session.history,
@@ -684,7 +685,7 @@ class FlowEngine:
             for a in step.attempts[:-1])
         escalation_t0 = time.monotonic()
         turn = run_agent(
-            role=role,
+            role=role, images=step.images,
             task=(
                 f"{step.task}\n\n"
                 f"## This has already failed {len(step.attempts) - 1} times\n{tried}\n\n"
@@ -761,7 +762,7 @@ class FlowEngine:
                   if handoff and handoff.body else "")
         fixer_t0 = time.monotonic()
         turn = run_agent(
-            role=fixer,
+            role=fixer, images=step.images,
             task=(
                 f"Another agent's work failed its check. Fix it.\n\n"
                 f"## What the step was asked to do\n{step.task}\n\n"
@@ -896,7 +897,7 @@ class FlowEngine:
 
             gate_t0 = time.monotonic()
             turn = run_agent(
-                role=gate,
+                role=gate, images=step.images,
                 task=self._gate_task(step, attempt, gate, index, checks),
                 project=self.project, config=self.config.for_role(gate), bus=self.bus,
                 session_id=self.session.id, step_id=step.id, history=self.session.history,

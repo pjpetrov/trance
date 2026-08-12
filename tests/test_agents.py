@@ -10918,3 +10918,81 @@ def test_a_plan_naming_a_deleted_loop_still_saves_and_warns(tmp_path):
     out = body.json()
     assert any("test-and-fix-frontend" in m for m in out["missing"])
     assert [s["task"] for s in out["steps"]][-1] == "the new step"
+
+
+# ==================== the user's screenshots reach the agents doing the work
+
+def test_a_requests_screenshots_are_stamped_onto_the_steps_it_creates(tmp_path, monkeypatch):
+    """The orchestrator saw the pasted screenshot; the frontend dev fixing
+    what it shows was working from a one-sentence paraphrase of a picture."""
+    import base64 as base64_module
+
+    from fastapi.testclient import TestClient
+
+    from trance.agents import orchestrator
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+
+    def _proposed(**kwargs):
+        return {"text": "planned", "truncated": False, "proposal": {
+            "summary": "s", "team": ["frontend"], "requirements": [],
+            "steps": [{"role": "frontend", "loop": "", "task": "fix the button",
+                       "check": None, "checks": [], "on_fail": None,
+                       "max_loops": 0, "points": 1}]}}
+
+    monkeypatch.setattr(orchestrator, "chat", _proposed)
+    png = base64_module.b64encode(
+        b"\x89PNG\r\n\x1a\n" + b"0" * 40).decode()
+    body = client.post(f"/api/sessions/{sid}/chat", json={
+        "message": "the button is broken, see the screenshot",
+        "images": [f"data:image/png;base64,{png}"]}).json()
+
+    step = body["flow"]["steps"][0]
+    assert step["images"] and step["images"][0].startswith("chat/")
+
+
+def test_a_seeing_model_gets_the_screenshot_a_blind_one_gets_told(tmp_path, monkeypatch):
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    shots = tmp_path / ".trance" / "shots" / "chat"
+    shots.mkdir(parents=True)
+    (shots / "bug.png").write_bytes(b"\x89PNG fakebytes")
+
+    seen = {}
+
+    class Model:
+        def complete(self, messages, tools=None, **kwargs):
+            seen["first"] = messages[1]["content"]
+            return ChatResponse(text="done\n\nOUTCOME: SUCCESS", finish_reason="stop")
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
+    role = AgentRole(name="frontend", title="F", description="", system_prompt="p",
+                     paths=["**"], toolsets=["files"])
+
+    # llamacpp can see: the screenshot arrives as an image block.
+    run_agent(role=role, task="fix it", project=tmp_path,
+              config=ModelConfig(kind="llamacpp"), bus=EventBus(),
+              session_id="s", step_id="st", images=["chat/bug.png"])
+    first = seen["first"]
+    assert isinstance(first, list)
+    assert any(part.get("type") == "image_url" for part in first if isinstance(part, dict))
+    assert "part of the task" in first[0]["text"]
+
+    # claudecode is delegated and handled elsewhere; a text-only kind is told.
+    run_agent(role=role, task="fix it", project=tmp_path,
+              config=ModelConfig(kind="mistral"), bus=EventBus(),
+              session_id="s", step_id="st", images=["chat/bug.png"])
+    told = seen["first"]
+    assert isinstance(told, str)
+    assert "cannot be shown images" in told and "chat/bug.png" in told
