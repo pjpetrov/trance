@@ -1501,7 +1501,11 @@ def test_move_mouse_reports_lock_and_an_unmoved_camera(tmp_path):
 
     tools._visual = _Visual()
     out = tools.call("move_mouse", {"dx": 200, "dy": 0})
-    assert "Pointer lock was NOT engaged" in out.text
+    # Measured: pointer lock never engages in the harness browser, for any
+    # app — so its absence must read as an environment fact, never as the
+    # app's failure. A working game was failed over this line once.
+    assert "never is in this headless browser" in out.text
+    assert "do not call the input broken" in out.text
     assert "the camera did not move" in out.text
     assert out.detail["kind"] == "mouse" and out.detail["locked"] is False
 
@@ -1513,3 +1517,4 @@ def test_the_tester_is_told_how_to_judge_movement():
     assert "move_mouse" in prompt
     assert "Never conclude movement from diff percentages alone" in prompt
     assert "the frames win" in prompt
+    assert "Pointer lock never engages in this browser" in prompt

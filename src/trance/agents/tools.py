@@ -1277,10 +1277,15 @@ class AgentTools:
                          f"total movement ({moved[0]:g}, {moved[1]:g}).")
             lines.append("Pointer lock was engaged while the mouse moved."
                          if result.get("locked") else
-                         "Pointer lock was NOT engaged — a free-look camera that "
-                         "needs lock will not turn, however far the mouse travels. "
-                         "If this game asked for lock and did not get it, that is "
-                         "the finding.")
+                         "Pointer lock was not engaged — it never is in this "
+                         "headless browser, so lock state proves nothing about "
+                         "the app. The movement deltas above still reached the "
+                         "page: judge free look by whether the view turned. A "
+                         "camera that ignores mouse movement unless "
+                         "pointerLockElement is set cannot turn here even when "
+                         "it works in a real browser — if the view did not turn, "
+                         "say that and name this as the likely cause; do not "
+                         "call the input broken.")
         if result.get("changed") is True:
             lines.append(_responded_line(result, "the mouse"))
         elif result.get("changed") is False:
