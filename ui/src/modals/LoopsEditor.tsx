@@ -50,7 +50,7 @@ function blankLoop(taken: Set<string>): Loop {
         check: null, revert_on_fail: false,
         on: { SUCCESS: [{ target: "exit", max_visits: 3 }],
               FAILED: [{ target: second, max_visits: 3 }] } },
-      { id: second, role: "backend",
+      { id: second, role: "developer",
         focus: "Fix what the check objected to. It runs again straight after you.",
         check: null, revert_on_fail: false,
         on: { SUCCESS: [{ target: first, max_visits: 3 }],
@@ -111,7 +111,7 @@ export function LoopsEditor() {
     library.replace({
       ...draft,
       nodes: [...draft.nodes, {
-        id, role: agents.data?.agents[0]?.name ?? "backend", focus: "", check: null,
+        id, role: agents.data?.agents[0]?.name ?? "developer", focus: "", check: null,
         revert_on_fail: false,
         on: { SUCCESS: [{ target: "exit", max_visits: 3 }],
               FAILED: [{ target: "fail", max_visits: 3 }] },

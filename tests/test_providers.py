@@ -464,10 +464,10 @@ def test_a_partial_agent_update_keeps_everything_else(tmp_path):
         "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
 
     before = next(a for a in client.get("/api/agents", params={"session": sid}).json()["agents"]
-                  if a["name"] == "backend")
-    client.put("/api/agents/backend", json={"command_list": "build-tools"}, params={"session": sid})
+                  if a["name"] == "developer")
+    client.put("/api/agents/developer", json={"command_list": "build-tools"}, params={"session": sid})
     after = next(a for a in client.get("/api/agents", params={"session": sid}).json()["agents"]
-                 if a["name"] == "backend")
+                 if a["name"] == "developer")
 
     assert after["command_list"] == "build-tools"
     assert after["system_prompt"] == before["system_prompt"]
@@ -897,7 +897,7 @@ def test_an_agent_with_no_model_gets_a_defined_one(tmp_path):
     config.presets["only-one"] = ModelPreset(
         name="only-one", kind="anthropic", model="claude-opus-5", api_key="sk-x")
 
-    role = BUILTIN_ROLES["backend"]
+    role = BUILTIN_ROLES["developer"]
     assert role.preset is None
     resolved = config.for_role(role)
     assert resolved.model == "claude-opus-5" and resolved.kind == "anthropic"
@@ -935,9 +935,9 @@ def test_an_agents_backup_model_is_saved(tmp_path):
         "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put("/api/presets/clever", json={"kind": "anthropic", "model": "claude-opus-5"})
 
-    client.put("/api/agents/backend", json={"backup_preset": "clever", "backup_after": 2}, params={"session": sid})
+    client.put("/api/agents/developer", json={"backup_preset": "clever", "backup_after": 2}, params={"session": sid})
     saved = next(a for a in client.get("/api/agents", params={"session": sid}).json()["agents"]
-                 if a["name"] == "backend")
+                 if a["name"] == "developer")
 
     assert saved["backup_preset"] == "clever" and saved["backup_after"] == 2
     assert saved["system_prompt"]                      # the partial update kept the rest

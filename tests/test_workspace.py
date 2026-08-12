@@ -57,7 +57,7 @@ def test_a_new_project_starts_from_the_setup_you_already_have(tmp_path):
 
     # And the builtins are still there, because the store restores what is
     # missing rather than trusting the file to be complete.
-    assert stores.roles.get("backend") is not None
+    assert stores.roles.get("developer") is not None
 
 
 def test_a_project_that_has_diverged_is_never_overwritten(tmp_path):
@@ -82,7 +82,7 @@ def test_a_project_that_has_diverged_is_never_overwritten(tmp_path):
 
 def test_a_project_with_no_workspace_files_still_gets_the_builtins(tmp_path):
     stores = ProjectStores(tmp_path / "fresh", defaults=None)
-    assert stores.roles.get("backend") is not None
+    assert stores.roles.get("developer") is not None
     assert stores.loops.get("test-and-fix") is not None
     assert "default" in stores.commands.lists
     assert stores.migrated is False
@@ -175,14 +175,14 @@ def test_two_projects_tune_the_same_agent_differently(tmp_path):
     game = _make(client, "game", tmp_path)
     site = _make(client, "site", tmp_path)
 
-    client.put("/api/agents/frontend", json={"system_prompt": "canvas games"},
+    client.put("/api/agents/developer", json={"system_prompt": "canvas games"},
                params={"session": game})
-    client.put("/api/agents/frontend", json={"system_prompt": "accessible html"},
+    client.put("/api/agents/developer", json={"system_prompt": "accessible html"},
                params={"session": site})
 
     def prompt(sid):
         agents = client.get("/api/agents", params={"session": sid}).json()["agents"]
-        return next(a for a in agents if a["name"] == "frontend")["system_prompt"]
+        return next(a for a in agents if a["name"] == "developer")["system_prompt"]
 
     assert prompt(game) == "canvas games"
     assert prompt(site) == "accessible html"
@@ -236,9 +236,9 @@ def test_models_stay_on_the_machine(tmp_path):
     for path in project.glob("*.json"):
         assert "sk-secret" not in path.read_text(), path
     # And the project still names the model; it resolves against this machine's.
-    client.put("/api/agents/backend", json={"preset": "claude"}, params={"session": game})
+    client.put("/api/agents/developer", json={"preset": "claude"}, params={"session": game})
     agents = client.get("/api/agents", params={"session": game}).json()["agents"]
-    assert next(a for a in agents if a["name"] == "backend")["preset"] == "claude"
+    assert next(a for a in agents if a["name"] == "developer")["preset"] == "claude"
 
 
 def test_a_new_session_needs_only_a_name(tmp_path):
@@ -250,7 +250,7 @@ def test_a_new_session_needs_only_a_name(tmp_path):
 
     assert made["project_dir"] == str(tmp_path / "workspace" / "chicken-invaders")
     # And it is a real project directory, configured like any other.
-    client.put("/api/agents/frontend", json={"system_prompt": "canvas games"},
+    client.put("/api/agents/developer", json={"system_prompt": "canvas games"},
                params={"session": made["id"]})
     assert (tmp_path / "workspace" / "chicken-invaders" / ".trance" / "agents.json").is_file()
 
@@ -261,13 +261,13 @@ def test_the_same_name_is_the_same_project(tmp_path):
     by its path."""
     client, _ = _serve(tmp_path)
     first = client.post("/api/sessions", json={"name": "pacman"}).json()
-    client.put("/api/agents/frontend", json={"system_prompt": "mazes"},
+    client.put("/api/agents/developer", json={"system_prompt": "mazes"},
                params={"session": first["id"]})
 
     second = client.post("/api/sessions", json={"name": "Pacman"}).json()
     assert second["project_dir"] == first["project_dir"]
     agents = client.get("/api/agents", params={"session": second["id"]}).json()["agents"]
-    assert next(a for a in agents if a["name"] == "frontend")["system_prompt"] == "mazes"
+    assert next(a for a in agents if a["name"] == "developer")["system_prompt"] == "mazes"
 
 
 def test_a_name_cannot_reach_outside_the_workspace(tmp_path):
@@ -300,7 +300,7 @@ def test_a_project_handed_over_arrives_configured(tmp_path):
 
     client, _ = _serve(tmp_path)
     game = _make(client, "game", tmp_path)
-    client.put("/api/agents/frontend", json={"system_prompt": "canvas games"},
+    client.put("/api/agents/developer", json={"system_prompt": "canvas games"},
                params={"session": game})
     client.put("/api/config/planning", json={"git_commits": False},
                params={"session": game})
@@ -320,7 +320,7 @@ def test_a_project_handed_over_arrives_configured(tmp_path):
         "name": "game", "project_dir": str(elsewhere / "game")}).json()["id"]
 
     agents = theirs.get("/api/agents", params={"session": sid}).json()["agents"]
-    assert next(a for a in agents if a["name"] == "frontend")["system_prompt"] == "canvas games"
+    assert next(a for a in agents if a["name"] == "developer")["system_prompt"] == "canvas games"
     assert theirs.get(f"/api/sessions/{sid}/settings").json()["git_commits"] is False
 
 
@@ -332,12 +332,12 @@ def test_the_defaults_can_be_edited_and_reach_the_next_project(tmp_path):
     in four projects had to be improved a fifth time in the fifth."""
     client, _ = _serve(tmp_path)
 
-    client.put("/api/agents/frontend", json={"system_prompt": "always canvas games"},
+    client.put("/api/agents/developer", json={"system_prompt": "always canvas games"},
                params={"session": "defaults"})
 
     made = client.post("/api/sessions", json={"name": "brand new"}).json()
     agents = client.get("/api/agents", params={"session": made["id"]}).json()["agents"]
-    assert next(a for a in agents if a["name"] == "frontend")["system_prompt"] \
+    assert next(a for a in agents if a["name"] == "developer")["system_prompt"] \
         == "always canvas games"
 
 
@@ -346,14 +346,14 @@ def test_editing_the_defaults_leaves_existing_projects_alone(tmp_path):
     reached back into them would undo work nobody asked it to touch."""
     client, _ = _serve(tmp_path)
     already = client.post("/api/sessions", json={"name": "older"}).json()["id"]
-    client.put("/api/agents/frontend", json={"system_prompt": "tuned for this one"},
+    client.put("/api/agents/developer", json={"system_prompt": "tuned for this one"},
                params={"session": already})
 
-    client.put("/api/agents/frontend", json={"system_prompt": "the new default"},
+    client.put("/api/agents/developer", json={"system_prompt": "the new default"},
                params={"session": "defaults"})
 
     agents = client.get("/api/agents", params={"session": already}).json()["agents"]
-    assert next(a for a in agents if a["name"] == "frontend")["system_prompt"] \
+    assert next(a for a in agents if a["name"] == "developer")["system_prompt"] \
         == "tuned for this one"
 
 
@@ -362,11 +362,11 @@ def test_the_defaults_are_a_real_place_on_disk(tmp_path):
     import json as _json
 
     client, config = _serve(tmp_path)
-    client.put("/api/agents/frontend", json={"tool_rounds": 44},
+    client.put("/api/agents/developer", json={"tool_rounds": 44},
                params={"session": "defaults"})
 
     stored = _json.loads((Path(config.runs_dir) / "agents.json").read_text())
-    role = next(a for a in stored["agents"] if a["name"] == "frontend")
+    role = next(a for a in stored["agents"] if a["name"] == "developer")
     assert role["tool_rounds"] == 44
 
 

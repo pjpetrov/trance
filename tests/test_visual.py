@@ -1340,7 +1340,7 @@ def test_the_tester_is_told_to_judge_only_the_handed_url():
 def test_the_coders_are_told_ports_come_from_the_environment():
     from trance.agents.roles import BUILTIN_ROLES
 
-    for name in ("frontend", "backend"):
+    for name in ("developer", "developer"):
         prompt = BUILTIN_ROLES[name].system_prompt
         assert "process.env.PORT" in prompt, name
         assert "not yours to fight" in prompt, name
@@ -1411,7 +1411,7 @@ def test_a_project_without_a_playbook_promises_nothing(tmp_path, monkeypatch):
 def test_the_team_is_told_to_keep_the_playbook_and_the_tester_to_follow_it():
     from trance.agents.roles import BUILTIN_ROLES
 
-    for name in ("frontend", "backend", "fullstack"):
+    for name in ("developer", "developer", "developer"):
         prompt = BUILTIN_ROLES[name].system_prompt
         assert "PLAYBOOK.md" in prompt, name
         assert "How to reach gameplay" in prompt, name

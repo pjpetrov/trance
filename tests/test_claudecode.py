@@ -350,7 +350,7 @@ def test_a_delegated_writer_runs_with_its_own_tools_and_a_shaped_bash(tmp_path, 
     said = []
     bus.subscribe_sync(lambda e: said.append(e) if e.type == "delegated" else None)
     delegate.run_delegated(
-        role=BUILTIN_ROLES["frontend"], task="add stop()", project=project,
+        role=BUILTIN_ROLES["developer"], task="add stop()", project=project,
         config=ModelConfig(kind="claudecode", model="opus", preset="claude-code"),
         bus=bus, session_id="s", step_id="st", goal="a web app")
 
@@ -424,7 +424,7 @@ def test_what_it_touched_is_read_from_git_not_from_its_report(tmp_path, monkeypa
         side_effect=lambda: (project / "src" / "app.js").write_text("edited\n"))
 
     out = delegate.run_delegated(
-        role=BUILTIN_ROLES["frontend"], task="t", project=project,
+        role=BUILTIN_ROLES["developer"], task="t", project=project,
         config=ModelConfig(kind="claudecode"), bus=EventBus(),
         session_id="s", step_id="st")
 
@@ -443,25 +443,25 @@ def test_writing_outside_the_remit_fails_the_step(tmp_path, monkeypatch):
 
     project = tmp_path / "proj"
     (project / "src").mkdir(parents=True)
-    (project / "server").mkdir()
+    (project / "docs").mkdir()
     (project / "src" / "app.js").write_text("x\n")
-    (project / "server" / "app.py").write_text("y\n")
+    (project / "docs" / "notes.md").write_text("y\n")
     vcs.ensure_repo(project)
     vcs.commit_all(project, "start")
 
     fake_delegate(monkeypatch, "done\n\nOUTCOME: SUCCESS",
-                  side_effect=lambda: (project / "server" / "app.py").write_text(
+                  side_effect=lambda: (project / "docs" / "notes.md").write_text(
                       "touched by the wrong agent\n"))
 
-    turn = run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=project,
+    turn = run_agent(role=BUILTIN_ROLES["developer"], task="t", project=project,
                      config=ModelConfig(kind="claudecode"), bus=EventBus(),
                      session_id="s", step_id="st")
 
-    assert turn.remit_violations == ["server/app.py"]
+    assert turn.remit_violations == ["docs/notes.md"]
     assert turn.outcome[0] == "FAILED"
     assert "outside this agent's remit" in turn.outcome[1]
     # The work is still there to look at, not silently discarded.
-    assert (project / "server" / "app.py").read_text().startswith("touched")
+    assert (project / "docs" / "notes.md").read_text().startswith("touched")
 
 
 def test_an_agent_with_no_remit_is_told_to_change_nothing(tmp_path, monkeypatch):
@@ -542,7 +542,7 @@ def test_stop_kills_a_delegated_step(tmp_path, monkeypatch):
     def run():
         try:
             delegate.run_delegated(
-                role=BUILTIN_ROLES["frontend"], task="t", project=project,
+                role=BUILTIN_ROLES["developer"], task="t", project=project,
                 config=ModelConfig(kind="claudecode"), bus=EventBus(),
                 session_id="s1", step_id="st")
         except Cancelled as stopped:
@@ -598,7 +598,7 @@ def test_a_delegated_step_gets_a_whole_steps_worth_of_time(tmp_path, monkeypatch
     project = tmp_path / "proj"
     project.mkdir()
     with pytest.raises(BackendError) as raised:
-        delegate.run_delegated(role=BUILTIN_ROLES["frontend"], task="t", project=project,
+        delegate.run_delegated(role=BUILTIN_ROLES["developer"], task="t", project=project,
                                config=ModelConfig(kind="claudecode", timeout_s=600),
                                bus=EventBus(), session_id="s", step_id="st")
 

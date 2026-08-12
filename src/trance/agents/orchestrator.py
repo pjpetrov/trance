@@ -440,9 +440,11 @@ def _normalize(arguments: dict, roles: list) -> dict:
     }
 
 
-#: The cheapest check there is: it only asks whether the files an agent claimed
-#: to write exist and have content. It cannot judge quality and does not try.
-DEFAULT_CHECK = "factchecker"
+#: The floor, applied by rule to every planned step that writes files: an agent
+#: reporting SUCCESS is the one claim in this system with no evidence behind
+#: it. The reviewer — the same check the developer carries — reads the diff
+#: and judges whether the claim is true.
+DEFAULT_CHECK = "reviewer"
 def ensure_checks(proposal: dict, *, roles=None) -> dict:
     """Put the fact check on every planned step that writes files.
 

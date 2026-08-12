@@ -347,8 +347,16 @@ class LoopStore:
             return
         for item in data.get("loops", []):
             loop = Loop.from_dict(item)
-            if loop.name:
-                self._loops[loop.name] = loop
+            if not loop.name:
+                continue
+            if loop.name in ("test-and-fix", "visual-test-and-fix"):
+                # The coders merged into one "developer". These two loops are
+                # trance's own — a stored copy still wiring the old names gets
+                # the current fixer, where a custom loop is the user's to fix.
+                for node in loop.nodes:
+                    if node.role in ("backend", "frontend", "fullstack"):
+                        node.role = "developer"
+            self._loops[loop.name] = loop
 
     def _save(self) -> None:
         payload = {"loops": [l.to_dict() for l in self._loops.values()]}
@@ -386,7 +394,7 @@ def default_loops() -> list[Loop]:
             FAILED: Edge(target="n_fix", max_visits=3)},
     )
     fix = LoopNode(
-        id="n_fix", role="backend",
+        id="n_fix", role="developer",
         focus=("A test is failing. Fix the code under test — not the test. The tester "
                "runs again straight after you."),
         on={SUCCESS: Edge(target="n_test", max_visits=3),
@@ -403,11 +411,10 @@ def default_loops() -> list[Loop]:
             FAILED: Edge(target="n_repair", max_visits=3)},
     )
     repair = LoopNode(
-        id="n_repair", role="fullstack",
-        # Full-stack, learned the hard way: a repairer confined to the frontend
-        # answered a dead websocket by rewriting rendering, because the remit
-        # let it fix nothing else. The cause of a visual defect does not say
-        # which side it is on, so the repairer must reach both.
+        id="n_repair", role="developer",
+        # The repairer must reach both sides — learned the hard way, when a
+        # repairer confined to the frontend answered a dead websocket by
+        # rewriting rendering, because the remit let it fix nothing else.
         focus=("The app does not look right in the browser. The visual tester's "
                "report says what was on screen and what was wrong with it. The cause "
                "may be on either side — the server not sending, the client not "

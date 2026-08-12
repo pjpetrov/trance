@@ -277,7 +277,7 @@ def test_the_graph_catches_up_with_what_the_step_just_wrote(tmp_path):
     (project / "src" / "old.js").write_text("export function existing(){ return 1; }\n")
     index_repo(project, GraphDB(default_db_path(project)))
 
-    server = GraphServer(project, role=BUILTIN_ROLES["frontend"])
+    server = GraphServer(project, role=BUILTIN_ROLES["developer"])
     assert server.call("get_definition", {"symbol": "existing"})["isError"] is False
 
     wrote = server.call("write_file", {
@@ -307,7 +307,7 @@ def test_the_index_is_rebuilt_once_per_write_not_per_miss(tmp_path, monkeypatch)
     (project / "src" / "old.js").write_text("export function existing(){ return 1; }\n")
     index_repo(project, GraphDB(default_db_path(project)))
 
-    server = GraphServer(project, role=BUILTIN_ROLES["frontend"])
+    server = GraphServer(project, role=BUILTIN_ROLES["developer"])
     server.call("write_file", {"path": "src/a.js", "content": "export const a = 1;\n"})
 
     builds = []

@@ -123,7 +123,7 @@ def test_rerun_restarts_the_engine_when_the_run_has_finished(tmp_path, monkeypat
     sid = client.post("/api/sessions", json={
         "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow", json={
-        "steps": [{"role": "backend", "task": "do it"}]})
+        "steps": [{"role": "developer", "task": "do it"}]})
 
     client.post(f"/api/sessions/{sid}/start")
     assert started == [sid]
@@ -172,7 +172,7 @@ def test_rerun_does_not_launch_a_second_engine_while_one_is_live(tmp_path, monke
         sid = client.post("/api/sessions", json={
             "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
         client.put(f"/api/sessions/{sid}/flow", json={
-            "steps": [{"role": "backend", "task": "do it"}]})
+            "steps": [{"role": "developer", "task": "do it"}]})
         client.post(f"/api/sessions/{sid}/start")
 
         session = client.app.state.store.get(sid)
@@ -218,7 +218,7 @@ def test_resume_after_stop_starts_a_fresh_engine(tmp_path, monkeypatch):
     sid = client.post("/api/sessions", json={
         "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow",
-               json={"steps": [{"role": "backend", "task": "do it"}]})
+               json={"steps": [{"role": "developer", "task": "do it"}]})
     client.post(f"/api/sessions/{sid}/start")
     assert engines == [sid]
 
@@ -263,7 +263,7 @@ def test_resume_while_merely_paused_does_not_start_a_second_engine(tmp_path, mon
         sid = client.post("/api/sessions", json={
             "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
         client.put(f"/api/sessions/{sid}/flow",
-                   json={"steps": [{"role": "backend", "task": "t"}]})
+                   json={"steps": [{"role": "developer", "task": "t"}]})
         client.post(f"/api/sessions/{sid}/start")
 
         client.post(f"/api/sessions/{sid}/pause")
@@ -283,7 +283,7 @@ def test_resume_with_nothing_pending_says_so(tmp_path, monkeypatch):
     sid = client.post("/api/sessions", json={
         "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow",
-               json={"steps": [{"role": "backend", "task": "t"}]})
+               json={"steps": [{"role": "developer", "task": "t"}]})
     session = client.app.state.store.get(sid)
     session.flow.steps[0].status = "done"
 
@@ -337,7 +337,7 @@ def test_rerun_after_a_stop_starts_once_the_model_call_returns(tmp_path, monkeyp
         sid = client.post("/api/sessions", json={
             "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
         client.put(f"/api/sessions/{sid}/flow",
-                   json={"steps": [{"role": "backend", "task": "t"}]})
+                   json={"steps": [{"role": "developer", "task": "t"}]})
         client.post(f"/api/sessions/{sid}/start")
         assert engines == [sid]
 
@@ -369,7 +369,7 @@ def test_rerunning_a_step_un_pauses_the_session(tmp_path, monkeypatch):
     sid = client.post("/api/sessions", json={
         "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow",
-               json={"steps": [{"role": "backend", "task": "t"}]})
+               json={"steps": [{"role": "developer", "task": "t"}]})
     client.post(f"/api/sessions/{sid}/start")
     client.post(f"/api/sessions/{sid}/pause")
 
@@ -393,7 +393,7 @@ def test_only_one_handover_is_armed_per_session(tmp_path, monkeypatch):
         sid = client.post("/api/sessions", json={
             "name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
         client.put(f"/api/sessions/{sid}/flow",
-                   json={"steps": [{"role": "backend", "task": "t"}]})
+                   json={"steps": [{"role": "developer", "task": "t"}]})
         client.post(f"/api/sessions/{sid}/start")
         client.post(f"/api/sessions/{sid}/stop")
 
@@ -478,7 +478,7 @@ def test_the_engine_runs_the_clock(tmp_path, monkeypatch):
     from trance.session import Session
 
     session = Session(name="p", project_dir=str(tmp_path))
-    session.flow.steps = [Step(role="backend", task="t")]
+    session.flow.steps = [Step(role="developer", task="t")]
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
 
     class Turn:

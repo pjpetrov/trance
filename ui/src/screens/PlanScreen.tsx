@@ -65,7 +65,7 @@ export function PlanScreen() {
   };
 
   const firstAgent = agents.data?.agents.find((role) => role.name !== "orchestrator")?.name
-    ?? "backend";
+    ?? "developer";
   // Only agents that can actually inspect a result: one with no tools would
   // return a verdict it had no way to have reached.
   const verifiers = (agents.data?.agents ?? []).filter((role) => role.verifier);

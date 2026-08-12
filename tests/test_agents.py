@@ -21,24 +21,38 @@ def project(tmp_path):
     return tmp_path
 
 
-def _tools(project, role_name="backend"):
+def _tools(project, role_name="developer"):
     return AgentTools(project, BUILTIN_ROLES[role_name])
+
+
+def _inspector():
+    """The inspect-only verifier shape. The shipped factchecker retired, but
+    the toolset it proved — judge whether work happened without being able to
+    do the work — is still machinery anyone can build an agent on."""
+    from trance.agents.roles import AgentRole
+
+    return AgentRole(name="auditor", title="Auditor", description="d",
+                     system_prompt="p", verifier=True, paths=[], toolsets=["inspect"])
 
 
 # ------------------------------------------------------------------ remits
 
 def test_role_remit_allows_and_denies(project):
-    backend = BUILTIN_ROLES["backend"]
-    assert backend.may_write("backend/main.py")
-    assert not backend.may_write("frontend/src/app.tsx")
+    developer = BUILTIN_ROLES["developer"]
+    assert developer.may_write("backend/main.py")
+    assert developer.may_write("frontend/src/app.tsx")
+    # Not everything: docs are the planner's, and the CI/container files have
+    # no owner until someone makes an agent for them.
+    assert not developer.may_write("docs/plan.md")
+    assert not developer.may_write("Dockerfile")
 
 
 def test_write_outside_remit_is_refused_and_reported(project):
-    result = _tools(project).write_file("frontend/src/app.tsx", "export const x = 1;")
+    result = _tools(project).write_file("docs/notes.md", "# notes")
     assert not result.ok
-    assert result.remit_violation == "frontend/src/app.tsx"
-    assert not (project / "frontend").exists()  # nothing was created
-    assert "frontend" in result.text and "remit" in result.text
+    assert result.remit_violation == "docs/notes.md"
+    assert not (project / "docs").exists()  # nothing was created
+    assert "Developer" in result.text and "remit" in result.text
 
 
 def test_write_inside_remit_succeeds(project):
@@ -121,7 +135,7 @@ provider = "small"
 """)
     config = Config.load(cfg_file)
 
-    coder = AgentRole(name="backend", title="B", description="", system_prompt="")
+    coder = AgentRole(name="developer", title="B", description="", system_prompt="")
     tester = AgentRole(name="tester", title="T", description="", system_prompt="", provider="small")
     override = AgentRole(name="x", title="X", description="", system_prompt="",
                          provider="small", model="custom-model")
@@ -185,27 +199,27 @@ def _edit(step, **changes):
 
 def test_editing_a_failed_step_requeues_it():
     """A plan you cannot correct after it failed is not much use."""
-    failed = Step(role="frontend", task="build it", status="failed",
+    failed = Step(role="developer", task="build it", status="failed",
                   check="tester", attempts=[Attempt(n=1, verdict="FAIL")])
     flow = Flow(steps=[failed])
 
     outcome = flow.apply_edits([_edit(failed, task="build it properly",
-                                      check="factchecker")])
+                                      check="reviewer")])
     assert outcome["requeued"] == [failed.id]        # the work changed
     assert flow.steps[0].status == "pending"
-    assert flow.steps[0].checker == "factchecker"    # and the setting applied too
+    assert flow.steps[0].checker == "reviewer"    # and the setting applied too
     assert flow.steps[0].attempts == []       # a re-queued step starts clean
 
 
 def test_editing_a_finished_step_requeues_it_too():
-    done = Step(role="backend", task="old task", status="done")
+    done = Step(role="developer", task="old task", status="done")
     flow = Flow(steps=[done])
     flow.apply_edits([_edit(done, task="new task")])
     assert flow.steps[0].status == "pending" and flow.steps[0].task == "new task"
 
 
 def test_a_cosmetic_edit_does_not_requeue():
-    done = Step(role="backend", task="t", status="done", max_loops=2)
+    done = Step(role="developer", task="t", status="done", max_loops=2)
     flow = Flow(steps=[done])
     outcome = flow.apply_edits([_edit(done, max_loops=5)])
     assert outcome["requeued"] == []
@@ -213,7 +227,7 @@ def test_a_cosmetic_edit_does_not_requeue():
 
 
 def test_a_step_in_flight_cannot_be_edited_or_removed():
-    running = Step(role="backend", task="original", status="running")
+    running = Step(role="developer", task="original", status="running")
     flow = Flow(steps=[running])
 
     flow.apply_edits([_edit(running, task="hijacked")])
@@ -224,7 +238,7 @@ def test_a_step_in_flight_cannot_be_edited_or_removed():
 
 
 def test_editing_keeps_queued_steering_on_a_pending_step():
-    todo = Step(role="backend", task="t")
+    todo = Step(role="developer", task="t")
     todo.steering.append("use SQLModel")
     flow = Flow(steps=[todo])
     flow.apply_edits([_edit(todo, task="t revised")])
@@ -233,10 +247,10 @@ def test_editing_keeps_queued_steering_on_a_pending_step():
 
 
 def test_steps_can_be_added_reordered_and_deleted():
-    a = Step(role="backend", task="a", status="done")
+    a = Step(role="developer", task="a", status="done")
     b = Step(role="tester", task="b")
     flow = Flow(steps=[a, b])
-    fresh = Step(role="frontend", task="c")
+    fresh = Step(role="developer", task="c")
 
     flow.apply_edits([fresh, _edit(b), _edit(a)])
     assert [s.task for s in flow.steps] == ["c", "b", "a"]
@@ -251,7 +265,7 @@ def test_library_seeds_from_builtins(tmp_path):
     from trance.agents.store import RoleStore
 
     store = RoleStore(tmp_path / "agents.json")
-    assert {"backend", "frontend", "tester", "reviewer"} <= {r.name for r in store.all()}
+    assert {"developer", "developer", "tester", "reviewer"} <= {r.name for r in store.all()}
 
 
 def test_edits_persist_and_builtins_are_topped_up(tmp_path):
@@ -260,14 +274,14 @@ def test_edits_persist_and_builtins_are_topped_up(tmp_path):
 
     path = tmp_path / "agents.json"
     store = RoleStore(path)
-    edited = store.get("backend")
+    edited = store.get("developer")
     edited.paths = ["services/**"]
     edited.toolsets = ["files", "graph", "commands"]
     store.upsert(edited)
 
     reopened = RoleStore(path)
-    assert reopened.get("backend").paths == ["services/**"]
-    assert "commands" in reopened.get("backend").toolsets
+    assert reopened.get("developer").paths == ["services/**"]
+    assert "commands" in reopened.get("developer").toolsets
     assert reopened.get("tester") is not None  # untouched builtin still there
 
 
@@ -289,7 +303,7 @@ def test_builtins_cannot_be_deleted(tmp_path):
     from trance.agents.store import RoleStore
 
     store = RoleStore(tmp_path / "agents.json")
-    assert store.delete("backend") is False
+    assert store.delete("developer") is False
     store.upsert(AgentRole(name="dba", title="D", description="", system_prompt=""))
     assert store.delete("dba") is True
 
@@ -300,19 +314,19 @@ def test_resolve_team_rebinds_to_the_library(tmp_path):
     from trance.agents.store import RoleStore
 
     store = RoleStore(tmp_path / "agents.json")
-    stale = AgentRole(name="backend", title="old", description="", system_prompt="",
+    stale = AgentRole(name="developer", title="old", description="", system_prompt="",
                       paths=["old/**"])
     (team,) = store.resolve_team([stale])
     assert team.paths != ["old/**"]        # library wins
-    assert team is store.get("backend")
+    assert team is store.get("developer")
 
 
 def test_resolve_team_accepts_names_and_drops_unknowns(tmp_path):
     from trance.agents.store import RoleStore
 
     store = RoleStore(tmp_path / "agents.json")
-    team = store.resolve_team(["backend", "ghost", "tester", "backend"])
-    assert [r.name for r in team] == ["backend", "tester"]  # deduped, unknown dropped
+    team = store.resolve_team(["developer", "ghost", "tester", "developer"])
+    assert [r.name for r in team] == ["developer", "tester"]  # deduped, unknown dropped
 
 
 def test_validation_rejects_unusable_definitions():
@@ -409,7 +423,7 @@ def test_the_brief_is_in_every_agent_prompt(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
     runner.run_agent(
-        role=BUILTIN_ROLES["backend"], task="build it", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="build it", project=tmp_path,
         config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st",
     )
     user_message = captured["messages"][1]["content"]
@@ -425,15 +439,15 @@ def test_reset_restores_a_builtin(tmp_path):
     from trance.agents.store import RoleStore
 
     store = RoleStore(tmp_path / "agents.json")
-    edited = store.get("backend")
+    edited = store.get("developer")
     edited.system_prompt = "you do nothing"
     edited.paths = []
     store.upsert(edited)
 
-    restored = store.reset("backend")
-    assert restored.system_prompt == BUILTIN_ROLES["backend"].system_prompt
-    assert restored.paths == BUILTIN_ROLES["backend"].paths
-    assert RoleStore(tmp_path / "agents.json").get("backend").paths  # persisted
+    restored = store.reset("developer")
+    assert restored.system_prompt == BUILTIN_ROLES["developer"].system_prompt
+    assert restored.paths == BUILTIN_ROLES["developer"].paths
+    assert RoleStore(tmp_path / "agents.json").get("developer").paths  # persisted
 
     assert store.reset("not-a-builtin") is None
 
@@ -443,9 +457,9 @@ def test_reset_does_not_mutate_the_shipped_definition(tmp_path):
     from trance.agents.store import RoleStore
 
     store = RoleStore(tmp_path / "agents.json")
-    role = store.reset("backend")
+    role = store.reset("developer")
     role.paths.append("everything/**")
-    assert "everything/**" not in BUILTIN_ROLES["backend"].paths
+    assert "everything/**" not in BUILTIN_ROLES["developer"].paths
 
 
 def test_editing_an_agent_never_mutates_the_shipped_default(tmp_path):
@@ -453,15 +467,15 @@ def test_editing_an_agent_never_mutates_the_shipped_default(tmp_path):
     edit rewrote the module-level default and reset() restored the edit."""
     from trance.agents.store import RoleStore
 
-    before = list(BUILTIN_ROLES["backend"].paths)
+    before = list(BUILTIN_ROLES["developer"].paths)
     store = RoleStore(tmp_path / "agents.json")
-    role = store.get("backend")
+    role = store.get("developer")
     role.paths = ["nonsense/**"]
     role.toolsets = []
     store.upsert(role)
 
-    assert BUILTIN_ROLES["backend"].paths == before
-    assert RoleStore(tmp_path / "other.json").get("backend").paths == before
+    assert BUILTIN_ROLES["developer"].paths == before
+    assert RoleStore(tmp_path / "other.json").get("developer").paths == before
 
 
 # ------------------------------------------------------- console detail
@@ -508,16 +522,16 @@ def test_command_detail_carries_exit_code_and_output(project):
 
 
 def test_refused_write_carries_no_diff(project):
-    result = _tools(project).write_file("frontend/x.tsx", "nope")
+    result = _tools(project).write_file("docs/x.md", "nope")
     assert result.remit_violation and result.detail == {}
 
 
 # ------------------------------------------------------- fact checker
 
-def test_factchecker_cannot_write_or_run_anything(project):
-    """The point of this role: a verifier that *can* write files will write
-    files. This one structurally cannot."""
-    tools = AgentTools(project, BUILTIN_ROLES["factchecker"])
+def test_an_inspect_verifier_cannot_write_or_run_anything(project):
+    """The point of the inspect toolset: a verifier that *can* write files
+    will write files. This one structurally cannot."""
+    tools = AgentTools(project, _inspector())
     offered = {s["function"]["name"] for s in tools.specs()}
     assert offered == {"check_file", "check_files", "list_files"}
     assert "write_file" not in offered and "run_command" not in offered
@@ -531,7 +545,7 @@ def test_factchecker_cannot_write_or_run_anything(project):
 
 
 def test_check_file_reports_presence_and_emptiness(project):
-    tools = AgentTools(project, BUILTIN_ROLES["factchecker"])
+    tools = AgentTools(project, BUILTIN_ROLES["reviewer"])
     (project / "backend" / "empty.py").write_text("")
     (project / "backend" / "blank.py").write_text("\n   \n")
 
@@ -543,20 +557,20 @@ def test_check_file_reports_presence_and_emptiness(project):
 
 def test_check_file_never_returns_contents(project):
     (project / "backend" / "secret.py").write_text("API_KEY = 'sk-do-not-leak'\n")
-    result = AgentTools(project, BUILTIN_ROLES["factchecker"]).check_file("backend/secret.py")
+    result = AgentTools(project, BUILTIN_ROLES["reviewer"]).check_file("backend/secret.py")
     assert "sk-do-not-leak" not in result.text
     assert result.detail["files"][0]["size_bytes"] == len("API_KEY = 'sk-do-not-leak'\n")
 
 
 def test_check_files_batches(project):
-    tools = AgentTools(project, BUILTIN_ROLES["factchecker"])
+    tools = AgentTools(project, BUILTIN_ROLES["reviewer"])
     result = tools.check_files(["backend/main.py", "backend/gone.py"])
     assert "has content" in result.text and "MISSING" in result.text
     assert [f["path"] for f in result.detail["files"]] == ["backend/main.py", "backend/gone.py"]
 
 
 def test_check_file_cannot_escape_the_project(project):
-    result = AgentTools(project, BUILTIN_ROLES["factchecker"]).check_file("../../etc/passwd")
+    result = AgentTools(project, BUILTIN_ROLES["reviewer"]).check_file("../../etc/passwd")
     assert "outside the project" in result.text
 
 
@@ -570,14 +584,14 @@ def test_an_inspect_only_agent_is_valid_without_a_remit():
 
 def test_only_inspection_capable_agents_are_verifiers():
     verifiers = {n for n, r in BUILTIN_ROLES.items() if r.verifier}
-    assert verifiers == {"tester", "reviewer", "factchecker", "visual-tester",
+    assert verifiers == {"tester", "reviewer", "visual-tester",
                          "regression"}
     # Every one of them can actually look at something before judging it.
     assert all(set(BUILTIN_ROLES[n].toolsets) & {"files", "inspect", "commands", "browser"}
                for n in verifiers)
     # The orchestrator has no toolsets at all — it could only ever guess.
     assert BUILTIN_ROLES["orchestrator"].verifier is False
-    assert BUILTIN_ROLES["backend"].verifier is False
+    assert BUILTIN_ROLES["developer"].verifier is False
 
 
 def test_a_non_verifier_is_not_asked_to_verify(tmp_path, monkeypatch):
@@ -589,9 +603,13 @@ def test_a_non_verifier_is_not_asked_to_verify(tmp_path, monkeypatch):
     from trance.flow import Attempt, Step
     from trance.session import Session
 
+    import copy
+
     session = Session(name="s", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["backend"], BUILTIN_ROLES["orchestrator"]]
-    step = Step(role="backend", task="t", verify_with="orchestrator")
+    developer = copy.deepcopy(BUILTIN_ROLES["developer"])
+    developer.checks = []                 # only the named non-verifier in play
+    session.team = [developer, BUILTIN_ROLES["orchestrator"]]
+    step = Step(role="developer", task="t", verify_with="orchestrator")
 
     bus = EventBus()
     seen = []
@@ -616,8 +634,8 @@ def test_a_real_verifier_is_still_invoked(tmp_path, monkeypatch):
     from trance.session import Session
 
     session = Session(name="s", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"]]
-    step = Step(role="frontend", task="t", verify_with="factchecker")
+    session.team = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["reviewer"]]
+    step = Step(role="developer", task="t", verify_with="reviewer")
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
 
     class Turn:
@@ -672,12 +690,12 @@ def test_truncated_call_tells_the_agent_what_actually_happened():
 
 
 def test_bad_arguments_get_a_schema_error_not_a_python_traceback(project):
-    result = _tools(project, "frontend").call("write_file", {})
+    result = _tools(project, "developer").call("write_file", {})
     assert "missing required argument(s): path, content" in result.text
     assert "Expected arguments:" in result.text
     assert "positional" not in result.text     # no leaked Python signature
 
-    wrong = _tools(project, "frontend").call("write_file", {"file": "a.js", "body": "x"})
+    wrong = _tools(project, "developer").call("write_file", {"file": "a.js", "body": "x"})
     assert "unexpected argument(s): file, body" in wrong.text
 
 
@@ -692,10 +710,9 @@ def test_a_step_without_a_verifier_says_so(tmp_path):
     bus = EventBus()
     seen = []
     bus.subscribe_sync(seen.append)
-    engine = FlowEngine(Session(name="s", project_dir=str(tmp_path)),
-                        Config.load(tmp_path / "none.toml"), bus)
+    engine = _engine(tmp_path, ["developer"], bus)
 
-    assert engine._verify(Step(role="backend", task="t"), Attempt(n=1)) is None
+    assert engine._verify(Step(role="developer", task="t"), Attempt(n=1)) is None
     assert any(e.type == "verification_skipped" for e in seen)
 
 
@@ -758,13 +775,23 @@ def test_the_refusal_message_lists_what_is_allowed(project):
 # ------------------------------------------- block loop: check + fixer
 
 def _engine(tmp_path, team, bus=None):
+    import copy
+
     from trance.config import Config
     from trance.engine import FlowEngine
     from trance.events import EventBus
     from trance.session import Session
 
     session = Session(name="s", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES[n] for n in team]
+    # Copies with the standing checks taken off: the developer ships with the
+    # reviewer on every step, and these tests each wire exactly the gates they
+    # mean to exercise — an implicit extra reviewer turn in every one of them
+    # would test the default instead of the machinery.
+    session.team = []
+    for name in team:
+        role = copy.deepcopy(BUILTIN_ROLES[name])
+        role.checks = []
+        session.team.append(role)
     return FlowEngine(session, Config.load(tmp_path / "none.toml"), bus or EventBus())
 
 
@@ -795,14 +822,14 @@ class _Turn:
 def test_a_passing_check_lets_the_flow_move_on(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker"])
-    step = Step(role="backend", task="t", check="factchecker")
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check="reviewer")
     order = []
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: (order.append(kw["role"].name),
-                                      _Turn("PASS" if kw["role"].name == "factchecker" else None))[1])
+                                      _Turn("PASS" if kw["role"].name == "reviewer" else None))[1])
     engine._execute(step)
-    assert order == ["backend", "factchecker"]
+    assert order == ["developer", "reviewer"]
     assert step.status == "done"
     assert not engine.session.stopping          # the flow continues
 
@@ -812,19 +839,19 @@ def test_a_failed_outcome_sends_the_work_to_the_fixer_then_loops(tmp_path, monke
     did good work and the step still failed."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
-    step = Step(role="backend", task="build it", check="factchecker",
-                on_fail="reviewer", max_loops=3)
+    engine = _engine(tmp_path, ["developer", "reviewer", "regression"])
+    step = Step(role="developer", task="build it", check="reviewer",
+                on_fail="regression", max_loops=3)
     order, prompts = [], {}
 
     def fake(**kw):
         name = kw["role"].name
         order.append(name)
         prompts[name] = kw["task"]
-        if name == "factchecker":
+        if name == "reviewer":
             return _Turn("PASS")                      # the report is honest
-        if name == "backend":
-            failing = order.count("backend") == 1
+        if name == "developer":
+            failing = order.count("developer") == 1
             return _Turn(None, "attempted",
                          outcome=("FAILED", "divide() raises on zero") if failing
                          else ("SUCCESS", ""))
@@ -835,9 +862,9 @@ def test_a_failed_outcome_sends_the_work_to_the_fixer_then_loops(tmp_path, monke
 
     # No check after the first attempt: the agent said it failed, and there is
     # no claim of success to test.
-    assert order == ["backend", "reviewer", "backend", "factchecker"]
+    assert order == ["developer", "regression", "developer", "reviewer"]
     assert step.status == "done"
-    assert "divide() raises on zero" in prompts["reviewer"]
+    assert "divide() raises on zero" in prompts["regression"]
 
 
 def test_a_failed_check_sends_the_agent_back_to_finish_the_job(tmp_path, monkeypatch):
@@ -849,14 +876,14 @@ def test_a_failed_check_sends_the_agent_back_to_finish_the_job(tmp_path, monkeyp
     bus = EventBus()
     seen = []
     bus.subscribe_sync(seen.append)
-    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"], bus)
-    step = Step(role="backend", task="t", check="factchecker",
-                on_fail="reviewer", max_loops=3)
+    engine = _engine(tmp_path, ["developer", "reviewer", "regression"], bus)
+    step = Step(role="developer", task="t", check="reviewer",
+                on_fail="regression", max_loops=3)
     order = []
 
     def fake(**kw):
         order.append(kw["role"].name)
-        if kw["role"].name == "factchecker":
+        if kw["role"].name == "reviewer":
             return _Turn("FAIL", "index.html is MISSING")
         return _Turn(None, "all done", outcome=("SUCCESS", ""))
 
@@ -866,8 +893,8 @@ def test_a_failed_check_sends_the_agent_back_to_finish_the_job(tmp_path, monkeyp
     # A failed check is usually something forgotten, so the agent that reported
     # success gets told what was missing and tries again — the fixer is for the
     # step's own FAILED outcome, not for this.
-    assert order == ["backend", "factchecker"] * 3
-    assert "reviewer" not in order
+    assert order == ["developer", "reviewer"] * 3
+    assert "regression" not in order
     assert step.status == "failed"                  # and it still halts in the end
     assert engine.session.status == "error"
     assert step.status == "failed"
@@ -881,21 +908,21 @@ def test_an_admitted_failure_loops_even_if_the_check_also_fails(tmp_path, monkey
     """It did not claim success, so there is no lie — just work to redo."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker"])
-    step = Step(role="backend", task="t", check="factchecker", max_loops=2)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check="reviewer", max_loops=2)
     order = []
 
     def fake(**kw):
         order.append(kw["role"].name)
-        if kw["role"].name == "factchecker":
+        if kw["role"].name == "reviewer":
             return _Turn("FAIL", "nothing on disk")
-        first = order.count("backend") == 1
+        first = order.count("developer") == 1
         return _Turn(None, "tried",
                      outcome=("FAILED", "could not write") if first else ("SUCCESS", ""))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
-    assert order == ["backend", "backend", "factchecker"]
+    assert order == ["developer", "developer", "reviewer"]
     assert step.status == "failed"      # second pass claimed success, check says no
     assert engine.session.stopping
 
@@ -903,19 +930,19 @@ def test_an_admitted_failure_loops_even_if_the_check_also_fails(tmp_path, monkey
 def test_without_a_fixer_the_block_simply_runs_again(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])
-    step = Step(role="backend", task="t", max_loops=2)
+    engine = _engine(tmp_path, ["developer"])
+    step = Step(role="developer", task="t", max_loops=2)
     order = []
 
     def fake(**kw):
         order.append(kw["role"].name)
-        first = order.count("backend") == 1
+        first = order.count("developer") == 1
         return _Turn(None, "x",
                      outcome=("FAILED", "not yet") if first else ("SUCCESS", ""))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
-    assert order == ["backend", "backend"]
+    assert order == ["developer", "developer"]
     assert step.status == "done"
 
 
@@ -927,8 +954,8 @@ def test_exhausting_the_loop_limit_halts_the_whole_flow(tmp_path, monkeypatch):
     bus = EventBus()
     seen = []
     bus.subscribe_sync(seen.append)
-    engine = _engine(tmp_path, ["backend", "reviewer"], bus)
-    step = Step(role="backend", task="t", on_fail="reviewer", max_loops=2)
+    engine = _engine(tmp_path, ["developer", "reviewer"], bus)
+    step = Step(role="developer", task="t", on_fail="reviewer", max_loops=2)
 
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: _Turn(None, "tried",
@@ -946,38 +973,38 @@ def test_no_fixer_runs_on_the_final_loop(tmp_path, monkeypatch):
     """Fixing after the last check would be work nothing ever verifies."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
-    step = Step(role="backend", task="t", check="factchecker",
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check="reviewer",
                 on_fail="reviewer", max_loops=1)
     order = []
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: (order.append(kw["role"].name),
-                                      _Turn("FAIL", "no") if kw["role"].name == "factchecker"
+                                      _Turn("FAIL", "no") if kw["role"].name == "reviewer"
                                       else _Turn(None, "x"))[1])
     engine._execute(step)
-    assert order == ["backend", "factchecker"]           # reviewer never ran
+    assert order == ["developer", "reviewer"]           # reviewer never ran
     assert step.status == "failed"
 
 
 def test_a_block_without_a_check_just_runs_once(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])
-    step = Step(role="backend", task="t")
+    engine = _engine(tmp_path, ["developer"])
+    step = Step(role="developer", task="t")
     order = []
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: (order.append(kw["role"].name), _Turn(None, "done"))[1])
     engine._execute(step)
-    assert order == ["backend"] and step.status == "done"
+    assert order == ["developer"] and step.status == "done"
 
 
 def test_legacy_verify_with_is_read_as_the_check(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    step = Step.from_dict({"role": "backend", "task": "t", "verify_with": "tester"})
-    assert step.checker == "tester" and step.fixer == "backend"
+    step = Step.from_dict({"role": "developer", "task": "t", "verify_with": "tester"})
+    assert step.checker == "tester" and step.fixer == "developer"
 
-    engine = _engine(tmp_path, ["backend", "tester"])
+    engine = _engine(tmp_path, ["developer", "tester"])
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: _Turn("PASS") if kw["role"].name == "tester"
                         else _Turn(None, "d"))
@@ -1027,8 +1054,8 @@ def test_a_proposal_that_names_a_check_anyway_is_ignored_and_says_so():
     one. Silently dropping it would leave the plan looking like it forgot."""
     from trance.agents.orchestrator import _normalize
 
-    out = _normalize({"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "t", "check": "reviewer"},
+    out = _normalize({"summary": "s", "team": ["developer"], "steps": [
+        {"role": "developer", "task": "t", "check": "reviewer"},
     ]}, _roles())
     assert out["steps"][0]["check"] is None
     assert any("reviewer" in d for d in out["dropped_checks"])
@@ -1038,7 +1065,7 @@ def test_a_fixer_without_a_check_is_dropped():
     from trance.agents.orchestrator import _normalize
 
     out = _normalize({"summary": "s", "team": [], "steps": [
-        {"role": "backend", "task": "t", "on_fail": "reviewer"},
+        {"role": "developer", "task": "t", "on_fail": "reviewer"},
     ]}, _roles())
     assert out["steps"][0]["on_fail"] is None      # nothing could ever fail
 
@@ -1046,11 +1073,11 @@ def test_a_fixer_without_a_check_is_dropped():
 def test_the_orchestrator_cannot_assign_work_to_itself():
     from trance.agents.orchestrator import _normalize
 
-    out = _normalize({"summary": "s", "team": ["orchestrator", "backend"], "steps": [
+    out = _normalize({"summary": "s", "team": ["orchestrator", "developer"], "steps": [
         {"role": "orchestrator", "task": "do it myself"},
-        {"role": "backend", "task": "real work"},
+        {"role": "developer", "task": "real work"},
     ]}, _roles())
-    assert [s["role"] for s in out["steps"]] == ["backend"]
+    assert [s["role"] for s in out["steps"]] == ["developer"]
     assert "orchestrator" not in out["team"]
 
 
@@ -1060,7 +1087,7 @@ def test_legacy_verify_with_in_a_proposal_is_ignored_too():
     from trance.agents.orchestrator import _normalize
 
     out = _normalize({"summary": "s", "team": [], "steps": [
-        {"role": "backend", "task": "t", "verify_with": "tester"},
+        {"role": "developer", "task": "t", "verify_with": "tester"},
     ]}, _roles())
     assert out["steps"][0]["check"] is None
 
@@ -1072,7 +1099,7 @@ def test_a_proposed_step_does_not_set_a_try_count():
     from trance.agents.orchestrator import _normalize, propose_flow_tool
 
     out = _normalize({"summary": "s", "team": [], "steps": [
-        {"role": "backend", "task": "t", "check": "tester", "max_loops": 99},
+        {"role": "developer", "task": "t", "check": "tester", "max_loops": 99},
     ]}, _roles())
     assert out["steps"][0]["max_loops"] == 0        # 0 = whatever that agent gets
 
@@ -1087,11 +1114,11 @@ def test_the_fact_check_joins_the_team_it_will_check():
     from trance.agents.orchestrator import _normalize, ensure_checks
     from trance.agents.roles import BUILTIN_ROLES as R
 
-    out = ensure_checks(_normalize({"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "build the API"},
+    out = ensure_checks(_normalize({"summary": "s", "team": ["developer"], "steps": [
+        {"role": "developer", "task": "build the API"},
     ]}, _roles()), roles=list(R.values()))
-    assert out["steps"][0]["checks"] == ["factchecker"]
-    assert set(out["team"]) == {"backend", "factchecker"}
+    assert out["steps"][0]["checks"] == ["reviewer"]
+    assert set(out["team"]) == {"developer", "reviewer"}
 
 
 
@@ -1456,7 +1483,7 @@ def test_the_last_outcome_line_wins():
 
 
 def test_working_agents_are_told_to_report_an_outcome():
-    for name in ("backend", "frontend", "tester"):
+    for name in ("developer", "developer", "tester"):
         assert "OUTCOME: SUCCESS" in BUILTIN_ROLES[name].system_prompt
         assert "OUTCOME: FAILED" in BUILTIN_ROLES[name].system_prompt
 
@@ -1467,29 +1494,22 @@ def test_the_tester_is_told_a_caught_bug_is_a_failed_step():
     assert "VERDICT: PASS" in prompt          # still usable as a check
 
 
-def test_the_factchecker_checks_truthfulness_not_quality():
-    prompt = BUILTIN_ROLES["factchecker"].system_prompt
-    assert "report of its own work is TRUE" in prompt
-    assert "not a reviewer" in prompt
-    assert "the whole run stops" in prompt     # it knows the weight of a FAIL
-
-
 def test_an_unstated_outcome_opens_the_loop(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "reviewer"])
-    step = Step(role="backend", task="t", on_fail="reviewer", max_loops=2)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", on_fail="reviewer", max_loops=2)
     order = []
 
     def fake(**kw):
         order.append(kw["role"].name)
-        first = order.count("backend") == 1
+        first = order.count("developer") == 1
         return _Turn(None, "x", outcome=("UNSTATED", "never said") if first
                      else ("SUCCESS", ""))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
-    assert order == ["backend", "reviewer", "backend"]   # it did not simply pass
+    assert order == ["developer", "reviewer", "developer"]   # it did not simply pass
     assert step.status == "done"
 
 
@@ -1547,20 +1567,20 @@ def test_a_failing_check_still_never_sends_work_to_the_fixer(tmp_path, monkeypat
     """The check only decides whether to halt. Only the outcome loops."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
-    step = Step(role="backend", task="t", check="factchecker",
-                on_fail="reviewer", max_loops=3)
+    engine = _engine(tmp_path, ["developer", "reviewer", "regression"])
+    step = Step(role="developer", task="t", check="reviewer",
+                on_fail="regression", max_loops=3)
     order = []
 
     def fake(**kw):
         order.append(kw["role"].name)
-        if kw["role"].name == "factchecker":
+        if kw["role"].name == "reviewer":
             return _Turn("FAIL", "nothing on disk")
         return _Turn(None, "done", outcome=("SUCCESS", ""))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
-    assert "reviewer" not in order          # the fixer was never involved
+    assert "regression" not in order        # the fixer was never involved
     assert engine.session.stopping         # it halted instead
 
 
@@ -1568,37 +1588,37 @@ def test_the_fixer_runs_without_any_check_configured(tmp_path, monkeypatch):
     """A fixer is about the step's outcome, so it needs no fact check."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "reviewer"])
-    step = Step(role="backend", task="t", check=None, on_fail="reviewer", max_loops=2)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check=None, on_fail="reviewer", max_loops=2)
     order = []
 
     def fake(**kw):
         order.append(kw["role"].name)
-        first = order.count("backend") == 1
+        first = order.count("developer") == 1
         return _Turn(None, "x",
                      outcome=("FAILED", "port already in use") if first else ("SUCCESS", ""))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
-    assert order == ["backend", "reviewer", "backend"]
+    assert order == ["developer", "reviewer", "developer"]
     assert step.status == "done"
 
 
 def test_the_fixer_is_briefed_on_the_outcome_not_the_check(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker", "reviewer"])
-    step = Step(role="backend", task="t", check="factchecker",
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check="reviewer",
                 on_fail="reviewer", max_loops=2)
     prompts = {}
 
     def fake(**kw):
         name = kw["role"].name
         prompts.setdefault(name, kw["task"])
-        if name == "factchecker":
+        if name == "reviewer":
             return _Turn("PASS", "files are all there")
-        if name == "backend":
-            first = "backend" not in prompts or len(prompts) < 3
+        if name == "developer":
+            first = "developer" not in prompts or len(prompts) < 3
             return _Turn(None, "tried",
                          outcome=("FAILED", "the port was already taken") if first
                          else ("SUCCESS", ""))
@@ -1674,7 +1694,7 @@ def test_repeated_truncation_fails_the_step_with_a_reason(monkeypatch, tmp_path)
 
     monkeypatch.setattr(runner, "client_for", lambda config: AlwaysTruncates())
     turn = runner.run_agent(
-        role=BUILTIN_ROLES["backend"], task="write a big file", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="write a big file", project=tmp_path,
         config=ModelConfig(max_tokens=4096), bus=EventBus(),
         session_id="s", step_id="st")
 
@@ -1707,7 +1727,7 @@ def test_one_truncated_call_is_retried_not_fatal(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runner, "client_for", lambda config: TruncatesOnce())
     turn = runner.run_agent(
-        role=BUILTIN_ROLES["backend"], task="write a big file", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="write a big file", project=tmp_path,
         config=ModelConfig(max_tokens=4096), bus=EventBus(),
         session_id="s", step_id="st")
 
@@ -1815,15 +1835,15 @@ def test_the_fixer_is_shown_what_the_failing_agent_did(tmp_path, monkeypatch):
     first move was always to re-run the suite it had just been told about."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["tester", "backend"])
-    step = Step(role="tester", task="test the paddle", on_fail="backend", max_loops=2)
+    engine = _engine(tmp_path, ["tester", "developer"])
+    step = Step(role="tester", task="test the paddle", on_fail="developer", max_loops=2)
     prompts = {}
 
     def fake(**kw):
         name = kw["role"].name
         prompts.setdefault(name, kw["task"])
         if name == "tester":
-            passed = "backend" in prompts
+            passed = "developer" in prompts
             return _Turn(None, "OUTCOME: FAILED — the ball passes through",
                          outcome=("SUCCESS", "") if passed
                          else ("FAILED", "the ball passes through"),
@@ -1833,7 +1853,7 @@ def test_the_fixer_is_shown_what_the_failing_agent_did(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    brief = prompts["backend"]
+    brief = prompts["developer"]
     assert "npm test" in brief and "Expected: -3" in brief
     assert "tests/ball.test.js" in brief
     assert "do not repeat it" in brief          # told not to re-derive it
@@ -1875,7 +1895,7 @@ def _tools_with_approval(tmp_path, role, broker):
                       approve=broker.ask, session_id="s", step_id="st")
 
 
-def _tools(tmp_path, role_name="backend"):
+def _tools(tmp_path, role_name="developer"):
     from trance.agents.tools import AgentTools
 
     return AgentTools(tmp_path, BUILTIN_ROLES[role_name], None, notify=lambda *a, **k: None)
@@ -1912,7 +1932,7 @@ def test_append_obeys_the_remit_like_any_write(tmp_path):
 
 
 def test_an_agent_without_the_files_toolset_cannot_append(tmp_path):
-    tools = _tools(tmp_path, "factchecker")
+    tools = AgentTools(tmp_path, _inspector())
     outcome = tools.call("append_file", {"path": "a.txt", "content": "x"})
     assert outcome.ok is False and "do not have" in outcome.text
 
@@ -1920,7 +1940,7 @@ def test_an_agent_without_the_files_toolset_cannot_append(tmp_path):
 def test_agents_are_told_how_to_write_a_file_too_long_for_one_reply():
     from trance.agents.tools import permissions_brief
 
-    brief = permissions_brief(BUILTIN_ROLES["backend"])
+    brief = permissions_brief(BUILTIN_ROLES["developer"])
     assert "append_file" in brief and "cut off" in brief
 
 
@@ -1930,16 +1950,16 @@ def test_a_note_reaches_the_next_agents_prompt(tmp_path):
     from trance.agents.memory import ProjectMemory
 
     memory = ProjectMemory(tmp_path)
-    stored, message = memory.note("backend", "the API is POST /api/games returning {id, state}")
+    stored, message = memory.note("developer", "the API is POST /api/games returning {id, state}")
     assert stored and "every agent after you" in message
     assert "POST /api/games" in memory.for_prompt()
-    assert "**backend**" in memory.for_prompt()      # who decided it, not just what
+    assert "**developer**" in memory.for_prompt()    # who decided it, not just what
 
 
 def test_memory_survives_a_new_process(tmp_path):
     from trance.agents.memory import ProjectMemory
 
-    ProjectMemory(tmp_path).note("backend", "the server listens on port 3100")
+    ProjectMemory(tmp_path).note("developer", "the server listens on port 3100")
     assert "3100" in ProjectMemory(tmp_path).for_prompt()
     assert (tmp_path / ".trance" / "memory.md").exists()   # editable by hand
 
@@ -1949,8 +1969,8 @@ def test_the_same_fact_is_not_stored_twice(tmp_path):
     from trance.agents.memory import ProjectMemory
 
     memory = ProjectMemory(tmp_path)
-    memory.note("backend", "the server listens on port 3100")
-    stored, message = memory.note("frontend", "The server listens on port 3100.")
+    memory.note("developer", "the server listens on port 3100")
+    stored, message = memory.note("developer", "The server listens on port 3100.")
 
     assert stored is False and "Already in project memory" in message
     assert len(memory.notes()) == 1
@@ -1961,7 +1981,7 @@ def test_the_prompt_view_is_bounded_and_keeps_the_newest(tmp_path):
 
     memory = ProjectMemory(tmp_path)
     for i in range(60):
-        memory.note("backend", f"decision number {i} " + "x" * 80)
+        memory.note("developer", f"decision number {i} " + "x" * 80)
 
     view = memory.for_prompt(budget=1000)
     assert len(view) <= 1100
@@ -1971,10 +1991,10 @@ def test_the_prompt_view_is_bounded_and_keeps_the_newest(tmp_path):
 
 
 def test_remember_is_offered_to_working_agents_but_not_to_the_factchecker(tmp_path):
-    tools = _tools(tmp_path, "backend")
+    tools = _tools(tmp_path, "developer")
     assert "remember" in {s["function"]["name"] for s in tools.specs()}
 
-    checker = _tools(tmp_path, "factchecker")
+    checker = AgentTools(tmp_path, _inspector())
     assert "remember" not in {s["function"]["name"] for s in checker.specs()}
     assert checker.call("remember", {"note": "x"}).ok is False
 
@@ -1986,7 +2006,7 @@ def test_an_agent_starts_with_what_the_team_already_decided(tmp_path, monkeypatc
     from trance.events import EventBus
     from trance.providers.base import ChatResponse
 
-    ProjectMemory(tmp_path).note("backend", "the API is POST /api/games")
+    ProjectMemory(tmp_path).note("developer", "the API is POST /api/games")
     captured = {}
 
     class FakeClient:
@@ -1995,7 +2015,7 @@ def test_an_agent_starts_with_what_the_team_already_decided(tmp_path, monkeypatc
             return ChatResponse(text="OUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="call the API", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="call the API", project=tmp_path,
                      config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
 
     assert "POST /api/games" in captured["prompt"]
@@ -2062,7 +2082,7 @@ def test_an_agent_is_shown_the_map_before_it_starts_reading(tmp_path, monkeypatc
             return ChatResponse(text="OUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
-    runner.run_agent(role=BUILTIN_ROLES["backend"], task="add an endpoint", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="add an endpoint", project=tmp_path,
                      config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st",
                      project_map="server/app.py: create_app, register_routes")
 
@@ -2086,7 +2106,7 @@ def test_the_memory_endpoint_shows_and_edits_what_agents_see(tmp_path, monkeypat
     project.mkdir()
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(project)}).json()["id"]
-    ProjectMemory(project).note("backend", "the server listens on port 9999")
+    ProjectMemory(project).note("developer", "the server listens on port 9999")
 
     body = client.get(f"/api/sessions/{sid}/memory").json()
     assert "9999" in body["raw"] and len(body["notes"]) == 1
@@ -2105,7 +2125,7 @@ def test_memory_is_in_every_request_of_a_turn(tmp_path, monkeypatch):
     from trance.events import EventBus
     from trance.providers.base import ChatResponse, ToolCall
 
-    ProjectMemory(tmp_path).note("backend", "the API is POST /api/games")
+    ProjectMemory(tmp_path).note("developer", "the API is POST /api/games")
     seen = []
 
     class Looper:
@@ -2121,7 +2141,7 @@ def test_memory_is_in_every_request_of_a_turn(tmp_path, monkeypatch):
             return ChatResponse(text="OUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: Looper())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="build the ui", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="build the ui", project=tmp_path,
                      config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
 
     assert len(seen) == 5          # 4 rounds, plus the end-of-step memory nudge
@@ -2133,9 +2153,9 @@ def test_the_verifier_sees_the_same_memory_as_the_worker(tmp_path, monkeypatch):
     just a second opinion about the wrong thing."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker"])
-    engine.memory.note("backend", "the server listens on port 3100")
-    step = Step(role="backend", task="build it", check="factchecker")
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    engine.memory.note("developer", "the server listens on port 3100")
+    step = Step(role="developer", task="build it", check="reviewer")
     prompts = {}
 
     def fake(**kw):
@@ -2145,8 +2165,8 @@ def test_the_verifier_sees_the_same_memory_as_the_worker(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert "3100" in prompts["backend"]
-    assert "3100" in prompts["factchecker"]
+    assert "3100" in prompts["developer"]
+    assert "3100" in prompts["reviewer"]
 
 
 def test_the_orchestrator_plans_against_the_teams_decisions(tmp_path, monkeypatch):
@@ -2156,7 +2176,7 @@ def test_the_orchestrator_plans_against_the_teams_decisions(tmp_path, monkeypatc
     from trance.events import EventBus
     from trance.providers.base import ChatResponse
 
-    ProjectMemory(tmp_path).note("backend", "the server listens on port 3100")
+    ProjectMemory(tmp_path).note("developer", "the server listens on port 3100")
     captured = {}
 
     class FakeClient:
@@ -2175,7 +2195,7 @@ def test_the_orchestrator_plans_against_the_teams_decisions(tmp_path, monkeypatc
 
 # --------------------------------- making every step update the memory
 
-def _turn_with(monkeypatch, replies, role="backend", project=None, **kw):
+def _turn_with(monkeypatch, replies, role="developer", project=None, **kw):
     """Drive run_agent with a scripted sequence of model replies."""
     from trance.agents import runner
     from trance.config import ModelConfig
@@ -2272,7 +2292,7 @@ def test_an_agent_that_did_nothing_is_not_asked(tmp_path, monkeypatch):
 
 def _fill(memory, n, prefix="fact"):
     for i in range(n):
-        memory.note("backend", f"{prefix} number {i} that the team must follow")
+        memory.note("developer", f"{prefix} number {i} that the team must follow")
 
 
 def test_memory_is_compacted_once_it_outgrows_every_prompt(tmp_path):
@@ -2342,8 +2362,8 @@ def test_a_failing_rewrite_leaves_the_memory_alone(tmp_path):
 def test_a_small_memory_is_left_alone(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])
-    engine.memory.note("backend", "the port is 3100")
+    engine = _engine(tmp_path, ["developer"])
+    engine.memory.note("developer", "the port is 3100")
     called = []
     monkeypatch.setattr(engine.memory, "compact", lambda *a, **k: called.append(1) or {})
 
@@ -2354,7 +2374,7 @@ def test_a_small_memory_is_left_alone(tmp_path, monkeypatch):
 def test_the_engine_compacts_between_steps_not_during_one(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])
+    engine = _engine(tmp_path, ["developer"])
     _fill(engine.memory, 30)
     seen = []
 
@@ -2366,7 +2386,7 @@ def test_the_engine_compacts_between_steps_not_during_one(tmp_path, monkeypatch)
     monkeypatch.setattr(engine.memory, "compact",
                         lambda rewrite: {"compacted": True, "before": 30, "after": 2})
 
-    engine._execute(Step(role="backend", task="t"))
+    engine._execute(Step(role="developer", task="t"))
     assert seen == [30]        # the step ran against a stable memory
 
 
@@ -2402,8 +2422,8 @@ def test_compaction_can_be_triggered_from_the_ui(tmp_path, monkeypatch):
 # ------------------------------------- sizing steps and splitting big ones
 
 def _proposal(*points):
-    return {"summary": "s", "team": ["backend"],
-            "steps": [{"role": "backend", "task": f"task worth {p}", "check": "factchecker",
+    return {"summary": "s", "team": ["developer"],
+            "steps": [{"role": "developer", "task": f"task worth {p}", "check": "reviewer",
                        "on_fail": None, "max_loops": 2, "points": p} for p in points]}
 
 
@@ -2443,8 +2463,8 @@ def test_a_step_over_the_threshold_is_broken_up(tmp_path, monkeypatch):
     from trance.events import EventBus
 
     asked = _split_client(monkeypatch, {"task worth 8": [
-        {"role": "backend", "task": "write the model layer", "points": 3},
-        {"role": "backend", "task": "write the routes on top of it", "points": 3},
+        {"role": "developer", "task": "write the model layer", "points": 3},
+        {"role": "developer", "task": "write the routes on top of it", "points": 3},
     ]})
     out = split_oversized(_proposal(2, 8), roles=list(R.values()),
                           config=ModelConfig(), bus=EventBus(), session_id="s", threshold=5)
@@ -2464,13 +2484,13 @@ def test_a_split_piece_inherits_the_check_it_was_given(tmp_path, monkeypatch):
     from trance.events import EventBus
 
     _split_client(monkeypatch, {"task worth 8": [
-        {"role": "backend", "task": "part one", "points": 3},
-        {"role": "backend", "task": "part two", "points": 2},
+        {"role": "developer", "task": "part one", "points": 3},
+        {"role": "developer", "task": "part two", "points": 2},
     ]})
     out = split_oversized(_proposal(8), roles=list(R.values()), config=ModelConfig(),
                           bus=EventBus(), session_id="s", threshold=5)
 
-    assert [s["check"] for s in out["steps"]] == ["factchecker", "factchecker"]
+    assert [s["check"] for s in out["steps"]] == ["reviewer", "reviewer"]
 
 
 def test_a_step_that_cannot_be_split_is_kept(monkeypatch):
@@ -2481,7 +2501,7 @@ def test_a_step_that_cannot_be_split_is_kept(monkeypatch):
     from trance.events import EventBus
 
     _split_client(monkeypatch, {"task worth 13": [
-        {"role": "backend", "task": "task worth 13", "points": 13}]})
+        {"role": "developer", "task": "task worth 13", "points": 13}]})
     out = split_oversized(_proposal(13), roles=list(R.values()), config=ModelConfig(),
                           bus=EventBus(), session_id="s", threshold=5)
 
@@ -2497,10 +2517,10 @@ def test_splitting_recurses_but_stops(monkeypatch):
     from trance.events import EventBus
 
     asked = _split_client(monkeypatch, {
-        "task worth 13": [{"role": "backend", "task": "still big", "points": 8},
-                          {"role": "backend", "task": "small bit", "points": 2}],
-        "still big": [{"role": "backend", "task": "half a", "points": 3},
-                      {"role": "backend", "task": "half b", "points": 3}],
+        "task worth 13": [{"role": "developer", "task": "still big", "points": 8},
+                          {"role": "developer", "task": "small bit", "points": 2}],
+        "still big": [{"role": "developer", "task": "half a", "points": 3},
+                      {"role": "developer", "task": "half b", "points": 3}],
     })
     out = split_oversized(_proposal(13), roles=list(R.values()), config=ModelConfig(),
                           bus=EventBus(), session_id="s", threshold=5)
@@ -2524,7 +2544,7 @@ def test_a_zero_threshold_turns_splitting_off(monkeypatch):
 def test_the_estimate_survives_into_the_flow():
     from trance.flow import Step
 
-    step = Step.from_dict({"role": "backend", "task": "t", "points": 5})
+    step = Step.from_dict({"role": "developer", "task": "t", "points": 5})
     assert step.points == 5 and step.to_dict()["points"] == 5
 
 
@@ -2560,8 +2580,8 @@ def test_a_step_can_be_split_from_the_flow_editor(tmp_path, monkeypatch):
         def complete(self, messages, tools=None, **kwargs):
             return ChatResponse(text="", tool_calls=[ToolCall(
                 id="c", name="split_step", arguments={"steps": [
-                    {"role": "backend", "task": "write the model layer", "points": 3},
-                    {"role": "backend", "task": "write the routes", "points": 2}]})])
+                    {"role": "developer", "task": "write the model layer", "points": 3},
+                    {"role": "developer", "task": "write the routes", "points": 2}]})])
 
     monkeypatch.setattr("trance.agents.orchestrator.client_for", lambda config: FakeClient())
     config = Config.load(tmp_path / "none.toml")
@@ -2571,7 +2591,7 @@ def test_a_step_can_be_split_from_the_flow_editor(tmp_path, monkeypatch):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        {"role": "backend", "task": "build the whole api", "points": 8},
+        {"role": "developer", "task": "build the whole api", "points": 8},
         {"role": "tester", "task": "test it", "points": 2}]})
 
     session = client.app.state.store.get(sid)
@@ -2596,9 +2616,9 @@ def test_the_plan_is_returned_before_the_splitting_finishes(tmp_path, monkeypatc
     from trance.server import app as app_module
 
     splitting = threading.Event()
-    proposal = {"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "build the whole api", "points": 8},
-        {"role": "backend", "task": "add a health check", "points": 1}]}
+    proposal = {"summary": "s", "team": ["developer"], "steps": [
+        {"role": "developer", "task": "build the whole api", "points": 8},
+        {"role": "developer", "task": "add a health check", "points": 1}]}
 
     def fake_chat(**kw):
         return {"text": "here is the plan", "proposal": proposal, "truncated": False}
@@ -2631,11 +2651,11 @@ def test_an_agent_is_told_the_goal_and_what_its_task_is_not(tmp_path, monkeypatc
     wrong choices — an API shape nothing downstream can use."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "frontend", "tester"])
+    engine = _engine(tmp_path, ["developer", "developer", "tester"])
     engine.session.goal = "A crypto backtester with TradingView charts."
     engine.session.flow.steps = [
-        Step(role="backend", task="write the OHLC loader", id="s1"),
-        Step(role="frontend", task="draw the chart", id="s2"),
+        Step(role="developer", task="write the OHLC loader", id="s1"),
+        Step(role="developer", task="draw the chart", id="s2"),
         Step(role="tester", task="test the loader", id="s3"),
     ]
     prompts = {}
@@ -2647,7 +2667,7 @@ def test_an_agent_is_told_the_goal_and_what_its_task_is_not(tmp_path, monkeypatc
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(engine.session.flow.steps[0])
 
-    goal, placement = prompts["backend"]
+    goal, placement = prompts["developer"]
     assert "crypto backtester" in goal
     assert "step 1 of 3" in placement
     assert "draw the chart" in placement          # it knows what it must serve
@@ -2658,8 +2678,8 @@ def test_an_agent_is_told_the_goal_and_what_its_task_is_not(tmp_path, monkeypatc
 def test_the_last_step_is_told_it_is_the_last(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])
-    engine.session.flow.steps = [Step(role="backend", task="finish it", id="s1")]
+    engine = _engine(tmp_path, ["developer"])
+    engine.session.flow.steps = [Step(role="developer", task="finish it", id="s1")]
     seen = {}
 
     def fake(**kw):
@@ -2677,9 +2697,9 @@ def test_only_the_next_two_steps_are_shown(tmp_path, monkeypatch):
     couple is orientation."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])
+    engine = _engine(tmp_path, ["developer"])
     engine.session.flow.steps = [
-        Step(role="backend", task=f"task {i}", id=f"s{i}") for i in range(6)]
+        Step(role="developer", task=f"task {i}", id=f"s{i}") for i in range(6)]
     seen = {}
 
     def fake(**kw):
@@ -2708,16 +2728,16 @@ def test_the_plan_is_written_where_a_person_can_read_it(tmp_path):
     from trance.flow import Step
 
     path = write_plan(tmp_path, "A crypto backtester.", [
-        Step(role="backend", task="write the loader", points=3, check="factchecker",
+        Step(role="developer", task="write the loader", points=3, check="reviewer",
              status="done"),
-        Step(role="frontend", task="draw the chart", points=5),
+        Step(role="developer", task="draw the chart", points=5),
     ])
     text = path.read_text()
 
     assert path.name == "PLAN.md" and path.parent.name == ".trance"
     assert "A crypto backtester." in text
     assert "[x]" in text and "write the loader" in text     # progress is visible
-    assert "checked by factchecker" in text
+    assert "checked by reviewer" in text
     # Never the project's own README: that belongs to whoever reads the repo.
     assert not (tmp_path / "README.md").exists()
 
@@ -2732,12 +2752,12 @@ def test_the_scaffolding_files_have_an_owner():
     and only devops could touch the file. The coders own their own
     scaffolding now, because the one who adds the import is the one who knows
     the dependency."""
-    for owner, path in [("frontend", "package.json"), ("frontend", "tsconfig.json"),
-                        ("frontend", "vite.config.ts"), ("frontend", "index.html"),
-                        ("frontend", "package-lock.json"), ("frontend", ".gitignore"),
-                        ("backend", "package.json"), ("backend", "requirements.txt"),
-                        ("backend", "pyproject.toml"), ("backend", ".gitignore"),
-                        ("fullstack", "package.json"), ("fullstack", "vite.config.ts"),
+    for owner, path in [("developer", "package.json"), ("developer", "tsconfig.json"),
+                        ("developer", "vite.config.ts"), ("developer", "index.html"),
+                        ("developer", "package-lock.json"), ("developer", ".gitignore"),
+                        ("developer", "package.json"), ("developer", "requirements.txt"),
+                        ("developer", "pyproject.toml"), ("developer", ".gitignore"),
+                        ("developer", "package.json"), ("developer", "vite.config.ts"),
                         ("planner", "README.md")]:
         assert BUILTIN_ROLES[owner].may_write(path), (owner, path)
 
@@ -2746,9 +2766,9 @@ def test_devops_is_gone_and_the_widening_stayed_narrow():
     """The role is retired everywhere, and folding its files into the coders
     must not have handed anyone the other side's code."""
     assert "devops" not in BUILTIN_ROLES
-    assert not BUILTIN_ROLES["frontend"].may_write("server/app.py")
-    assert not BUILTIN_ROLES["backend"].may_write("src/App.tsx")
-    for verifier in ("factchecker", "reviewer", "regression"):
+    assert BUILTIN_ROLES["developer"].may_write("server/app.py")
+    assert BUILTIN_ROLES["developer"].may_write("src/App.tsx")
+    for verifier in ("reviewer", "regression"):
         assert not BUILTIN_ROLES[verifier].may_write("package.json")
 
 
@@ -2781,7 +2801,7 @@ def test_a_step_refused_by_the_remit_says_who_owns_the_files(tmp_path, monkeypat
     rather than failing — no number of loops makes them land."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["tester", "frontend"])
+    engine = _engine(tmp_path, ["tester", "developer"])
     step = Step(role="tester", task="write the game and its tests", max_loops=2)
 
     def fake(**kw):
@@ -2796,7 +2816,7 @@ def test_a_step_refused_by_the_remit_says_who_owns_the_files(tmp_path, monkeypat
     halted = next(e for e in engine.bus.history(engine.session.id)
                   if e.type == "run_halted")
     assert "src/game.js" in halted.payload["message"]
-    assert "frontend owns" in halted.payload["hint"]
+    assert "developer owns" in halted.payload["hint"]
     assert "Looping cannot fix this" in halted.payload["hint"]
 
 
@@ -2806,8 +2826,8 @@ def test_the_owner_is_found_even_when_it_is_not_on_the_team(tmp_path, monkeypatc
     from trance.flow import Step
 
     engine = _engine(tmp_path, ["tester"])           # no coder on this team
-    assert engine._owner_of("src/App.tsx") == "frontend"
-    assert engine._owner_of("server/app.js") == "backend"
+    assert engine._owner_of("src/App.tsx") == "developer"
+    assert engine._owner_of("server/app.js") == "developer"
     assert engine._owner_of("nothing/owns/this.weird") is None
 
 
@@ -2818,7 +2838,7 @@ def test_the_manifests_belong_to_the_coders_and_nobody_else():
     package.json can make its own claim true."""
     owners = {name for name, role in BUILTIN_ROLES.items()
               if role.may_write("package.json")}
-    assert owners == {"backend", "frontend", "fullstack"}
+    assert owners == {"developer", "developer", "developer"}
 
 
 def test_an_empty_memory_says_so_rather_than_being_hidden(tmp_path, monkeypatch):
@@ -2838,7 +2858,7 @@ def test_an_empty_memory_says_so_rather_than_being_hidden(tmp_path, monkeypatch)
             return ChatResponse(text="OUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
-    runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
 
     assert "## Project memory" in captured["prompt"]
@@ -2853,7 +2873,7 @@ def test_memory_is_shown_before_the_toolset(tmp_path, monkeypatch):
     from trance.events import EventBus
     from trance.providers.base import ChatResponse
 
-    ProjectMemory(tmp_path).note("backend", "the port is 3100")
+    ProjectMemory(tmp_path).note("developer", "the port is 3100")
     captured = {}
 
     class FakeClient:
@@ -2862,7 +2882,7 @@ def test_memory_is_shown_before_the_toolset(tmp_path, monkeypatch):
             return ChatResponse(text="OUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: FakeClient())
-    runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st")
 
     prompt = captured["prompt"]
@@ -3178,8 +3198,8 @@ def test_an_exhausted_block_gets_one_try_on_the_stronger_model(tmp_path, monkeyp
     loop varies the prompt and the fixer; it never varies the model."""
     from trance.flow import Step
 
-    engine = _escalating_engine(tmp_path, ["backend", "factchecker"])
-    step = Step(role="backend", task="fix the socket handling", max_loops=2)
+    engine = _escalating_engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="fix the socket handling", max_loops=2)
     models = []
 
     def fake(**kw):
@@ -3200,8 +3220,8 @@ def test_an_exhausted_block_gets_one_try_on_the_stronger_model(tmp_path, monkeyp
 def test_the_escalated_attempt_is_shown_every_earlier_failure(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _escalating_engine(tmp_path, ["backend"])
-    step = Step(role="backend", task="fix the socket handling", max_loops=2)
+    engine = _escalating_engine(tmp_path, ["developer"])
+    step = Step(role="developer", task="fix the socket handling", max_loops=2)
     tasks = []
 
     def fake(**kw):
@@ -3222,8 +3242,8 @@ def test_escalation_happens_once_and_then_the_run_halts(tmp_path, monkeypatch):
     """Escalation that can loop is just a longer loop with a bigger bill."""
     from trance.flow import Step
 
-    engine = _escalating_engine(tmp_path, ["backend"])
-    step = Step(role="backend", task="fix it", max_loops=2)
+    engine = _escalating_engine(tmp_path, ["developer"])
+    step = Step(role="developer", task="fix it", max_loops=2)
     calls = []
 
     def fake(**kw):
@@ -3241,8 +3261,8 @@ def test_escalation_happens_once_and_then_the_run_halts(tmp_path, monkeypatch):
 def test_without_an_escalation_model_nothing_changes(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])          # no escalation configured
-    step = Step(role="backend", task="fix it", max_loops=2)
+    engine = _engine(tmp_path, ["developer"])          # no escalation configured
+    step = Step(role="developer", task="fix it", max_loops=2)
     calls = []
 
     def fake(**kw):
@@ -3265,7 +3285,7 @@ def test_compaction_never_rewrites_what_the_user_wrote(tmp_path):
     memory = ProjectMemory(tmp_path)
     _fill(memory, 20)
     memory.note("user", "THE TEST SUITE PASSES — stop trying to fix a socket bug")
-    memory.note("backend", "one more agent observation")
+    memory.note("developer", "one more agent observation")
 
     seen = {}
 
@@ -3308,7 +3328,7 @@ def test_a_graph_miss_is_not_reported_as_a_refusal(tmp_path):
     (tmp_path / "app.py").write_text("def charge(order):\n    return 1\n")
     db = GraphDB(tmp_path / "g.db")
     index_repo(tmp_path, db)
-    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["developer"], ContextTools(db, tmp_path),
                        notify=lambda *a, **k: None)
 
     miss = tools.call("search_symbols", {"pattern": "nothing_like_this"})
@@ -3430,7 +3450,7 @@ def test_the_estimate_is_calibrated_against_the_endpoints_own_count(tmp_path, mo
 
     (tmp_path / "big.txt").write_text("z" * 20000)
     monkeypatch.setattr(runner, "client_for", lambda config: DenseCounter())
-    runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(context_window=20000, max_tokens=4000),
                      bus=EventBus(), session_id="s", step_id="st")
 
@@ -3465,7 +3485,7 @@ def _reader(monkeypatch, tmp_path, reads, final="OUTCOME: SUCCESS"):
             return ChatResponse(text=final)
 
     monkeypatch.setattr(runner, "client_for", lambda config: Repeater())
-    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+    turn = runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                             config=ModelConfig(), bus=EventBus(),
                             session_id="s", step_id="st")
     return turn, results
@@ -3516,7 +3536,7 @@ def test_a_file_that_changed_is_read_again_in_full(tmp_path, monkeypatch):
 
     client = Rewriter()
     monkeypatch.setattr(runner, "client_for", lambda config: client)
-    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+    turn = runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                             config=ModelConfig(), bus=EventBus(),
                             session_id="s", step_id="st")
 
@@ -3555,7 +3575,7 @@ def test_a_trimmed_result_may_be_fetched_again(tmp_path, monkeypatch):
 
 # ------------------- large files answer with their shape, not their bulk
 
-def _indexed_tools(tmp_path, role="frontend"):
+def _indexed_tools(tmp_path, role="developer"):
     from trance.agents.tools import AgentTools
     from trance.db import GraphDB
     from trance.indexer.service import index_repo
@@ -3649,7 +3669,7 @@ def _tf_loop(**kw):
 
     test = LoopNode(id="n_test", role="tester", focus="run the tests",
                     on={SUCCESS: Edge(EXIT_LOOP), FAILED: Edge("n_fix", max_visits=3)})
-    fix = LoopNode(id="n_fix", role="backend", focus="fix the code under test",
+    fix = LoopNode(id="n_fix", role="developer", focus="fix the code under test",
                    on={SUCCESS: Edge("n_test", max_visits=3), FAILED: Edge(FAIL_LOOP)})
     return Loop(name="test-and-fix", nodes=[test, fix], start="n_test", **kw)
 
@@ -3659,7 +3679,7 @@ def test_a_loop_walks_from_agent_to_agent_by_outcome(tmp_path, monkeypatch):
     tester runs again."""
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
     step = Step(role="", loop="test-and-fix", task="make the paddle bounce")
     order = []
 
@@ -3674,14 +3694,14 @@ def test_a_loop_walks_from_agent_to_agent_by_outcome(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert order == ["tester", "backend", "tester"]
+    assert order == ["tester", "developer", "tester"]
     assert step.status == "done"
 
 
 def test_each_agent_in_a_loop_gets_the_step_task_and_its_own_focus(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["tester", "backend"],
+    engine = _loop_engine(tmp_path, ["tester", "developer"],
                           _tf_loop(prompt="This block ends when the tests pass."))
     engine.session.goal = "A crypto backtester."
     step = Step(role="", loop="test-and-fix", task="make the paddle bounce")
@@ -3705,7 +3725,7 @@ def test_a_loop_that_will_not_converge_stops(tmp_path, monkeypatch):
     """max_visits on an edge is what makes a loop finite."""
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
     step = Step(role="", loop="test-and-fix", task="t")
     order = []
 
@@ -3732,8 +3752,8 @@ def test_an_unrouted_outcome_ends_the_loop_rather_than_guessing(tmp_path, monkey
     from trance.loops import EXIT_LOOP, SUCCESS, Edge, Loop, LoopNode
 
     lonely = Loop(name="one-shot", nodes=[LoopNode(
-        id="n1", role="backend", on={SUCCESS: Edge(EXIT_LOOP)})])
-    engine = _loop_engine(tmp_path, ["backend"], lonely)
+        id="n1", role="developer", on={SUCCESS: Edge(EXIT_LOOP)})])
+    engine = _loop_engine(tmp_path, ["developer"], lonely)
     step = Step(role="", loop="one-shot", task="t")
 
     monkeypatch.setattr("trance.engine.run_agent",
@@ -3749,27 +3769,27 @@ def test_a_failed_check_routes_differently_from_a_failed_outcome(tmp_path, monke
     from trance.loops import CHECK_FAILED, EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS, Edge, Loop, LoopNode
 
     loop = Loop(name="checked", start="n1", nodes=[
-        LoopNode(id="n1", role="backend", check="factchecker",
+        LoopNode(id="n1", role="developer", check="reviewer",
                  on={SUCCESS: Edge(EXIT_LOOP), FAILED: Edge(FAIL_LOOP),
                      CHECK_FAILED: Edge("n2", max_visits=2)}),
         LoopNode(id="n2", role="reviewer", on={SUCCESS: Edge(EXIT_LOOP),
                                                FAILED: Edge(FAIL_LOOP)}),
     ])
-    engine = _loop_engine(tmp_path, ["backend", "factchecker", "reviewer"], loop)
+    engine = _loop_engine(tmp_path, ["developer", "reviewer"], loop)
     step = Step(role="", loop="checked", task="t")
     order = []
 
     def fake(**kw):
         name = kw["role"].name
         order.append(name)
-        if name == "factchecker":
+        if name == "reviewer":
             return _Turn("FAIL", "the file is empty")
         return _Turn(None, "x", outcome=("SUCCESS", ""))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert order[:2] == ["backend", "factchecker"]
+    assert order[:2] == ["developer", "reviewer"]
     assert "reviewer" in order            # CHECK_FAILED took its own route
     assert step.status == "done"
 
@@ -3777,7 +3797,7 @@ def test_a_failed_check_routes_differently_from_a_failed_outcome(tmp_path, monke
 def test_an_unknown_loop_halts_instead_of_running_nothing(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["backend"], _tf_loop())
+    engine = _loop_engine(tmp_path, ["developer"], _tf_loop())
     step = Step(role="", loop="does-not-exist", task="t")
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: _Turn(None, "x", outcome=("SUCCESS", "")))
@@ -3791,8 +3811,8 @@ def test_a_loop_is_validated_before_it_can_be_saved():
     with the work already done."""
     from trance.loops import EXIT_LOOP, FAILED, SUCCESS, CHECK_FAILED, Edge, Loop, LoopNode, validate
 
-    roles = {"tester", "backend", "factchecker"}
-    verifiers = {"factchecker"}
+    roles = {"tester", "developer", "reviewer"}
+    verifiers = {"reviewer"}
 
     ok = Loop(name="fine", nodes=[LoopNode(id="a", role="tester",
                                            on={SUCCESS: Edge(EXIT_LOOP)})])
@@ -3814,7 +3834,7 @@ def test_a_loop_is_validated_before_it_can_be_saved():
                                              on={SUCCESS: Edge("a")})])
     assert "exits successfully" in validate(no_exit, roles, verifiers)
 
-    bad_check = Loop(name="x", nodes=[LoopNode(id="a", role="tester", check="backend",
+    bad_check = Loop(name="x", nodes=[LoopNode(id="a", role="tester", check="developer",
                                                on={SUCCESS: Edge(EXIT_LOOP)})])
     assert "cannot check work" in validate(bad_check, roles, verifiers)
 
@@ -3836,8 +3856,8 @@ def test_the_seeded_loop_is_valid_and_describes_the_common_shape(tmp_path):
     verifiers = {n for n, r in R.items() if r.verifier}
     for loop in loops:
         assert validate(loop, set(R), verifiers) is None, loop.name
-    assert loops[0].roles() == ["tester", "backend"]
-    assert loops[1].roles() == ["visual-tester", "fullstack"]
+    assert loops[0].roles() == ["tester", "developer"]
+    assert loops[1].roles() == ["visual-tester", "developer"]
 
 
 def test_a_flow_step_can_name_a_loop_and_pulls_in_its_agents(tmp_path):
@@ -3860,7 +3880,7 @@ def test_a_flow_step_can_name_a_loop_and_pulls_in_its_agents(tmp_path):
 
     assert body["steps"][0]["runs_a_loop"] is True
     team = {r["name"] for r in body["team"]}
-    assert {"tester", "backend"} <= team
+    assert {"tester", "developer"} <= team
 
     # A dangling loop is a warning on the save, not a wall — the deal an
     # approved deletion made; the step fails at run time saying so.
@@ -3913,9 +3933,9 @@ def test_a_single_step_retries_itself_with_no_fixer_offered(tmp_path, monkeypatc
     the obvious thing with what it is given."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])
-    step = Step(role="backend", task="t", max_loops=3)
-    assert step.fixer == "backend"           # itself, not a second agent
+    engine = _engine(tmp_path, ["developer"])
+    step = Step(role="developer", task="t", max_loops=3)
+    assert step.fixer == "developer"           # itself, not a second agent
     calls = []
 
     def fake(**kw):
@@ -3925,7 +3945,7 @@ def test_a_single_step_retries_itself_with_no_fixer_offered(tmp_path, monkeypatc
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert calls == ["backend", "backend", "backend"]
+    assert calls == ["developer", "developer", "developer"]
     assert step.status == "failed"
 
 
@@ -3933,8 +3953,8 @@ def test_a_flow_saved_with_an_old_fixer_still_runs(tmp_path, monkeypatch):
     """Sessions built before loops existed keep working."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "reviewer"])
-    step = Step(role="backend", task="t", on_fail="reviewer", max_loops=2)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", on_fail="reviewer", max_loops=2)
     calls = []
 
     def fake(**kw):
@@ -3943,7 +3963,7 @@ def test_a_flow_saved_with_an_old_fixer_still_runs(tmp_path, monkeypatch):
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
-    assert calls == ["backend", "reviewer", "backend"]
+    assert calls == ["developer", "reviewer", "developer"]
 
 
 # ------------------------ the plan always ends by verifying itself
@@ -3956,8 +3976,8 @@ def test_a_plan_that_forgets_to_test_gets_a_final_loop(tmp_path):
     from trance.agents.store import LoopStore
 
     loops = LoopStore(tmp_path / "loops.json")
-    proposal = {"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "loop": "", "task": "build the API", "check": None,
+    proposal = {"summary": "s", "team": ["developer"], "steps": [
+        {"role": "developer", "loop": "", "task": "build the API", "check": None,
          "on_fail": None, "max_loops": 2, "points": 3}]}
 
     out = ensure_final_check(proposal, loops=loops, roles=list(R.values()))
@@ -3966,7 +3986,7 @@ def test_a_plan_that_forgets_to_test_gets_a_final_loop(tmp_path):
     assert out["steps"][-1]["loop"] == "test-and-fix"
     assert out["added_final_check"] == "test-and-fix"
     assert "run the tests" in out["steps"][-1]["task"]
-    assert {"tester", "backend"} <= set(out["team"])      # the loop's agents come too
+    assert {"tester", "developer"} <= set(out["team"])      # the loop's agents come too
 
 
 def test_a_plan_that_already_ends_in_verification_is_left_alone(tmp_path):
@@ -3978,13 +3998,13 @@ def test_a_plan_that_already_ends_in_verification_is_left_alone(tmp_path):
     roles = list(R.values())
 
     ends_with_loop = {"summary": "s", "team": [], "steps": [
-        {"role": "backend", "loop": "", "task": "build"},
+        {"role": "developer", "loop": "", "task": "build"},
         {"role": "", "loop": "test-and-fix", "task": "test"}]}
     assert "added_final_check" not in ensure_final_check(
         ends_with_loop, loops=loops, roles=roles)
 
     ends_with_tester = {"summary": "s", "team": [], "steps": [
-        {"role": "backend", "loop": "", "task": "build"},
+        {"role": "developer", "loop": "", "task": "build"},
         {"role": "tester", "loop": "", "task": "test it"}]}
     assert "added_final_check" not in ensure_final_check(
         ends_with_tester, loops=loops, roles=roles)
@@ -3993,12 +4013,12 @@ def test_a_plan_that_already_ends_in_verification_is_left_alone(tmp_path):
     # not that anyone ran them. Now that it is added to every writing step,
     # counting it would mean no plan ever got a final test.
     fact_checked = {"summary": "s", "team": [], "steps": [
-        {"role": "backend", "loop": "", "task": "build", "check": "factchecker"}]}
+        {"role": "developer", "loop": "", "task": "build", "check": "reviewer"}]}
     assert ensure_final_check(fact_checked, loops=loops,
                               roles=roles)["added_final_check"] == "test-and-fix"
 
     really_checked = {"summary": "s", "team": [], "steps": [
-        {"role": "backend", "loop": "", "task": "build", "check": "tester"}]}
+        {"role": "developer", "loop": "", "task": "build", "check": "tester"}]}
     assert "added_final_check" not in ensure_final_check(
         really_checked, loops=loops, roles=roles)
 
@@ -4013,7 +4033,7 @@ def test_a_loop_is_preferred_over_a_bare_tester_step(tmp_path):
     with_loops = LoopStore(tmp_path / "a.json")
     without = LoopStore(tmp_path / "b.json", seed=False)
     proposal = lambda: {"summary": "s", "team": [], "steps": [
-        {"role": "backend", "loop": "", "task": "build"}]}
+        {"role": "developer", "loop": "", "task": "build"}]}
 
     assert ensure_final_check(proposal(), loops=with_loops,
                               roles=list(R.values()))["steps"][-1]["loop"] == "test-and-fix"
@@ -4028,7 +4048,7 @@ def test_nothing_is_invented_when_no_agent_can_verify(tmp_path):
 
     unable = [r for r in R.values() if not r.verifier]
     proposal = {"summary": "s", "team": [], "steps": [
-        {"role": "backend", "loop": "", "task": "build"}]}
+        {"role": "developer", "loop": "", "task": "build"}]}
     out = ensure_final_check(proposal, loops=LoopStore(tmp_path / "x.json", seed=False),
                              roles=unable)
     assert len(out["steps"]) == 1 and "added_final_check" not in out
@@ -4050,8 +4070,8 @@ def test_the_orchestrator_can_put_a_loop_on_a_step(tmp_path, monkeypatch):
             captured["schema"] = tools[0]["function"]["parameters"]
             return ChatResponse(text="", tool_calls=[ToolCall(
                 id="c", name="propose_flow", arguments={
-                    "summary": "s", "team": ["backend"], "steps": [
-                        {"role": "backend", "task": "build it", "points": 3},
+                    "summary": "s", "team": ["developer"], "steps": [
+                        {"role": "developer", "task": "build it", "points": 3},
                         {"loop": "test-and-fix", "task": "make it pass", "points": 3}]})])
 
     monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
@@ -4076,14 +4096,14 @@ def test_a_planned_step_that_writes_files_is_fact_checked(tmp_path):
     from trance.agents.orchestrator import ensure_checks
     from trance.agents.roles import BUILTIN_ROLES as R
 
-    proposal = {"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "loop": "", "task": "build the API", "check": None},
-        {"role": "frontend", "loop": "", "task": "build the UI", "check": None}]}
+    proposal = {"summary": "s", "team": ["developer"], "steps": [
+        {"role": "developer", "loop": "", "task": "build the API", "check": None},
+        {"role": "developer", "loop": "", "task": "build the UI", "check": None}]}
     out = ensure_checks(proposal, roles=list(R.values()))
 
-    assert [s["checks"] for s in out["steps"]] == [["factchecker"], ["factchecker"]]
+    assert [s["checks"] for s in out["steps"]] == [["reviewer"], ["reviewer"]]
     assert out["added_checks"] == 2
-    assert "factchecker" in out["team"]
+    assert "reviewer" in out["team"]
 
 
 def test_nothing_is_checked_where_nothing_is_written(tmp_path):
@@ -4136,10 +4156,10 @@ def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
         def complete(self, messages, tools=None, **kw):
             return ChatResponse(text="", tool_calls=[ToolCall(
                 id="c", name="propose_flow", arguments={
-                    "summary": "s", "team": ["frontend", "backend"], "steps": [
-                        {"role": "frontend", "task": "scaffold and build the UI",
+                    "summary": "s", "team": ["developer", "developer"], "steps": [
+                        {"role": "developer", "task": "scaffold and build the UI",
                          "points": 2},
-                        {"role": "backend", "task": "build the API", "points": 3}]})])
+                        {"role": "developer", "task": "build the API", "points": 3}]})])
 
     monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
     result = orchestrator.chat(messages=[{"role": "user", "content": "build"}],
@@ -4147,9 +4167,9 @@ def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
                                session_id="s", loops=LoopStore(tmp_path / "l.json"))
 
     steps = result["proposal"]["steps"]
-    assert [s["check"] for s in steps[:2]] == ["factchecker", "factchecker"]
+    assert [s["check"] for s in steps[:2]] == ["reviewer", "reviewer"]
     assert steps[-1]["loop"] == "test-and-fix"
-    assert {"frontend", "backend", "factchecker", "tester"} <= set(result["proposal"]["team"])
+    assert {"developer", "developer", "reviewer", "tester"} <= set(result["proposal"]["team"])
 
 
 def test_a_step_keeps_the_window_reading_it_ended_on(tmp_path, monkeypatch):
@@ -4157,8 +4177,8 @@ def test_a_step_keeps_the_window_reading_it_ended_on(tmp_path, monkeypatch):
     last reading is how you compare one step against another."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend"])
-    step = Step(role="backend", task="t")
+    engine = _engine(tmp_path, ["developer"])
+    step = Step(role="developer", task="t")
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: _Turn(None, "x", outcome=("SUCCESS", "")))
     engine._execute(step)
@@ -4179,7 +4199,7 @@ def test_the_runner_records_the_window_it_last_used(tmp_path, monkeypatch):
             return ChatResponse(text="OUTCOME: SUCCESS", usage={"prompt_tokens": 4321})
 
     monkeypatch.setattr(runner, "client_for", lambda config: Counter())
-    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+    turn = runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                             config=ModelConfig(context_window=64000), bus=EventBus(),
                             session_id="s", step_id="st")
 
@@ -4191,13 +4211,13 @@ def test_changing_a_setting_does_not_discard_completed_work():
     """Regression: after a refresh every done step came back pending. Saving
     the flow compared the check and the derived fixer, so a plan that had
     changed server-side re-queued everything and wiped its history."""
-    done = Step(id="a", role="backend", task="build", status="done",
-                check="factchecker", attempts=[Attempt(n=1, outcome="SUCCESS")])
+    done = Step(id="a", role="developer", task="build", status="done",
+                check="reviewer", attempts=[Attempt(n=1, outcome="SUCCESS")])
     flow = Flow(steps=[done])
 
     # A browser that never saw the server-added check sends it back as none.
     outcome = flow.apply_edits([Step.from_dict(
-        {"id": "a", "role": "backend", "task": "build", "check": None})])
+        {"id": "a", "role": "developer", "task": "build", "check": None})])
 
     assert outcome["requeued"] == []
     assert flow.steps[0].status == "done"
@@ -4212,11 +4232,11 @@ def test_what_a_step_did_survives_a_restart(tmp_path):
 
     store = SessionStore(tmp_path)
     session = store.create("p", str(tmp_path / "p"))
-    session.flow.steps = [Step(role="backend", task="a", status="done")]
+    session.flow.steps = [Step(role="developer", task="a", status="done")]
     session.flow.steps[0].attempts = [Attempt(
         n=1, outcome="SUCCESS", files_written=["server.js"],
         context={"tokens": 2000, "window": 64000, "percent": 3.1},
-        gate_results=[GateResult(gate="factchecker", verdict="PASS")])]
+        gate_results=[GateResult(gate="reviewer", verdict="PASS")])]
     store.save(session)
 
     back = SessionStore(tmp_path).get(session.id).flow.steps[0]
@@ -4246,7 +4266,7 @@ def test_a_symbol_written_this_step_can_be_looked_up(tmp_path):
         reindexed.append(1)
         index_repo(tmp_path, db)
 
-    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["developer"], ContextTools(db, tmp_path),
                        notify=lambda *a, **k: None, reindex=reindex)
 
     tools.call("write_file", {"path": "server/app.py",
@@ -4267,7 +4287,7 @@ def test_a_genuine_miss_does_not_reindex_forever(tmp_path):
     db = GraphDB(tmp_path / "g.db")
     index_repo(tmp_path, db)
     calls = []
-    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["developer"], ContextTools(db, tmp_path),
                        notify=lambda *a, **k: None,
                        reindex=lambda: calls.append(1))
 
@@ -4289,7 +4309,7 @@ def test_a_miss_is_retried_once_even_with_no_write(tmp_path):
     db = GraphDB(tmp_path / "g.db")
     index_repo(tmp_path, db)
     calls = []
-    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["developer"], ContextTools(db, tmp_path),
                        notify=lambda *a, **k: None, reindex=lambda: calls.append(1))
 
     # One allowance covers files a command or another agent changed; after that
@@ -4312,7 +4332,7 @@ def test_search_symbols_finds_what_was_just_written(tmp_path):
     db = GraphDB(tmp_path / "g.db")
     index_repo(tmp_path, db)
 
-    tools = AgentTools(tmp_path, BUILTIN_ROLES["backend"], ContextTools(db, tmp_path),
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["developer"], ContextTools(db, tmp_path),
                        notify=lambda *a, **k: None,
                        reindex=lambda: index_repo(tmp_path, db))
 
@@ -4330,7 +4350,7 @@ def test_search_symbols_finds_what_was_just_written(tmp_path):
 
 # ================================ git checkpoints around every step
 
-def _git_engine(tmp_path, team=("backend",)):
+def _git_engine(tmp_path, team=("developer",)):
     """An engine over a real repository."""
     from trance import vcs
 
@@ -4359,11 +4379,11 @@ def test_each_step_is_committed(tmp_path, monkeypatch):
         return turn
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
-    step = Step(role="backend", task="build the API")
+    step = Step(role="developer", task="build the API")
     engine._execute(step)
 
     subjects = [c["subject"] for c in vcs.log(project)]
-    assert any("backend: build the API [SUCCESS]" in s for s in subjects)
+    assert any("developer: build the API [SUCCESS]" in s for s in subjects)
     assert not vcs.dirty(project)                     # nothing left uncommitted
     assert step.attempts[0].commit                     # and the step knows its sha
 
@@ -4382,7 +4402,7 @@ def test_a_failed_step_can_put_the_project_back(tmp_path, monkeypatch):
         return _Turn(None, "made a mess", outcome=("FAILED", "could not finish"))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
-    engine._execute(Step(role="backend", task="build it", max_loops=1,
+    engine._execute(Step(role="developer", task="build it", max_loops=1,
                          revert_on_fail=True))
 
     assert (project / "existing.py").read_text() == "# the user's own work\n"
@@ -4403,7 +4423,7 @@ def test_without_the_option_a_failure_is_left_in_place(tmp_path, monkeypatch):
         return _Turn(None, "x", outcome=("FAILED", "ran out of ideas"))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
-    engine._execute(Step(role="backend", task="t", max_loops=1))
+    engine._execute(Step(role="developer", task="t", max_loops=1))
     assert (project / "half.py").exists()
 
 
@@ -4418,7 +4438,7 @@ def test_a_users_uncommitted_work_is_never_reverted_away(tmp_path, monkeypatch):
 
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: _Turn(None, "x", outcome=("FAILED", "no")))
-    engine._execute(Step(role="backend", task="t", max_loops=1, revert_on_fail=True))
+    engine._execute(Step(role="developer", task="t", max_loops=1, revert_on_fail=True))
 
     assert (project / "notes.md").read_text() == "# my own notes, never committed\n"
 
@@ -4429,9 +4449,9 @@ def test_a_loop_block_can_revert_itself(tmp_path, monkeypatch):
     from trance.flow import Step
     from trance.loops import EXIT_LOOP, FAILED, FAIL_LOOP, SUCCESS, Edge, Loop, LoopNode
 
-    engine, project = _git_engine(tmp_path, team=("backend", "tester"))
+    engine, project = _git_engine(tmp_path, team=("developer", "tester"))
     loop = Loop(name="fixit", start="n1", nodes=[
-        LoopNode(id="n1", role="backend", revert_on_fail=True,
+        LoopNode(id="n1", role="developer", revert_on_fail=True,
                  on={SUCCESS: Edge(EXIT_LOOP), FAILED: Edge(FAIL_LOOP)})])
     store = LoopStore(tmp_path / "loops.json", seed=False)
     store.upsert(loop)
@@ -4453,7 +4473,7 @@ def test_a_project_that_is_not_a_repository_becomes_one(tmp_path):
 
     project = tmp_path / "fresh"
     project.mkdir()
-    engine = _engine(project, ["backend"])
+    engine = _engine(project, ["developer"])
     engine.project = project
     assert not vcs.is_repo(project)
 
@@ -4472,7 +4492,7 @@ def test_git_can_be_turned_off_entirely(tmp_path, monkeypatch):
 
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda **kw: _Turn(None, "x", outcome=("SUCCESS", "")))
-    engine._execute(Step(role="backend", task="t"))
+    engine._execute(Step(role="developer", task="t"))
     assert vcs.log(project) == []            # nothing was committed
 
 
@@ -4500,7 +4520,7 @@ def test_a_hint_reaches_the_agent_on_its_next_round(tmp_path, monkeypatch):
     from trance.flow import Step
     from trance.providers.base import ChatResponse, ToolCall
 
-    step = Step(role="backend", task="build it")
+    step = Step(role="developer", task="build it")
     seen = []
 
     class Worker:
@@ -4518,7 +4538,7 @@ def test_a_hint_reaches_the_agent_on_its_next_round(tmp_path, monkeypatch):
             return ChatResponse(text="OUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: Worker())
-    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task=step.task, project=tmp_path,
+    turn = runner.run_agent(role=BUILTIN_ROLES["developer"], task=step.task, project=tmp_path,
                             config=ModelConfig(), bus=EventBus(), session_id="s",
                             step_id=step.id, steering_inbox=step.take_steering)
 
@@ -4536,7 +4556,7 @@ def test_a_hint_is_delivered_once_and_not_repeated(tmp_path, monkeypatch):
     from trance.flow import Step
     from trance.providers.base import ChatResponse, ToolCall
 
-    step = Step(role="backend", task="t")
+    step = Step(role="developer", task="t")
     step.steering.append("use fetch, not axios")
 
     class Worker:
@@ -4553,7 +4573,7 @@ def test_a_hint_is_delivered_once_and_not_repeated(tmp_path, monkeypatch):
 
     client = Worker()
     monkeypatch.setattr(runner, "client_for", lambda config: client)
-    turn = runner.run_agent(role=BUILTIN_ROLES["backend"], task="t", project=tmp_path,
+    turn = runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                             config=ModelConfig(), bus=EventBus(), session_id="s",
                             step_id=step.id, steering_inbox=step.take_steering)
 
@@ -4579,7 +4599,7 @@ def test_a_running_step_can_be_steered(tmp_path):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        {"role": "backend", "task": "one"}, {"role": "frontend", "task": "two"}]})
+        {"role": "developer", "task": "one"}, {"role": "developer", "task": "two"}]})
     session = app.state.store.get(sid)
     session.flow.steps[0].status = "running"
 
@@ -4606,7 +4626,7 @@ def test_with_nothing_running_a_hint_waits_for_the_next_step(tmp_path):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        {"role": "backend", "task": "one"}, {"role": "frontend", "task": "two"}]})
+        {"role": "developer", "task": "one"}, {"role": "developer", "task": "two"}]})
 
     body = client.post(f"/api/sessions/{sid}/steer", json={"note": "mind the port"}).json()
     session = app.state.store.get(sid)
@@ -4637,7 +4657,7 @@ def test_a_reconnect_gets_the_current_state_and_no_history(tmp_path):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        {"role": "backend", "task": "one"}, {"role": "frontend", "task": "two"}]})
+        {"role": "developer", "task": "one"}, {"role": "developer", "task": "two"}]})
 
     # The flow_updated from that PUT is now in history, with both steps pending.
     session = app.state.store.get(sid)
@@ -4731,7 +4751,7 @@ def test_an_enormous_prompt_does_not_go_on_disk_whole(tmp_path):
     from trance.trace.session_log import SessionLog
 
     log = SessionLog(tmp_path)
-    log.append(Event(type="model_call", session_id="s", step_id="st1", agent="backend",
+    log.append(Event(type="model_call", session_id="s", step_id="st1", agent="developer",
                      payload={"model": "big", "round": 3,
                               "messages": [{"role": "user", "content": "x" * 400_000}],
                               "response_text": "done"}))
@@ -4821,7 +4841,7 @@ def test_an_edit_obeys_the_remit(tmp_path):
 
 def test_replace_symbol_swaps_a_function_without_quoting_it_back(tmp_path):
     """The graph already knows where the function starts and ends."""
-    tools = _indexed_tools(tmp_path, "backend")
+    tools = _indexed_tools(tmp_path, "developer")
     (tmp_path / "app.py").write_text(
         "import os\n\n\ndef charge(order):\n    return 0\n\n\ndef refund(order):\n"
         "    return 1\n")
@@ -4842,7 +4862,7 @@ def test_replace_symbol_swaps_a_function_without_quoting_it_back(tmp_path):
 def test_replace_symbol_will_not_guess_between_two_of_the_same_name(tmp_path):
     from trance.indexer.service import index_repo
 
-    tools = _indexed_tools(tmp_path, "backend")
+    tools = _indexed_tools(tmp_path, "developer")
     (tmp_path / "a.py").write_text("def run():\n    return 1\n")
     (tmp_path / "b.py").write_text("def run():\n    return 2\n")
     index_repo(tmp_path, tools.graph.db)
@@ -4855,13 +4875,13 @@ def test_replace_symbol_will_not_guess_between_two_of_the_same_name(tmp_path):
 def test_the_edit_tools_are_offered_and_explained(tmp_path):
     from trance.agents.tools import permissions_brief
 
-    tools = _indexed_tools(tmp_path, "backend")
+    tools = _indexed_tools(tmp_path, "developer")
     offered = {s["function"]["name"] for s in tools.specs()}
     assert {"edit_file", "replace_symbol", "write_file", "append_file"} <= offered
 
-    brief = permissions_brief(BUILTIN_ROLES["backend"])
+    brief = permissions_brief(BUILTIN_ROLES["developer"])
     assert "edit_file" in brief and "size of the edit" in brief
-    assert "edit_file" in BUILTIN_ROLES["backend"].system_prompt
+    assert "edit_file" in BUILTIN_ROLES["developer"].system_prompt
 
 
 # ================================ the files view and the review it produces
@@ -4954,7 +4974,7 @@ def test_review_comments_become_a_step_the_flow_runs(tmp_path, monkeypatch):
     assert "line 2" in step.task
     assert "`const PORT = 3000;`" in step.task         # the line it was written on
     assert session.review == []                        # the pad is cleared
-    assert {"tester", "backend"} <= {r.name for r in session.team}
+    assert {"tester", "developer"} <= {r.name for r in session.team}
 
 
 def test_finishing_an_empty_review_is_refused(tmp_path):
@@ -5006,7 +5026,7 @@ def test_changes_are_empty_while_the_review_step_is_still_running(tmp_path, monk
 
 # ================== an agent's own backup model, once it keeps failing
 
-def _backup_engine(tmp_path, team=("backend", "tester"), after=1):
+def _backup_engine(tmp_path, team=("developer", "tester"), after=1):
     import copy
 
     from trance.providers.base import ModelPreset
@@ -5031,7 +5051,7 @@ def test_an_agent_switches_to_its_backup_after_enough_tries(tmp_path, monkeypatc
     from trance.flow import Step
 
     engine = _backup_engine(tmp_path, after=1)
-    step = Step(role="backend", task="fix the socket handling", max_loops=3)
+    step = Step(role="developer", task="fix the socket handling", max_loops=3)
     used = []
 
     def fake(**kw):
@@ -5055,7 +5075,7 @@ def test_the_threshold_is_what_decides(tmp_path, monkeypatch):
     from trance.flow import Step
 
     engine = _backup_engine(tmp_path, after=2)
-    step = Step(role="backend", task="t", max_loops=4)
+    step = Step(role="developer", task="t", max_loops=4)
     used = []
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
@@ -5072,7 +5092,7 @@ def test_no_backup_configured_changes_nothing(tmp_path, monkeypatch):
     engine = _backup_engine(tmp_path)
     for role in engine.session.team:
         role.backup_preset = None                    # nothing to fall back to
-    step = Step(role="backend", task="t", max_loops=3)
+    step = Step(role="developer", task="t", max_loops=3)
     used = []
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
@@ -5088,7 +5108,7 @@ def test_a_backup_that_does_not_exist_says_so_and_carries_on(tmp_path, monkeypat
     engine = _backup_engine(tmp_path, after=1)
     for role in engine.session.team:
         role.backup_preset = "deleted-last-week"
-    step = Step(role="backend", task="t", max_loops=3)
+    step = Step(role="developer", task="t", max_loops=3)
     used = []
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
@@ -5111,7 +5131,7 @@ def test_in_a_loop_the_count_is_per_agent(tmp_path, monkeypatch):
     loop = Loop(name="tf", start="n1", nodes=[
         LoopNode(id="n1", role="tester", on={SUCCESS: Edge(EXIT_LOOP),
                                              FAILED: Edge("n2", max_visits=5)}),
-        LoopNode(id="n2", role="backend", on={SUCCESS: Edge("n1", max_visits=5),
+        LoopNode(id="n2", role="developer", on={SUCCESS: Edge("n1", max_visits=5),
                                               FAILED: Edge(FAIL_LOOP)})])
     store = LoopStore(tmp_path / "l.json", seed=False)
     store.upsert(loop)
@@ -5137,7 +5157,7 @@ def test_an_agent_gets_two_tries_then_two_on_its_backup(tmp_path, monkeypatch):
     from trance.flow import Step
 
     engine = _backup_engine(tmp_path, after=2)
-    step = Step(role="backend", task="t")            # no max_loops: the agent decides
+    step = Step(role="developer", task="t")            # no max_loops: the agent decides
     used = []
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
@@ -5154,7 +5174,7 @@ def test_an_agent_with_no_backup_just_gets_its_own_tries(tmp_path, monkeypatch):
     engine = _backup_engine(tmp_path, after=3)
     for role in engine.session.team:
         role.backup_preset = None
-    step = Step(role="backend", task="t")
+    step = Step(role="developer", task="t")
     used = []
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
@@ -5173,19 +5193,19 @@ def test_a_step_can_override_the_agents_count(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
         used.append(kw["config"].model) or _Turn(None, "x", outcome=("FAILED", "no"))))
 
-    engine._execute(Step(role="backend", task="t", max_loops=1))
+    engine._execute(Step(role="developer", task="t", max_loops=1))
     assert used == ["small-model"]
 
     used.clear()
     engine.session.clear_stop()          # the first halt would stop the second
-    engine._execute(Step(role="backend", task="t", max_loops=3))
+    engine._execute(Step(role="developer", task="t", max_loops=3))
     assert used == ["small-model", "small-model", "big-model"]
 
 
 def test_the_default_agent_is_two_and_two(tmp_path):
     from trance.agents.roles import BUILTIN_ROLES
 
-    backend = BUILTIN_ROLES["backend"]
+    backend = BUILTIN_ROLES["developer"]
     assert backend.tries == 2 and backend.backup_tries == 2
     assert backend.total_tries == 2                  # no backup set, so just its own
 
@@ -5200,7 +5220,7 @@ def test_an_older_agent_keeps_the_switch_point_it_had():
     from trance.agents.roles import AgentRole
 
     role = AgentRole.from_dict({
-        "name": "backend", "title": "B", "description": "d", "system_prompt": "p",
+        "name": "developer", "title": "B", "description": "d", "system_prompt": "p",
         "backup_preset": "clever", "backup_after": 3})
     assert role.tries == 3 and role.total_tries == 5
 
@@ -5274,7 +5294,7 @@ def test_an_unreachable_model_moves_to_the_backup(tmp_path, monkeypatch):
     from trance.providers.base import BackendError
 
     engine = _backup_engine(tmp_path, after=2)
-    step = Step(role="backend", task="t")
+    step = Step(role="developer", task="t")
     used = []
 
     def fake(**kw):
@@ -5304,7 +5324,7 @@ def test_an_unreachable_model_with_no_backup_still_ends_the_step_cleanly(
     engine = _backup_engine(tmp_path, after=2)
     for role in engine.session.team:
         role.backup_preset = None
-    step = Step(role="backend", task="t", max_loops=2)
+    step = Step(role="developer", task="t", max_loops=2)
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (_ for _ in ()).throw(
         BackendError("returned 503: ")))
@@ -5320,13 +5340,13 @@ def test_the_agent_is_told_what_the_check_found(tmp_path, monkeypatch):
     """A retry is only worth anything if it knows what was missing."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker"])
-    step = Step(role="backend", task="build the page", check="factchecker", max_loops=2)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="build the page", check="reviewer", max_loops=2)
     steering = []
     checks = []
 
     def fake(**kw):
-        if kw["role"].name == "factchecker":
+        if kw["role"].name == "reviewer":
             checks.append(1)
             return _Turn("FAIL", "index.html is MISSING — it was never written")
         steering.append("\n".join(kw.get("steering") or []))
@@ -5336,7 +5356,7 @@ def test_the_agent_is_told_what_the_check_found(tmp_path, monkeypatch):
     engine._execute(step)
 
     assert steering[0] == ""                        # nothing to say on the first try
-    assert "factchecker checked and disagreed" in steering[1]
+    assert "reviewer checked and disagreed" in steering[1]
     assert "index.html is MISSING" in steering[1]
     assert "Do not report success again until that is actually true" in steering[1]
 
@@ -5344,12 +5364,12 @@ def test_the_agent_is_told_what_the_check_found(tmp_path, monkeypatch):
 def test_a_check_that_passes_on_the_retry_finishes_the_step(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker"])
-    step = Step(role="backend", task="t", check="factchecker", max_loops=3)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check="reviewer", max_loops=3)
     seen = {"checks": 0}
 
     def fake(**kw):
-        if kw["role"].name == "factchecker":
+        if kw["role"].name == "reviewer":
             seen["checks"] += 1
             return _Turn("FAIL", "not there yet") if seen["checks"] == 1 \
                 else _Turn("PASS", "it is there")
@@ -5368,11 +5388,11 @@ def test_a_check_that_keeps_failing_still_halts_the_run(tmp_path, monkeypatch):
     on work that is not there."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker"])
-    step = Step(role="backend", task="t", check="factchecker", max_loops=2)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check="reviewer", max_loops=2)
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
-        _Turn("FAIL", "still nothing on disk") if kw["role"].name == "factchecker"
+        _Turn("FAIL", "still nothing on disk") if kw["role"].name == "reviewer"
         else _Turn(None, "done", outcome=("SUCCESS", ""))))
     engine._execute(step)
 
@@ -5389,8 +5409,8 @@ def test_a_proposed_step_runs_for_as_long_as_its_agent_allows(tmp_path, monkeypa
     from trance.flow import Step
     from trance.agents.orchestrator import _normalize
 
-    proposed = _normalize({"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "build it", "points": 3}]}, list(BUILTIN_ROLES.values()))
+    proposed = _normalize({"summary": "s", "team": ["developer"], "steps": [
+        {"role": "developer", "task": "build it", "points": 3}]}, list(BUILTIN_ROLES.values()))
     step = Step.from_dict(proposed["steps"][0])
     assert step.overrides_tries is False
 
@@ -5409,7 +5429,7 @@ def test_a_step_can_be_rerun_straight_onto_the_backup(tmp_path, monkeypatch):
     from trance.flow import Step
 
     engine = _backup_engine(tmp_path, after=2)
-    step = Step(role="backend", task="t", start_on_backup=True)
+    step = Step(role="developer", task="t", start_on_backup=True)
     used = []
 
     monkeypatch.setattr("trance.engine.run_agent", lambda **kw: (
@@ -5446,9 +5466,9 @@ def test_the_rerun_endpoint_takes_the_backup_flag(tmp_path, monkeypatch):
     client.put("/api/presets/clever", json={"kind": "anthropic", "model": "claude-opus-5"})
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
-    client.put("/api/agents/backend", json={"backup_preset": "clever"},
+    client.put("/api/agents/developer", json={"backup_preset": "clever"},
                params={"session": sid})
-    client.put(f"/api/sessions/{sid}/flow", json={"steps": [{"role": "backend", "task": "t"}]})
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [{"role": "developer", "task": "t"}]})
     session = app.state.store.get(sid)
     step_id = session.flow.steps[0].id
 
@@ -5475,7 +5495,7 @@ def test_asking_for_a_backup_that_is_not_configured_is_refused(tmp_path, monkeyp
     client = TestClient(app)
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
-    client.put(f"/api/sessions/{sid}/flow", json={"steps": [{"role": "backend", "task": "t"}]})
+    client.put(f"/api/sessions/{sid}/flow", json={"steps": [{"role": "developer", "task": "t"}]})
     step_id = app.state.store.get(sid).flow.steps[0].id
 
     response = client.post(f"/api/sessions/{sid}/steps/{step_id}/rerun",
@@ -5490,20 +5510,20 @@ def test_the_check_only_runs_on_a_claim_of_success(tmp_path, monkeypatch):
     just admitted."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker"])
-    step = Step(role="backend", task="t", check="factchecker", max_loops=2)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check="reviewer", max_loops=2)
     order = []
 
     def fake(**kw):
         order.append(kw["role"].name)
-        if kw["role"].name == "factchecker":
+        if kw["role"].name == "reviewer":
             return _Turn("PASS", "it is all there")
         return _Turn(None, "x", outcome=("FAILED", "could not finish"))
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert order == ["backend", "backend"]          # the checker was never called
+    assert order == ["developer", "developer"]          # the checker was never called
     assert step.status == "failed"
     assert all(a.gate_results == [] for a in step.attempts)
 
@@ -5512,8 +5532,8 @@ def test_an_unstated_outcome_is_not_checked_either(tmp_path, monkeypatch):
     """"I did not say" is not a claim of success."""
     from trance.flow import Step
 
-    engine = _engine(tmp_path, ["backend", "factchecker"])
-    step = Step(role="backend", task="t", check="factchecker", max_loops=1)
+    engine = _engine(tmp_path, ["developer", "reviewer"])
+    step = Step(role="developer", task="t", check="reviewer", max_loops=1)
     order = []
 
     def fake(**kw):
@@ -5522,7 +5542,7 @@ def test_an_unstated_outcome_is_not_checked_either(tmp_path, monkeypatch):
 
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
-    assert order == ["backend"]
+    assert order == ["developer"]
 
 
 # ------------------------------------- what is in the project, and running it
@@ -5671,7 +5691,7 @@ def _tiered_loop():
                      # on its backup model, then nothing — the loop halts.
                      FAILED: [Edge("n_dev", max_visits=2),
                               Edge("n_dev", max_visits=2, backup=True)]}),
-        LoopNode(id="n_dev", role="backend",
+        LoopNode(id="n_dev", role="developer",
                  on={SUCCESS: Edge("n_test", max_visits=9), FAILED: Edge(FAIL_LOOP)}),
     ])
 
@@ -5749,7 +5769,7 @@ def test_a_route_can_send_the_next_agent_to_its_backup_model(tmp_path, monkeypat
     step = Step(role="", loop="escalating", task="t")
     engine._execute(step)
 
-    devs = [model for name, model in seen if name == "backend"]
+    devs = [model for name, model in seen if name == "developer"]
     assert devs == ["small-model", "small-model", "big-model", "big-model"]
     assert step.status == "failed"
 
@@ -5772,7 +5792,7 @@ def test_a_routes_backup_applies_to_that_block_only(tmp_path, monkeypatch):
                  on={SUCCESS: Edge(EXIT_LOOP),
                      FAILED: Edge("n_dev", max_visits=4, backup=True)}),
         # Back to the tester afterwards — on its own model, not the developer's tier.
-        LoopNode(id="n_dev", role="backend",
+        LoopNode(id="n_dev", role="developer",
                  on={SUCCESS: Edge("n_test", max_visits=4), FAILED: Edge(FAIL_LOOP)}),
     ])
     store = LoopStore(tmp_path / "l.json", seed=False)
@@ -5789,7 +5809,7 @@ def test_a_routes_backup_applies_to_that_block_only(tmp_path, monkeypatch):
     engine._execute(Step(role="", loop="once", task="t"))
 
     assert seen == [("tester", "small-model"),      # first pass, ordinary
-                    ("backend", "big-model"),       # the route asked for the backup
+                    ("developer", "big-model"),       # the route asked for the backup
                     ("tester", "small-model")]      # and it stopped there
 
 
@@ -5931,7 +5951,7 @@ def test_an_agent_can_write_to_a_rooted_path(tmp_path):
 
     root = tmp_path / "metro"
     (root / "src").mkdir(parents=True)
-    role = AgentRole(name="frontend", title="Frontend", description="d",
+    role = AgentRole(name="developer", title="Frontend", description="d",
                      system_prompt="p", paths=["src/**"], toolsets=["files"])
     tools = AgentTools(root, role)
 
@@ -6154,10 +6174,10 @@ def test_a_step_saved_mid_flight_is_not_running_after_a_restart(tmp_path):
     session = store.create("s", str(tmp_path / "proj"))
     from trance.flow import Step
     session.flow.steps = [
-        Step(id="a", role="backend", task="one", status="done"),
+        Step(id="a", role="developer", task="one", status="done"),
         Step(id="b", role="", loop="review-front-end", task="two", status="running"),
         Step(id="c", role="", loop="review-front-end", task="three", status="verifying"),
-        Step(id="d", role="backend", task="four", status="failed"),
+        Step(id="d", role="developer", task="four", status="failed"),
     ]
     session.status = "running"
     store.save(session)
@@ -6353,13 +6373,13 @@ def test_a_review_runs_next_not_last():
     from trance.flow import Flow, Step
 
     flow = Flow(steps=[
-        Step(id="1", role="frontend", task="a", status="done"),
-        Step(id="2", role="frontend", task="b", status="failed"),
-        Step(id="3", role="frontend", task="c", status="running"),
-        Step(id="4", role="frontend", task="d", status="pending"),
-        Step(id="5", role="frontend", task="e", status="pending"),
+        Step(id="1", role="developer", task="a", status="done"),
+        Step(id="2", role="developer", task="b", status="failed"),
+        Step(id="3", role="developer", task="c", status="running"),
+        Step(id="4", role="developer", task="d", status="pending"),
+        Step(id="5", role="developer", task="e", status="pending"),
     ])
-    where = flow.insert_next(Step(id="rv", role="frontend", task="the review"))
+    where = flow.insert_next(Step(id="rv", role="developer", task="the review"))
 
     # After the one in flight, ahead of everything merely queued.
     assert where == 4
@@ -6371,15 +6391,15 @@ def test_a_review_with_nothing_running_goes_first(tmp_path):
     from trance.flow import Flow, Step
 
     flow = Flow(steps=[
-        Step(id="1", role="frontend", task="a", status="done"),
-        Step(id="2", role="frontend", task="b", status="pending"),
+        Step(id="1", role="developer", task="a", status="done"),
+        Step(id="2", role="developer", task="b", status="pending"),
     ])
-    assert flow.insert_next(Step(id="rv", role="frontend", task="review")) == 2
+    assert flow.insert_next(Step(id="rv", role="developer", task="review")) == 2
     assert flow.next_pending().id == "rv"
 
     # ...and onto the end when there is nothing left to be ahead of.
-    finished = Flow(steps=[Step(id="1", role="frontend", task="a", status="done")])
-    assert finished.insert_next(Step(id="rv", role="frontend", task="review")) == 2
+    finished = Flow(steps=[Step(id="1", role="developer", task="a", status="done")])
+    assert finished.insert_next(Step(id="rv", role="developer", task="review")) == 2
 
 
 def test_the_review_step_lands_where_it_says_it_does(tmp_path):
@@ -6397,9 +6417,9 @@ def test_the_review_step_lands_where_it_says_it_does(tmp_path):
                       json={"name": "p", "project_dir": str(project)}).json()["id"]
 
     client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        {"role": "backend", "task": "one", "status": "done"},
-        {"role": "backend", "task": "two", "status": "pending"},
-        {"role": "backend", "task": "three", "status": "pending"},
+        {"role": "developer", "task": "one", "status": "done"},
+        {"role": "developer", "task": "two", "status": "pending"},
+        {"role": "developer", "task": "three", "status": "pending"},
     ]})
     client.post(f"/api/sessions/{sid}/review",
                 json={"path": "a.js", "line": 3, "note": "rename this"})
@@ -6647,10 +6667,10 @@ def test_a_plan_is_not_rewritten_behind_your_back(tmp_path, monkeypatch):
     from trance.events import Event
     from trance.server import app as app_module
 
-    plan = {"summary": "s", "team": ["backend"], "steps": [
-        {"role": "backend", "task": "build the whole API", "check": None,
+    plan = {"summary": "s", "team": ["developer"], "steps": [
+        {"role": "developer", "task": "build the whole API", "check": None,
          "on_fail": None, "max_loops": 2, "points": 13},
-        {"role": "backend", "task": "add one route", "check": None,
+        {"role": "developer", "task": "add one route", "check": None,
          "on_fail": None, "max_loops": 2, "points": 2},
     ]}
     monkeypatch.setattr(orch, "chat", lambda **kw: {
@@ -6761,9 +6781,9 @@ def test_clearing_the_plan_keeps_only_what_is_mid_flight(tmp_path):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(project)}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        {"role": "backend", "task": "done one", "status": "done"},
-        {"role": "backend", "task": "running one", "status": "running"},
-        {"role": "backend", "task": "pending one", "status": "pending"},
+        {"role": "developer", "task": "done one", "status": "done"},
+        {"role": "developer", "task": "running one", "status": "running"},
+        {"role": "developer", "task": "pending one", "status": "pending"},
     ]})
 
     client.put(f"/api/sessions/{sid}/flow", json={"steps": []})
@@ -6776,8 +6796,8 @@ def test_clearing_the_plan_keeps_only_what_is_mid_flight(tmp_path):
     other = client.post("/api/sessions",
                         json={"name": "q", "project_dir": str(project)}).json()["id"]
     client.put(f"/api/sessions/{other}/flow", json={"steps": [
-        {"role": "backend", "task": "a", "status": "pending"},
-        {"role": "backend", "task": "b", "status": "failed"}]})
+        {"role": "developer", "task": "a", "status": "pending"},
+        {"role": "developer", "task": "b", "status": "failed"}]})
     client.put(f"/api/sessions/{other}/flow", json={"steps": []})
     assert client.get(f"/api/sessions/{other}").json()["flow"]["steps"] == []
 
@@ -6930,11 +6950,11 @@ def test_every_model_call_is_counted_whoever_made_it(tmp_path):
     app.state.bus.emit("model_call", sid, agent="orchestrator",
                        payload={"preset": "Sonnet",
                                 "usage": {"prompt_tokens": 900, "completion_tokens": 100}})
-    app.state.bus.emit("model_call", sid, agent="backend",
+    app.state.bus.emit("model_call", sid, agent="developer",
                        payload={"preset": "local",
                                 "usage": {"prompt_tokens": 50, "completion_tokens": 5}})
     # Replayed history must not double-count.
-    replayed = app.state.bus.emit("model_call", sid, agent="backend",
+    replayed = app.state.bus.emit("model_call", sid, agent="developer",
                                   payload={"preset": "local",
                                            "usage": {"prompt_tokens": 50}})
     replayed.replay = True
@@ -7121,7 +7141,7 @@ def test_the_shipped_budgets_match_what_the_roles_actually_use():
     from trance.agents.roles import BUILTIN_ROLES
 
     # The ones that were hitting the wall get room.
-    for name in ("backend", "frontend", "tester"):
+    for name in ("developer", "developer", "tester"):
         assert BUILTIN_ROLES[name].tool_rounds == 36, name
     assert BUILTIN_ROLES["reviewer"].tool_rounds == 28
     # It opens a page, presses keys and looks — and still ran out every time.
@@ -7129,7 +7149,7 @@ def test_the_shipped_budgets_match_what_the_roles_actually_use():
 
     # The ones that were not keep the default, because a budget is a ceiling,
     # not an allowance to spend.
-    for name in ("factchecker", "orchestrator", "planner"):
+    for name in ("orchestrator", "planner"):
         assert BUILTIN_ROLES[name].tool_rounds == 0, name
 
 
@@ -7144,7 +7164,7 @@ def test_a_stored_agent_keeps_its_own_budget(tmp_path):
 
     again = RoleStore(tmp_path / "agents.json")
     assert again.get("builder").tool_rounds == 30
-    assert again.get("factchecker").tool_rounds == 0
+    assert again.get("planner").tool_rounds == 0
 
 
 def test_a_setting_added_after_the_file_was_written_is_inherited(tmp_path):
@@ -7159,7 +7179,7 @@ def test_a_setting_added_after_the_file_was_written_is_inherited(tmp_path):
     old = {"agents": [
         {"name": "tester", "title": "Tester", "description": "d", "system_prompt": "p",
          "paths": [], "toolsets": ["commands"]},          # no tool_rounds at all
-        {"name": "factchecker", "title": "Checker", "description": "d",
+        {"name": "planner", "title": "Planner", "description": "d",
          "system_prompt": "p", "paths": [], "toolsets": ["commands"]},
     ]}
     path = tmp_path / "agents.json"
@@ -7167,7 +7187,7 @@ def test_a_setting_added_after_the_file_was_written_is_inherited(tmp_path):
 
     store = RoleStore(path)
     assert store.get("tester").tool_rounds == BUILTIN_ROLES["tester"].tool_rounds == 36
-    assert store.get("factchecker").tool_rounds == 0      # its built-in has none either
+    assert store.get("planner").tool_rounds == 0       # its built-in has none either
 
 
 def test_a_setting_that_was_chosen_is_left_alone(tmp_path):
@@ -7264,7 +7284,7 @@ def test_one_steps_events_can_be_asked_for_on_their_own(tmp_path):
 
     for step in ("st1", "st2"):
         for n in range(3):
-            app.state.bus.emit("tool_call", sid, agent="backend", step_id=step,
+            app.state.bus.emit("tool_call", sid, agent="developer", step_id=step,
                                payload={"name": f"{step}_call_{n}"})
     app.state.bus.emit("run_started", sid, payload={})      # no step of its own
 
@@ -7299,7 +7319,7 @@ def test_the_socket_carries_what_happens_next_not_what_already_did(tmp_path):
                       json={"name": "p", "project_dir": str(project)}).json()["id"]
 
     for n in range(app_module.CONSOLE_TAIL + 50):
-        app.state.bus.emit("tool_call", sid, agent="backend", step_id="st1",
+        app.state.bus.emit("tool_call", sid, agent="developer", step_id="st1",
                            payload={"name": f"call_{n}"})
 
     with client.websocket_connect(f"/ws/{sid}") as ws:
@@ -7350,8 +7370,8 @@ def test_a_reply_carries_the_work_it_turned_into(tmp_path, monkeypatch):
 
     monkeypatch.setattr(orchestrator_agent, "chat", lambda **_kw: {
         "text": "I will add the level select.",
-        "proposal": {"summary": "a game", "team": ["frontend"], "requirements": [],
-                     "steps": [{"role": "frontend", "task": "add level select"}]},
+        "proposal": {"summary": "a game", "team": ["developer"], "requirements": [],
+                     "steps": [{"role": "developer", "task": "add level select"}]},
     })
     client.post(f"/api/sessions/{sid}/chat", json={"message": "add a level select"})
 
@@ -7404,8 +7424,8 @@ def test_two_requests_do_not_claim_each_others_commits(tmp_path, monkeypatch):
 
     def proposing(task):
         return lambda **_kw: {"text": f"I will {task}.", "proposal": {
-            "summary": "a game", "team": ["frontend"], "requirements": [],
-            "steps": [{"role": "frontend", "task": task}]}}
+            "summary": "a game", "team": ["developer"], "requirements": [],
+            "steps": [{"role": "developer", "task": task}]}}
 
     monkeypatch.setattr(orchestrator_agent, "chat", proposing("do the first thing"))
     client.post(f"/api/sessions/{sid}/chat", json={"message": "first"})
@@ -7444,11 +7464,11 @@ def test_an_agent_can_carry_checks_of_its_own(tmp_path, monkeypatch):
     asked = []
     bus = EventBus()
 
-    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
+    frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
                             "checks": ["regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [frontend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["regression"]]
-    step = Step(role="frontend", task="add the level select", check="factchecker")
+    session.team = [frontend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["regression"]]
+    step = Step(role="developer", task="add the level select", check="reviewer")
     session.flow = Flow(steps=[step])
 
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)
@@ -7467,7 +7487,7 @@ def test_an_agent_can_carry_checks_of_its_own(tmp_path, monkeypatch):
     engine._run_check(step, Attempt(n=1))
 
     # The step's own check, then the one this agent always wants.
-    assert asked == ["factchecker", "regression"]
+    assert asked == ["reviewer", "regression"]
 
 
 def test_the_agents_own_order_is_the_one_that_runs(tmp_path, monkeypatch):
@@ -7483,13 +7503,13 @@ def test_the_agents_own_order_is_the_one_that_runs(tmp_path, monkeypatch):
     from trance.session import Session
 
     asked = []
-    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
-                            "checks": ["factchecker", "reviewer", "regression"]})
+    frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
+                            "checks": ["reviewer", "regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [frontend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["reviewer"],
+    session.team = [frontend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["reviewer"],
                     BUILTIN_ROLES["regression"]]
     # What the orchestrator wrote onto the step: the reviewer, on its own.
-    step = Step(role="frontend", task="auto-aim at the nearest police car",
+    step = Step(role="developer", task="auto-aim at the nearest police car",
                 check="reviewer")
     session.flow = Flow(steps=[step])
 
@@ -7505,7 +7525,7 @@ def test_the_agents_own_order_is_the_one_that_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
     engine._run_check(step, Attempt(n=1))
 
-    assert asked == ["factchecker", "reviewer", "regression"]
+    assert asked == ["reviewer", "regression"]
 
 
 def test_a_check_only_this_task_wants_runs_first(tmp_path, monkeypatch):
@@ -7519,12 +7539,12 @@ def test_a_check_only_this_task_wants_runs_first(tmp_path, monkeypatch):
     from trance.session import Session
 
     asked = []
-    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
-                            "checks": ["factchecker", "regression"]})
+    frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
+                            "checks": ["reviewer", "regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [frontend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["regression"],
+    session.team = [frontend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["regression"],
                     BUILTIN_ROLES["reviewer"]]
-    step = Step.from_dict({"role": "frontend", "task": "t", "checks": ["reviewer"]})
+    step = Step.from_dict({"role": "developer", "task": "t", "checks": ["reviewer"]})
     session.flow = Flow(steps=[step])
 
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
@@ -7539,7 +7559,7 @@ def test_a_check_only_this_task_wants_runs_first(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
     engine._run_check(step, Attempt(n=1))
 
-    assert asked == ["reviewer", "factchecker", "regression"]
+    assert asked == ["reviewer", "regression"]
 
 
 def test_an_agents_checks_are_not_run_twice(tmp_path, monkeypatch):
@@ -7553,11 +7573,11 @@ def test_an_agents_checks_are_not_run_twice(tmp_path, monkeypatch):
     from trance.session import Session
 
     asked = []
-    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
+    frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
                             "checks": ["regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
     session.team = [frontend, BUILTIN_ROLES["regression"]]
-    step = Step.from_dict({"role": "frontend", "task": "t", "checks": ["regression"]})
+    step = Step.from_dict({"role": "developer", "task": "t", "checks": ["regression"]})
     session.flow = Flow(steps=[step])
 
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
@@ -7581,13 +7601,13 @@ def test_a_step_can_be_checked_by_more_than_one_agent(tmp_path):
     has always looped over a chain — it was only ever handed one name."""
     from trance.flow import Step
 
-    step = Step.from_dict({"role": "backend", "task": "add the endpoint",
-                           "checks": ["factchecker", "regression"]})
-    assert step.checks == ["factchecker", "regression"]
+    step = Step.from_dict({"role": "developer", "task": "add the endpoint",
+                           "checks": ["reviewer", "regression"]})
+    assert step.checks == ["reviewer", "regression"]
     # The singular accessor still answers, because a trace and a badge both
     # say "the checker" and mean the one whose verdict decides the attempt.
-    assert step.checker == "factchecker"
-    assert Step.from_dict(step.to_dict()).checks == ["factchecker", "regression"]
+    assert step.checker == "reviewer"
+    assert Step.from_dict(step.to_dict()).checks == ["reviewer", "regression"]
 
 
 def test_a_plan_written_before_chains_still_verifies(tmp_path):
@@ -7595,13 +7615,13 @@ def test_a_plan_written_before_chains_still_verifies(tmp_path):
     `verify_with`. All three still run the check they always ran."""
     from trance.flow import Step
 
-    assert Step.from_dict({"role": "backend", "task": "t",
-                           "check": "factchecker"}).checks == ["factchecker"]
-    assert Step.from_dict({"role": "backend", "task": "t",
+    assert Step.from_dict({"role": "developer", "task": "t",
+                           "check": "reviewer"}).checks == ["reviewer"]
+    assert Step.from_dict({"role": "developer", "task": "t",
                            "gates": ["reviewer"]}).checks == ["reviewer"]
-    assert Step.from_dict({"role": "backend", "task": "t",
+    assert Step.from_dict({"role": "developer", "task": "t",
                            "verify_with": "tester"}).checks == ["tester"]
-    assert Step.from_dict({"role": "backend", "task": "t"}).checks == []
+    assert Step.from_dict({"role": "developer", "task": "t"}).checks == []
 
 
 def test_the_regression_check_can_run_the_tests_it_is_asked_about():
@@ -7737,8 +7757,8 @@ def test_pressing_start_says_so_at_once(tmp_path):
     bus.subscribe_sync(lambda event: seen.append(event))
 
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.flow = Flow(steps=[Step(role="frontend", task="one"),
-                               Step(role="frontend", task="two")])
+    session.flow = Flow(steps=[Step(role="developer", task="one"),
+                               Step(role="developer", task="two")])
     session.flow.steps[0].status = "done"
 
     engine = FlowEngine(session, None, bus)
@@ -7777,7 +7797,7 @@ def test_the_page_hears_about_a_change_no_list_predicted(tmp_path):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(project)}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        {"title": "one", "role": "frontend", "task": "do it"}]})
+        {"title": "one", "role": "developer", "task": "do it"}]})
     session = app.state.store.get(sid)
     step = session.flow.steps[0]
 
@@ -7785,14 +7805,14 @@ def test_the_page_hears_about_a_change_no_list_predicted(tmp_path):
         assert ws.receive_json()["type"] == "snapshot"
 
         # An event nothing would have listed, and no change with it.
-        app.state.bus.emit("tool_call", sid, agent="frontend", step_id=step.id,
+        app.state.bus.emit("tool_call", sid, agent="developer", step_id=step.id,
                            payload={"name": "read_file"})
         assert ws.receive_json()["type"] == "tool_call"
 
         # Now the step actually changes, announced by an event that was never
         # on the list.
         step.status = "running"
-        app.state.bus.emit("loop_node", sid, agent="frontend", step_id=step.id,
+        app.state.bus.emit("loop_node", sid, agent="developer", step_id=step.id,
                            payload={"visit": 1, "of": 8})
         assert ws.receive_json()["type"] == "loop_node"
         fresh = ws.receive_json()
@@ -7831,8 +7851,8 @@ def test_adding_steps_does_not_tell_the_page_the_run_stopped(tmp_path, monkeypat
 
     monkeypatch.setattr(orchestrator_agent, "chat", lambda **_kw: {
         "text": "here is more work",
-        "proposal": {"summary": "a game", "team": ["frontend"], "requirements": [],
-                     "steps": [{"role": "frontend", "task": "one more thing"}]},
+        "proposal": {"summary": "a game", "team": ["developer"], "requirements": [],
+                     "steps": [{"role": "developer", "task": "one more thing"}]},
     })
 
     client.post(f"/api/sessions/{sid}/chat", json={"message": "add a level"})
@@ -7864,7 +7884,7 @@ def test_a_live_console_is_not_sent_the_prompts_either(tmp_path):
     prompt = [{"role": "user", "content": "x" * 40_000}]
     with client.websocket_connect(f"/ws/{sid}") as ws:
         assert ws.receive_json()["type"] == "snapshot"
-        app.state.bus.emit("model_call", sid, agent="backend", step_id="st1",
+        app.state.bus.emit("model_call", sid, agent="developer", step_id="st1",
                            payload={"round": 1, "messages": prompt,
                                     "reasoning": "y" * 9_000,
                                     "response_text": "done", "tool_calls": []})
@@ -7897,7 +7917,7 @@ def test_a_history_panel_is_not_sent_the_prompts(tmp_path):
                       json={"name": "p", "project_dir": str(project)}).json()["id"]
 
     big = "x" * 50_000
-    app.state.bus.emit("model_call", sid, agent="backend", step_id="st1", payload={
+    app.state.bus.emit("model_call", sid, agent="developer", step_id="st1", payload={
         "round": 1, "model": "m", "messages": [{"role": "user", "content": big}],
         "reasoning": big, "response_text": "short", "usage": {"prompt_tokens": 10},
         "tool_calls": [{"name": "read_file"}],
@@ -7955,9 +7975,9 @@ def test_a_review_goes_to_a_loop_that_can_run_the_tests(tmp_path, monkeypatch):
     loops = store or LoopStore(tmp_path / "runs" / "loops.json", seed=False)
     for existing in list(loops.all()):
         loops.delete(existing.name)
-    loops.upsert(loop("review-front-end", "reviewer", "frontend"))   # sorts first
-    loops.upsert(loop("test-and-fix-frontend", "tester", "frontend"))
-    loops.upsert(loop("test-and-fix", "tester", "backend"))
+    loops.upsert(loop("review-front-end", "reviewer", "developer"))   # sorts first
+    loops.upsert(loop("test-and-fix-frontend", "tester", "developer"))
+    loops.upsert(loop("test-and-fix", "tester", "developer"))
 
     project = tmp_path / "proj"
     project.mkdir()
@@ -7988,7 +8008,7 @@ def test_a_review_prefers_the_loop_the_flow_already_uses(tmp_path):
     loops = LoopStore(tmp_path / "runs" / "loops.json")
     for existing in list(loops.all()):
         loops.delete(existing.name)
-    for name, builder in (("test-and-fix", "backend"), ("test-and-fix-frontend", "frontend")):
+    for name, builder in (("test-and-fix", "developer"), ("test-and-fix-frontend", "developer")):
         loops.upsert(Loop(name=name, nodes=[
             LoopNode(id="a", role="tester", on={SUCCESS: Edge(EXIT_LOOP),
                                                 FAILED: Edge("b", max_visits=2)}),
@@ -8072,13 +8092,13 @@ def test_a_new_proposal_adds_to_the_plan_instead_of_replacing_it():
     from trance.flow import Flow, Step
 
     flow = Flow(steps=[
-        Step(id="1", role="backend", task="build the api", status="done"),
-        Step(id="2", role="frontend", task="build the ui", status="failed"),
+        Step(id="1", role="developer", task="build the api", status="done"),
+        Step(id="2", role="developer", task="build the ui", status="failed"),
         Step(id="3", role="tester", task="test it", status="pending"),
     ])
     change = flow.keep_finished([
-        Step(role="backend", task="build the api"),      # already done
-        Step(role="backend", task="fix the null bug"),   # new
+        Step(role="developer", task="build the api"),      # already done
+        Step(role="developer", task="fix the null bug"),   # new
         Step(role="tester", task="test the fix"),        # new
     ])
 
@@ -8098,9 +8118,9 @@ def test_a_step_in_flight_survives_a_new_proposal():
     edit."""
     from trance.flow import Flow, Step
 
-    flow = Flow(steps=[Step(id="1", role="backend", task="mid-flight",
+    flow = Flow(steps=[Step(id="1", role="developer", task="mid-flight",
                             status="running")])
-    change = flow.keep_finished([Step(role="frontend", task="something else")])
+    change = flow.keep_finished([Step(role="developer", task="something else")])
     assert change["kept"] == 1
     assert [s.task for s in flow.steps] == ["mid-flight", "something else"]
 
@@ -8259,8 +8279,8 @@ def test_each_execution_of_a_step_is_marked_as_one_run(tmp_path, monkeypatch):
     from trance.session import Session
 
     session = Session(name="s", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["backend"]]
-    step = Step(role="backend", task="do it")
+    session.team = [BUILTIN_ROLES["developer"]]
+    step = Step(role="developer", task="do it")
     session.flow.steps = [step]
 
     bus = EventBus()
@@ -8279,7 +8299,7 @@ def test_each_execution_of_a_step_is_marked_as_one_run(tmp_path, monkeypatch):
     assert step.runs == 2
     assert all(m.step_id == step.id for m in marks)
     # It names what ran, so the run list reads without opening anything.
-    assert "backend" in marks[0].payload["message"]
+    assert "developer" in marks[0].payload["message"]
 
 
 def test_a_screenshot_pasted_into_the_chat_reaches_the_orchestrator(tmp_path, monkeypatch):
@@ -8480,7 +8500,7 @@ def test_requirements_reach_the_agent_as_the_definition_of_done(tmp_path, monkey
     monkeypatch.setattr(runner, "client_for", lambda config: _Client())
 
     runner.run_agent(
-        role=BUILTIN_ROLES["frontend"], task="draw the maze", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="draw the maze", project=tmp_path,
         config=ModelConfig(), bus=EventBus(), session_id="s", step_id="st",
         requirements=["exactly four ghosts are visible", "arrow keys move the ship"],
     )
@@ -8604,7 +8624,7 @@ def test_the_console_is_told_before_the_model_is_called(tmp_path, monkeypatch):
             return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: _Slow())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(preset="Qwen"), bus=bus,
                      session_id="s", step_id="st")
 
@@ -8647,7 +8667,7 @@ def test_a_round_spent_entirely_on_thinking_is_asked_again_without_it(tmp_path, 
 
     monkeypatch.setattr(runner, "client_for", lambda config: _Thinker())
     turn = runner.run_agent(
-        role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
         config=ModelConfig(kind="llamacpp", max_tokens=600), bus=bus,
         session_id="s", step_id="st")
 
@@ -8687,7 +8707,7 @@ def test_the_ask_for_an_outcome_gets_the_same_recovery(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner, "client_for", lambda config: _ThinksAboutTheReport())
     turn = runner.run_agent(
-        role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
         config=ModelConfig(kind="llamacpp", max_tokens=8000), bus=bus,
         session_id="s", step_id="st")
 
@@ -8715,7 +8735,7 @@ def test_a_model_that_answers_nothing_is_not_reported_as_disobedient(tmp_path, m
 
     monkeypatch.setattr(runner, "client_for", lambda config: _Silent())
     turn = runner.run_agent(
-        role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
         config=ModelConfig(kind="llamacpp", max_tokens=8000), bus=bus,
         session_id="s", step_id="st")
 
@@ -8746,7 +8766,7 @@ def test_the_last_word_of_a_turn_still_carries_the_context_gauge(tmp_path, monke
                 ToolCall(id="c1", name="list_files", arguments={"path": "."})])
 
     monkeypatch.setattr(runner, "client_for", lambda config: _NeverStops())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=2,
                      session_id="s", step_id="st")
 
@@ -8784,7 +8804,7 @@ def test_reading_is_closed_when_it_stops_turning_into_work(tmp_path, monkeypatch
 
     (tmp_path / "README.md").write_text("hello", encoding="utf8")
     monkeypatch.setattr(runner, "client_for", lambda config: _OnlyReads())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=10,
                      session_id="s", step_id="st")
 
@@ -8806,7 +8826,7 @@ def test_the_command_tool_says_what_ampersand_does_not_do(tmp_path):
     from trance.agents.roles import BUILTIN_ROLES
     from trance.agents.tools import AgentTools
 
-    tools = AgentTools(tmp_path, BUILTIN_ROLES["frontend"], None)
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["developer"], None)
     spec = next(s for s in tools.specs() if s["function"]["name"] == "run_command")
     said = spec["function"]["parameters"]["properties"]["command"]["description"]
 
@@ -8840,7 +8860,7 @@ def test_an_agent_that_can_run_things_is_told_to_measure(tmp_path, monkeypatch):
 
     (tmp_path / "README.md").write_text("hello", encoding="utf8")
     monkeypatch.setattr(runner, "client_for", lambda config: _OnlyReads())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=10,
                      session_id="s", step_id="st")
 
@@ -8912,7 +8932,7 @@ def test_an_agent_that_is_writing_is_left_alone(tmp_path, monkeypatch):
             return ChatResponse(text="Done.\n\nOUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: _WritesThenReads())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(preset="Qwen"), bus=bus, max_rounds=10,
                      session_id="s", step_id="st")
 
@@ -8976,7 +8996,7 @@ def test_the_history_says_which_calls_had_thinking_on(tmp_path, monkeypatch):
             return ChatResponse(text="Done.\n\nOUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: _Thinker())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(kind="llamacpp", max_tokens=600), bus=bus,
                      session_id="s", step_id="st")
 
@@ -9005,7 +9025,7 @@ def test_a_backend_we_do_not_set_thinking_on_does_not_claim_a_state(tmp_path, mo
             return ChatResponse(text="Done.\n\nOUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda config: _Cloud())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(kind="anthropic"), bus=bus,
                      session_id="s", step_id="st")
 
@@ -9038,7 +9058,7 @@ def test_the_thinking_that_was_paid_for_is_kept(tmp_path, monkeypatch):
             return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda _config: _Thinker())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(kind="llamacpp", max_tokens=600), bus=bus,
                      session_id="s", step_id="st")
 
@@ -9066,7 +9086,7 @@ def test_a_truncated_reply_that_said_something_is_left_alone(tmp_path, monkeypat
     seen = []
     bus = EventBus()
     bus.subscribe_sync(lambda event: seen.append(event))
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(kind="llamacpp", max_tokens=600), bus=bus,
                      session_id="s", step_id="st", max_rounds=1)
 
@@ -9096,7 +9116,7 @@ def test_a_backend_that_cannot_be_told_to_stop_thinking_is_not_asked_twice(
     seen = []
     bus = EventBus()
     bus.subscribe_sync(lambda event: seen.append(event))
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(kind="anthropic", max_tokens=600), bus=bus,
                      session_id="s", step_id="st", max_rounds=1)
 
@@ -9136,7 +9156,7 @@ def test_thinking_stays_off_for_the_rest_of_a_turn_once_it_has_overrun(
             return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
 
     monkeypatch.setattr(runner, "client_for", lambda _config: _Spiraller())
-    runner.run_agent(role=BUILTIN_ROLES["frontend"], task="t", project=tmp_path,
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=ModelConfig(kind="llamacpp", max_tokens=8000), bus=EventBus(),
                      session_id="s", step_id="st")
 
@@ -9155,7 +9175,7 @@ def test_the_devs_are_told_to_leave_a_test_behind_and_run_the_suite():
     while two old ones fail is exactly the case this is for."""
     from trance.agents.roles import BUILTIN_ROLES
 
-    for name in ("frontend", "backend"):
+    for name in ("developer", "developer"):
         prompt = BUILTIN_ROLES[name].system_prompt
         assert "regression test for every feature" in prompt.lower(), name
         # Written, then run — reading the diff is not evidence it still works.
@@ -9172,7 +9192,7 @@ def test_a_dev_that_cannot_run_a_command_cannot_be_asked_to_run_tests():
     """The rule is only honest if the toolset behind it is there."""
     from trance.agents.roles import BUILTIN_ROLES
 
-    for name in ("frontend", "backend"):
+    for name in ("developer", "developer"):
         assert "commands" in BUILTIN_ROLES[name].toolsets, name
 
 
@@ -9185,22 +9205,22 @@ def test_an_agents_checks_are_copied_onto_its_steps(tmp_path):
     from trance.agents.roles import AgentRole, BUILTIN_ROLES
     from trance.flow import Flow, Step, seed_checks
 
-    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
-                            "checks": ["factchecker", "reviewer", "regression"]})
-    flow = Flow(steps=[Step(role="frontend", task="auto-aim", check="reviewer"),
-                       Step(role="frontend", task="engine sounds")])
-    checks_of = {"frontend": frontend.checks}
+    frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
+                            "checks": ["reviewer", "regression"]})
+    flow = Flow(steps=[Step(role="developer", task="auto-aim", check="reviewer"),
+                       Step(role="developer", task="engine sounds")])
+    checks_of = {"developer": frontend.checks}
 
     assert seed_checks(flow, checks_of.get) == 2
     # The agent's order, not the plan's: a name the plan also picked takes its
     # place in the chain rather than being hoisted to the front.
-    assert flow.steps[0].checks == ["factchecker", "reviewer", "regression"]
-    assert flow.steps[1].checks == ["factchecker", "reviewer", "regression"]
+    assert flow.steps[0].checks == ["reviewer", "regression"]
+    assert flow.steps[1].checks == ["reviewer", "regression"]
 
     # Once. A second pass puts nothing back.
-    flow.steps[0].checks_chain = ["factchecker"]
+    flow.steps[0].checks_chain = ["reviewer"]
     assert seed_checks(flow, checks_of.get) == 0
-    assert flow.steps[0].checks == ["factchecker"]
+    assert flow.steps[0].checks == ["reviewer"]
 
 
 def test_a_check_taken_off_a_step_stays_off(tmp_path, monkeypatch):
@@ -9214,16 +9234,16 @@ def test_a_check_taken_off_a_step_stays_off(tmp_path, monkeypatch):
     from trance.session import Session
 
     asked = []
-    frontend = AgentRole(**{**BUILTIN_ROLES["frontend"].to_dict(),
-                            "checks": ["factchecker", "regression"]})
+    frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
+                            "checks": ["reviewer", "regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [frontend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["regression"]]
-    step = Step(role="frontend", task="t")
+    session.team = [frontend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["regression"]]
+    step = Step(role="developer", task="t")
     session.flow = Flow(steps=[step])
-    seed_checks(session.flow, lambda name: frontend.checks if name == "frontend" else [])
+    seed_checks(session.flow, lambda name: frontend.checks if name == "developer" else [])
 
     # What removing a chip in the plan does.
-    step.checks_chain = ["factchecker"]
+    step.checks_chain = ["reviewer"]
 
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
 
@@ -9237,7 +9257,7 @@ def test_a_check_taken_off_a_step_stays_off(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
     engine._run_check(step, Attempt(n=1))
 
-    assert asked == ["factchecker"]
+    assert asked == ["reviewer"]
 
 
 def test_a_step_waits_for_an_agent_that_has_no_checks_yet(tmp_path):
@@ -9245,7 +9265,7 @@ def test_a_step_waits_for_an_agent_that_has_no_checks_yet(tmp_path):
     check added to an agent tomorrow never reaches the plan made today."""
     from trance.flow import Flow, Step, seed_checks
 
-    flow = Flow(steps=[Step(role="frontend", task="t")])
+    flow = Flow(steps=[Step(role="developer", task="t")])
     assert seed_checks(flow, lambda _name: []) == 0
     assert flow.steps[0].checks_seeded is False
 
@@ -9259,7 +9279,7 @@ def test_a_loop_step_is_left_alone(tmp_path):
     from trance.flow import Flow, Step, seed_checks
 
     flow = Flow(steps=[Step(role="", loop="test-and-fix", task="t")])
-    assert seed_checks(flow, lambda _name: ["factchecker"]) == 0
+    assert seed_checks(flow, lambda _name: ["reviewer"]) == 0
     assert flow.steps[0].checks == []
 
 
@@ -9278,12 +9298,15 @@ def test_the_plan_shows_the_checks_the_agent_brings(tmp_path):
 
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    # An agent with no standing checks leaves its steps unseeded — that is the
+    # door through which a later-added check still reaches an existing plan.
+    client.put(f"/api/agents/developer?session={sid}", json={"checks": []})
     client.put(f"/api/sessions/{sid}/flow",
-               json={"steps": [{"role": "frontend", "task": "auto-aim"}]})
+               json={"steps": [{"role": "developer", "task": "auto-aim"}]})
 
     # The check is put on the agent after the plan already exists — the way it
     # happens, three steps into a run.
-    client.put(f"/api/agents/frontend?session={sid}", json={"checks": ["regression"]})
+    client.put(f"/api/agents/developer?session={sid}", json={"checks": ["regression"]})
 
     step = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"][0]
     assert step["checks"] == ["regression"]
@@ -9319,7 +9342,7 @@ def test_a_loop_node_is_checked_by_what_the_node_names(tmp_path, monkeypatch):
 
     asked = []
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"],
+    session.team = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["reviewer"],
                     BUILTIN_ROLES["reviewer"]]
     step = Step.from_dict({"role": "", "loop": "test-and-fix", "task": "t",
                            "checks": ["reviewer"]})
@@ -9335,9 +9358,9 @@ def test_a_loop_node_is_checked_by_what_the_node_names(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent",
                         lambda *, role, **_kw: (asked.append(role.name), _Passed())[1])
     monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
-    engine._run_check(step, Attempt(n=1), chain=["factchecker"])
+    engine._run_check(step, Attempt(n=1), chain=["reviewer"])
 
-    assert asked == ["factchecker"]
+    assert asked == ["reviewer"]
 
 
 # ================================ a check's verdict survives the turn it is in
@@ -9438,7 +9461,7 @@ def test_a_check_with_no_verdict_is_asked_for_one(tmp_path, monkeypatch):
     project = tmp_path / "proj"
     project.mkdir()
 
-    gate = AgentRole(name="factchecker", title="Fact check", description="d",
+    gate = AgentRole(name="reviewer", title="Fact check", description="d",
                      system_prompt="p", paths=[], toolsets=["files"], verifier=True)
     turn = run_agent(role=gate, task="check it", project=project, config=ModelConfig(),
                      bus=EventBus(), session_id="s", step_id="st", verdict_required=True)
@@ -9490,12 +9513,12 @@ def test_a_step_added_to_the_plan_comes_back_with_its_checks(tmp_path):
 
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
-    client.put(f"/api/agents/frontend?session={sid}",
-               json={"checks": ["factchecker", "regression"]})
+    client.put(f"/api/agents/developer?session={sid}",
+               json={"checks": ["reviewer", "regression"]})
 
     body = client.put(f"/api/sessions/{sid}/flow",
-                      json={"steps": [{"role": "frontend", "task": "add the level select"}]})
-    assert body.json()["steps"][0]["checks"] == ["factchecker", "regression"]
+                      json={"steps": [{"role": "developer", "task": "add the level select"}]})
+    assert body.json()["steps"][0]["checks"] == ["reviewer", "regression"]
 
 
 def test_a_generated_plan_arrives_with_the_agents_checks(tmp_path, monkeypatch):
@@ -9516,14 +9539,14 @@ def test_a_generated_plan_arrives_with_the_agents_checks(tmp_path, monkeypatch):
 
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
-    client.put(f"/api/agents/frontend?session={sid}",
-               json={"checks": ["factchecker", "reviewer", "regression"]})
+    client.put(f"/api/agents/developer?session={sid}",
+               json={"checks": ["reviewer", "regression"]})
 
     def _proposed(**kwargs):
         return {"text": "here is the plan", "truncated": False, "proposal": {
-            "summary": "s", "team": ["frontend"], "requirements": [],
-            "steps": [{"role": "frontend", "loop": "", "task": "sync the sprite rotation",
-                       "check": "factchecker", "checks": ["factchecker"], "on_fail": None,
+            "summary": "s", "team": ["developer"], "requirements": [],
+            "steps": [{"role": "developer", "loop": "", "task": "sync the sprite rotation",
+                       "check": "reviewer", "checks": ["reviewer"], "on_fail": None,
                        "max_loops": 0, "points": 2}],
         }}
 
@@ -9531,7 +9554,7 @@ def test_a_generated_plan_arrives_with_the_agents_checks(tmp_path, monkeypatch):
     body = client.post(f"/api/sessions/{sid}/chat", json={"message": "fix the sprite"}).json()
 
     step = body["flow"]["steps"][0]
-    assert step["checks"] == ["factchecker", "reviewer", "regression"]
+    assert step["checks"] == ["reviewer", "regression"]
 
 
 # ==================================== what a delegated step actually costs
@@ -9596,7 +9619,7 @@ def test_a_wandering_delegated_step_is_flagged_while_it_is_one_step(tmp_path, mo
                        if e.type == "warning" else None)
 
     out = delegate.run_delegated(
-        role=BUILTIN_ROLES["frontend"], task="fix the collisions", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="fix the collisions", project=tmp_path,
         config=ModelConfig(), bus=bus, session_id="s", step_id="st")
 
     assert out["turns"] == 83
@@ -9605,7 +9628,7 @@ def test_a_wandering_delegated_step_is_flagged_while_it_is_one_step(tmp_path, mo
     warned.clear()
     body["num_turns"] = 12
     delegate.run_delegated(
-        role=BUILTIN_ROLES["frontend"], task="small fix", project=tmp_path,
+        role=BUILTIN_ROLES["developer"], task="small fix", project=tmp_path,
         config=ModelConfig(), bus=bus, session_id="s", step_id="st")
     assert not warned
 
@@ -9620,23 +9643,23 @@ def test_restoring_the_shipped_prompt_keeps_the_users_wiring(tmp_path):
     from trance.agents.store import RoleStore
 
     store = RoleStore(tmp_path / "agents.json")
-    role = store.get("frontend")
+    role = store.get("developer")
     role.system_prompt = "an old prompt with no test rules"
     role.preset = "Qwen-local"
     role.backup_preset = "claude-code"
-    role.checks = ["factchecker", "reviewer", "regression"]
+    role.checks = ["reviewer", "regression"]
     role.tries = 3
     store.upsert(role)
 
-    fresh = store.reset("frontend")
+    fresh = store.reset("developer")
 
-    assert fresh.system_prompt == BUILTIN_ROLES["frontend"].system_prompt
+    assert fresh.system_prompt == BUILTIN_ROLES["developer"].system_prompt
     assert fresh.preset == "Qwen-local"
     assert fresh.backup_preset == "claude-code"
-    assert fresh.checks == ["factchecker", "reviewer", "regression"]
+    assert fresh.checks == ["reviewer", "regression"]
     assert fresh.tries == 3
     # And it is what the store now holds, not just what was returned.
-    assert store.get("frontend").checks == ["factchecker", "reviewer", "regression"]
+    assert store.get("developer").checks == ["reviewer", "regression"]
 
 
 def test_a_check_is_handed_the_diff_it_is_judging(tmp_path):
@@ -9661,7 +9684,7 @@ def test_a_check_is_handed_the_diff_it_is_judging(tmp_path):
     made = vcs.commit_all(project, "the step's change")
 
     session = Session(id="s1", name="p", project_dir=str(project))
-    step = Step(role="frontend", task="bump x")
+    step = Step(role="developer", task="bump x")
     step.summary = "changed x"
     session.flow = Flow(steps=[step])
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
@@ -9698,7 +9721,7 @@ def test_a_huge_diff_is_clipped_and_says_so(tmp_path):
     vcs.commit_all(project, "a huge change")
 
     session = Session(id="s1", name="p", project_dir=str(project))
-    step = Step(role="frontend", task="t")
+    step = Step(role="developer", task="t")
     session.flow = Flow(steps=[step])
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
 
@@ -9925,8 +9948,8 @@ def test_working_time_is_charged_to_the_agent_and_the_step(tmp_path, monkeypatch
 
     monkeypatch.setattr("trance.engine.run_agent", _slow_agent)
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["frontend"]]
-    step = Step.from_dict({"role": "frontend", "task": "t", "checks": []})
+    session.team = [BUILTIN_ROLES["developer"]]
+    step = Step.from_dict({"role": "developer", "task": "t", "checks": []})
     step.checks_seeded = True
     session.flow = Flow(steps=[step])
 
@@ -9935,12 +9958,12 @@ def test_working_time_is_charged_to_the_agent_and_the_step(tmp_path, monkeypatch
 
     assert step.status == "done"
     assert step.seconds > 0
-    assert session.agent_seconds.get("frontend", 0) > 0
+    assert session.agent_seconds.get("developer", 0) > 0
     # And the split survives a save/load, or the stats page forgets on restart.
     saved = session.save()
     from trance.session import Session as S
     back = S.load(saved)
-    assert back.agent_seconds.get("frontend", 0) > 0
+    assert back.agent_seconds.get("developer", 0) > 0
 
 
 def test_a_checks_time_is_charged_to_the_checker_not_the_worker(tmp_path, monkeypatch):
@@ -9964,8 +9987,8 @@ def test_a_checks_time_is_charged_to_the_checker_not_the_worker(tmp_path, monkey
 
     monkeypatch.setattr("trance.engine.run_agent", _gate)
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"]]
-    step = Step.from_dict({"role": "frontend", "task": "t", "checks": ["factchecker"]})
+    session.team = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["reviewer"]]
+    step = Step.from_dict({"role": "developer", "task": "t", "checks": ["reviewer"]})
     step.checks_seeded = True
     session.flow = Flow(steps=[step])
 
@@ -9973,8 +9996,8 @@ def test_a_checks_time_is_charged_to_the_checker_not_the_worker(tmp_path, monkey
     monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
     engine._run_check(step, Attempt(n=1))
 
-    assert session.agent_seconds.get("factchecker", 0) > 0
-    assert "frontend" not in session.agent_seconds
+    assert session.agent_seconds.get("reviewer", 0) > 0
+    assert "developer" not in session.agent_seconds
     assert step.seconds > 0                     # the step pays for its checks too
 
 
@@ -9988,15 +10011,15 @@ def test_a_plan_opens_with_the_planner_and_closes_with_the_visual_pass():
     from trance.agents.roles import BUILTIN_ROLES
     from trance.agents.store import LoopStore
 
-    roles = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["planner"],
+    roles = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["planner"],
              BUILTIN_ROLES["visual-tester"]]
 
     class _Loops:
         def all(self):
             return LoopStore.__new__(LoopStore) and []
 
-    proposal = {"summary": "s", "team": ["frontend"], "steps": [
-        {"role": "frontend", "loop": "", "task": "build the lobby"}]}
+    proposal = {"summary": "s", "team": ["developer"], "steps": [
+        {"role": "developer", "loop": "", "task": "build the lobby"}]}
     out = ensure_frame(dict(proposal, steps=list(proposal["steps"])),
                        opening="planner", closing="visual-tester",
                        roles=roles, loops=None)
@@ -10019,14 +10042,14 @@ def test_the_closing_can_be_a_loop_and_unknown_names_are_skipped(tmp_path):
     from trance.agents.store import LoopStore
 
     loops = LoopStore(tmp_path / "loops.json")          # seeded with the builtins
-    roles = [BUILTIN_ROLES["frontend"]]
+    roles = [BUILTIN_ROLES["developer"]]
 
-    out = ensure_frame({"steps": [{"role": "frontend", "loop": "", "task": "t"}]},
+    out = ensure_frame({"steps": [{"role": "developer", "loop": "", "task": "t"}]},
                        opening="claude",                # this project has no such agent
                        closing="visual-test-and-fix",
                        roles=roles, loops=loops)
 
-    assert out["steps"][0]["role"] == "frontend"        # nothing prepended
+    assert out["steps"][0]["role"] == "developer"        # nothing prepended
     assert out["steps"][-1]["loop"] == "visual-test-and-fix"
     assert out["steps"][-1]["role"] == ""
 
@@ -10055,8 +10078,8 @@ def test_the_frame_is_applied_from_the_projects_settings(tmp_path, monkeypatch):
 
     def _proposed(**kwargs):
         frame = orchestrator.ensure_frame(
-            {"summary": "s", "team": ["frontend"], "requirements": [],
-             "steps": [{"role": "frontend", "loop": "", "task": "build the lobby",
+            {"summary": "s", "team": ["developer"], "requirements": [],
+             "steps": [{"role": "developer", "loop": "", "task": "build the lobby",
                         "check": None, "checks": [], "on_fail": None,
                         "max_loops": 0, "points": 2}]},
             opening=getattr(kwargs.get("settings"), "plan_open", ""),
@@ -10100,8 +10123,8 @@ def test_a_framed_plan_runs_its_planner_from_the_library_not_the_shipped_copy(tm
 
     def _proposed(**kwargs):
         frame = orchestrator.ensure_frame(
-            {"summary": "s", "team": ["backend"], "requirements": [],
-             "steps": [{"role": "backend", "loop": "", "task": "make the server",
+            {"summary": "s", "team": ["developer"], "requirements": [],
+             "steps": [{"role": "developer", "loop": "", "task": "make the server",
                         "check": None, "checks": [], "on_fail": None,
                         "max_loops": 0, "points": 2}]},
             opening=getattr(kwargs.get("settings"), "plan_open", ""),
@@ -10347,16 +10370,16 @@ def test_a_rejection_names_the_gate_that_objected_and_tells_the_budget_truth(tmp
             self.model_event_ids: list = []
 
     def _ran(*, role, **_kw):
-        if role.name == "backend":
+        if role.name == "developer":
             return _turn_reporting_success()
-        return _Verdict("PASS" if role.name == "factchecker" else "FAIL")
+        return _Verdict("PASS" if role.name == "reviewer" else "FAIL")
 
     monkeypatch.setattr("trance.engine.run_agent", _ran)
-    backend = AgentRole(**{**BUILTIN_ROLES["backend"].to_dict(), "tries": 1})
+    backend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(), "tries": 1})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [backend, BUILTIN_ROLES["factchecker"], BUILTIN_ROLES["reviewer"]]
-    step = Step.from_dict({"role": "backend", "task": "t",
-                           "checks": ["factchecker", "reviewer"]})
+    session.team = [backend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["regression"]]
+    step = Step.from_dict({"role": "developer", "task": "t",
+                           "checks": ["regression"]})
     step.checks_seeded = True
     session.flow = Flow(steps=[step])
 
@@ -10370,8 +10393,8 @@ def test_a_rejection_names_the_gate_that_objected_and_tells_the_budget_truth(tmp
 
     assert step.status == "failed"
     rejected = said["check_failed"][-1]
-    assert rejected["checker"] == "reviewer"                # who actually objected
-    assert "reviewer found otherwise" in rejected["message"]
+    assert rejected["checker"] == "regression"              # who actually objected
+    assert "regression found otherwise" in rejected["message"]
     assert "No tries left" in rejected["message"]           # the budget truth
     assert "Trying again" not in rejected["message"]
     # And the gate's own line no longer promises a return trip it cannot see.
@@ -10379,7 +10402,7 @@ def test_a_rejection_names_the_gate_that_objected_and_tells_the_budget_truth(tmp
     assert "runs again" not in gate_line
     assert "chain stops here" in gate_line
     # The recorded reason names the right gate too.
-    assert step.attempts[-1].outcome_reason.startswith("reviewer checked")
+    assert step.attempts[-1].outcome_reason.startswith("regression checked")
 
 
 def test_a_rejection_with_tries_left_still_promises_the_retry(tmp_path, monkeypatch):
@@ -10399,17 +10422,17 @@ def test_a_rejection_with_tries_left_still_promises_the_retry(tmp_path, monkeypa
             self.model_event_ids: list = []
 
     def _ran(*, role, **_kw):
-        if role.name == "backend":
+        if role.name == "developer":
             calls["n"] += 1
             return _turn_reporting_success()
         # Fails the first pass, passes the second — the retry earns its keep.
         return _Verdict("FAIL" if calls["n"] == 1 else "PASS")
 
     monkeypatch.setattr("trance.engine.run_agent", _ran)
-    backend = AgentRole(**{**BUILTIN_ROLES["backend"].to_dict(), "tries": 2})
+    backend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(), "tries": 2})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
     session.team = [backend, BUILTIN_ROLES["reviewer"]]
-    step = Step.from_dict({"role": "backend", "task": "t", "checks": ["reviewer"]})
+    step = Step.from_dict({"role": "developer", "task": "t", "checks": ["reviewer"]})
     step.checks_seeded = True
     session.flow = Flow(steps=[step])
 
@@ -10464,7 +10487,7 @@ def test_a_steps_commits_can_be_reverted_as_one_inverse_commit(tmp_path):
     second = vcs.commit_all(project, "backend: attempt 2")
 
     session = app.state.store.get(sid)
-    step = Step(role="backend", task="build the game loop")
+    step = Step(role="developer", task="build the game loop")
     step.attempts = [Attempt(n=1, commit=first.sha), Attempt(n=2, commit=second.sha)]
     session.flow = Flow(steps=[step])
 
@@ -10497,7 +10520,7 @@ def test_a_conflicting_revert_fails_cleanly_and_can_be_tried_again(tmp_path):
     vcs.commit_all(project, "user: my own change on top")
 
     session = app.state.store.get(sid)
-    step = Step(role="backend", task="t")
+    step = Step(role="developer", task="t")
     step.attempts = [Attempt(n=1, commit=stepped.sha)]
     session.flow = Flow(steps=[step])
 
@@ -10520,7 +10543,7 @@ def test_a_step_with_no_commits_says_so_and_a_running_session_refuses(tmp_path):
     client, app, sid, project = _revert_app(tmp_path)
     project.mkdir(parents=True, exist_ok=True)
     session = app.state.store.get(sid)
-    step = Step(role="backend", task="t")
+    step = Step(role="developer", task="t")
     step.attempts = [Attempt(n=1)]
     session.flow = Flow(steps=[step])
 
@@ -10548,7 +10571,7 @@ def test_a_mistaken_revert_can_be_applied_back(tmp_path):
     made = vcs.commit_all(project, "backend: the step")
 
     session = app.state.store.get(sid)
-    step = Step(role="backend", task="build it")
+    step = Step(role="developer", task="build it")
     step.attempts = [Attempt(n=1, commit=made.sha)]
     session.flow = Flow(steps=[step])
 
@@ -10585,17 +10608,17 @@ def test_an_unedited_default_tracks_the_shipped_definition(tmp_path, monkeypatch
 
     path = tmp_path / "agents.json"
     first = RoleStore(path, overlay=True)
-    held = first.get("frontend")
+    held = first.get("developer")
     held.preset = "Qwen-local"                      # wiring: a choice, kept
     first.upsert(held)
 
     # trance ships a better prompt.
-    improved = copy_module.deepcopy(BUILTIN_ROLES["frontend"])
+    improved = copy_module.deepcopy(BUILTIN_ROLES["developer"])
     improved.system_prompt = "the improved shipped prompt"
-    monkeypatch.setitem(BUILTIN_ROLES, "frontend", improved)
+    monkeypatch.setitem(BUILTIN_ROLES, "developer", improved)
 
     again = RoleStore(path, overlay=True)
-    fresh = again.get("frontend")
+    fresh = again.get("developer")
     assert fresh.system_prompt == "the improved shipped prompt"   # flowed in
     assert fresh.preset == "Qwen-local"                           # choice kept
 
@@ -10608,23 +10631,23 @@ def test_an_edited_default_definition_stays_edited(tmp_path, monkeypatch):
 
     path = tmp_path / "agents.json"
     first = RoleStore(path, overlay=True)
-    held = first.get("frontend")
+    held = first.get("developer")
     held.system_prompt = "my own carefully tuned prompt"
     first.upsert(held)
 
-    improved = copy_module.deepcopy(BUILTIN_ROLES["frontend"])
+    improved = copy_module.deepcopy(BUILTIN_ROLES["developer"])
     improved.system_prompt = "the improved shipped prompt"
-    monkeypatch.setitem(BUILTIN_ROLES, "frontend", improved)
+    monkeypatch.setitem(BUILTIN_ROLES, "developer", improved)
 
     again = RoleStore(path, overlay=True)
-    assert again.get("frontend").system_prompt == "my own carefully tuned prompt"
+    assert again.get("developer").system_prompt == "my own carefully tuned prompt"
 
     # Reset is the opt-in to the shipped version, wiring intact.
-    again.reset("frontend")
-    assert again.get("frontend").system_prompt == "the improved shipped prompt"
+    again.reset("developer")
+    assert again.get("developer").system_prompt == "the improved shipped prompt"
     # And having reset, it tracks again.
     third = RoleStore(path, overlay=True)
-    assert third.get("frontend").system_prompt == "the improved shipped prompt"
+    assert third.get("developer").system_prompt == "the improved shipped prompt"
 
 
 def test_a_file_from_before_the_flag_is_treated_as_edited(tmp_path):
@@ -10636,12 +10659,12 @@ def test_a_file_from_before_the_flag_is_treated_as_edited(tmp_path):
     from trance.agents.store import RoleStore
 
     path = tmp_path / "agents.json"
-    stale = BUILTIN_ROLES["frontend"].to_dict()
+    stale = BUILTIN_ROLES["developer"].to_dict()
     stale["system_prompt"] = "an old shipped prompt, frozen long ago"
     path.write_text(json_module.dumps({"agents": [stale]}), encoding="utf8")
 
     store = RoleStore(path, overlay=True)
-    assert store.get("frontend").system_prompt == \
+    assert store.get("developer").system_prompt == \
         "an old shipped prompt, frozen long ago"
 
 
@@ -10660,24 +10683,24 @@ def test_a_session_resets_to_the_default_not_over_it(tmp_path):
     client = TestClient(app)
 
     # The user's default: their own frontend prompt.
-    client.put("/api/agents/frontend?session=defaults",
+    client.put("/api/agents/developer?session=defaults",
                json={"system_prompt": "the default my projects start from"})
 
     sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
-    client.put(f"/api/agents/frontend?session={sid}",
+    client.put(f"/api/agents/developer?session={sid}",
                json={"system_prompt": "a local experiment", "preset": None})
 
     listed = next(a for a in client.get(f"/api/agents?session={sid}").json()["agents"]
-                  if a["name"] == "frontend")
+                  if a["name"] == "developer")
     assert "system_prompt" in listed["differs"]     # the marker sees the drift
 
-    out = client.post(f"/api/agents/frontend/reset?session={sid}").json()
+    out = client.post(f"/api/agents/developer/reset?session={sid}").json()
     assert out["system_prompt"] == "the default my projects start from"
 
     # And the Default scope itself resets one hop further, to shipped.
-    reset_default = client.post("/api/agents/frontend/reset?session=defaults").json()
+    reset_default = client.post("/api/agents/developer/reset?session=defaults").json()
     from trance.agents.roles import BUILTIN_ROLES
-    assert reset_default["system_prompt"] == BUILTIN_ROLES["frontend"].system_prompt
+    assert reset_default["system_prompt"] == BUILTIN_ROLES["developer"].system_prompt
 
 
 # ======================== loops carry the same check chips the plan does
@@ -10699,24 +10722,24 @@ def test_a_loop_node_is_seeded_with_its_agents_checks_once(tmp_path):
     client = TestClient(app)
     sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
 
-    client.put(f"/api/agents/fullstack?session={sid}",
-               json={"checks": ["factchecker", "regression"]})
+    client.put(f"/api/agents/developer?session={sid}",
+               json={"checks": ["reviewer", "regression"]})
 
     loops = client.get(f"/api/loops?session={sid}").json()["loops"]
     visual = next(l for l in loops if l["name"] == "visual-test-and-fix")
-    repair = next(n for n in visual["nodes"] if n["role"] == "fullstack")
-    assert repair["checks"] == ["factchecker", "regression"]
+    repair = next(n for n in visual["nodes"] if n["role"] == "developer")
+    assert repair["checks"] == ["reviewer", "regression"]
     assert repair["checks_seeded"] is True
 
     # Taking one off is a decision that sticks across reads.
     for node in visual["nodes"]:
-        if node["role"] == "fullstack":
-            node["checks"] = ["factchecker"]
+        if node["role"] == "developer":
+            node["checks"] = ["reviewer"]
     client.put(f"/api/loops/visual-test-and-fix?session={sid}", json=visual)
     again = next(l for l in client.get(f"/api/loops?session={sid}").json()["loops"]
                  if l["name"] == "visual-test-and-fix")
-    kept = next(n for n in again["nodes"] if n["role"] == "fullstack")
-    assert kept["checks"] == ["factchecker"]
+    kept = next(n for n in again["nodes"] if n["role"] == "developer")
+    assert kept["checks"] == ["reviewer"]
 
 
 def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
@@ -10756,11 +10779,11 @@ def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
         # too — its roles landing in `asked` was a once-in-thirty flake.
         if _kw.get("session_id") == "s1":
             asked.append(role.name)
-        return _Turn() if role.name == "frontend" else _Verdict()
+        return _Turn() if role.name == "developer" else _Verdict()
 
     monkeypatch.setattr("trance.engine.run_agent", _ran)
-    node = LoopNode(id="n1", role="frontend",
-                    checks_chain=["factchecker", "regression"], checks_seeded=True,
+    node = LoopNode(id="n1", role="developer",
+                    checks_chain=["reviewer", "regression"], checks_seeded=True,
                     on={"SUCCESS": Edge(target=EXIT_LOOP)})
     loop = Loop(name="fix-it", nodes=[node], start="n1", max_steps=3)
 
@@ -10769,7 +10792,7 @@ def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
             return loop if name == "fix-it" else None
 
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["frontend"], BUILTIN_ROLES["factchecker"],
+    session.team = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["reviewer"],
                     BUILTIN_ROLES["regression"]]
     step = Step(role="", loop="fix-it", task="t")
     session.flow = Flow(steps=[step])
@@ -10779,33 +10802,34 @@ def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
     engine._execute_loop(step)
 
-    assert asked == ["frontend", "factchecker", "regression"]
+    assert asked == ["developer", "reviewer", "regression"]
     assert step.status == "done"
 
 
 # ============================== the visual loop's repairer reaches both sides
 
-def test_the_fullstack_repairer_owns_both_sides_of_the_seam():
+def test_the_developer_owns_both_sides_of_the_seam():
     """Learned the hard way: a repairer confined to the frontend answered a
     dead websocket by rewriting rendering, because the remit let it fix
     nothing else. A visual symptom does not say which side its cause is on."""
     from trance.agents.roles import BUILTIN_ROLES
     from trance.agents.store import default_loops
 
-    fullstack = BUILTIN_ROLES["fullstack"]
-    assert fullstack.may_write("backend/server.js")
-    assert fullstack.may_write("frontend/src/GameScene.js")
-    assert "locating the fault before touching anything" in fullstack.system_prompt
-    assert "both sides move in the same step" in fullstack.system_prompt
-    assert not fullstack.verifier
+    developer = BUILTIN_ROLES["developer"]
+    assert developer.may_write("backend/server.js")
+    assert developer.may_write("frontend/src/GameScene.js")
+    assert "locate the fault" in developer.system_prompt
+    assert "both sides move" in developer.system_prompt
+    assert not developer.verifier
 
     visual = next(l for l in default_loops() if l.name == "visual-test-and-fix")
     repair = next(n for n in visual.nodes if n.id == "n_repair")
-    assert repair.role == "fullstack"
+    assert repair.role == "developer"
     assert "either side" in repair.focus
-    # The test loop keeps its specialists: this is repair-shaped, not general.
+    # Both loops route their fixes to the same developer now — the loop's own
+    # judge (tester or the browser) is what differs, not the fixer.
     plain = next(l for l in default_loops() if l.name == "test-and-fix")
-    assert all(n.role != "fullstack" for n in plain.nodes)
+    assert next(n for n in plain.nodes if n.id == "n_fix").role == "developer"
 
 
 # ==================== deleting is scoped, warned, approved — never walled
@@ -10857,7 +10881,7 @@ def test_a_step_whose_agent_was_deleted_fails_saying_so(tmp_path, monkeypatch):
     from trance.session import Session
 
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["frontend"]]
+    session.team = [BUILTIN_ROLES["developer"]]
     step = Step(role="helper", task="t")           # nobody by this name
     session.flow = Flow(steps=[step])
     bus = EventBus()
@@ -10911,7 +10935,7 @@ def test_a_preset_delete_warns_and_says_what_the_fallback_is(tmp_path):
     client.put("/api/presets/local-qwen", json={"kind": "llamacpp", "model": "q",
                                                 "base_url": "http://x/v1"})
     sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
-    client.put(f"/api/agents/frontend?session={sid}", json={"preset": "local-qwen"})
+    client.put(f"/api/agents/developer?session={sid}", json={"preset": "local-qwen"})
     # The team holds the assignment the warning looks for.
     client.get(f"/api/sessions/{sid}")
 
@@ -10949,7 +10973,7 @@ def test_a_plan_naming_a_deleted_loop_still_saves_and_warns(tmp_path):
     # Adding an unrelated step saves the whole plan, dangling reference included.
     held = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"]
     body = client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        *held, {"role": "frontend", "task": "the new step"}]})
+        *held, {"role": "developer", "task": "the new step"}]})
     assert body.status_code == 200
     out = body.json()
     assert any("test-and-fix-frontend" in m for m in out["missing"])
@@ -10978,8 +11002,8 @@ def test_a_requests_screenshots_are_stamped_onto_the_steps_it_creates(tmp_path, 
 
     def _proposed(**kwargs):
         return {"text": "planned", "truncated": False, "proposal": {
-            "summary": "s", "team": ["frontend"], "requirements": [],
-            "steps": [{"role": "frontend", "loop": "", "task": "fix the button",
+            "summary": "s", "team": ["developer"], "requirements": [],
+            "steps": [{"role": "developer", "loop": "", "task": "fix the button",
                        "check": None, "checks": [], "on_fail": None,
                        "max_loops": 0, "points": 1}]}}
 
@@ -11013,7 +11037,7 @@ def test_a_seeing_model_gets_the_screenshot_a_blind_one_gets_told(tmp_path, monk
             return ChatResponse(text="done\n\nOUTCOME: SUCCESS", finish_reason="stop")
 
     monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
-    role = AgentRole(name="frontend", title="F", description="", system_prompt="p",
+    role = AgentRole(name="developer", title="F", description="", system_prompt="p",
                      paths=["**"], toolsets=["files"])
 
     # llamacpp can see: the screenshot arrives as an image block.
@@ -11041,7 +11065,7 @@ def test_a_block_records_its_node_and_the_handoff_it_received(tmp_path, monkeypa
     back later and run it again with the same input."""
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
     step = Step(role="", loop="test-and-fix", task="t")
     order = []
 
@@ -11065,7 +11089,7 @@ def test_rerun_from_a_block_replays_the_handoff_and_routes_on(tmp_path, monkeypa
     block again — same input, and the tester still judges the result."""
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
     step = Step(role="", loop="test-and-fix", task="t")
     step.resume_node = "n_fix"
     step.resume_handoff = "the tester saw: ball passes through the paddle"
@@ -11079,8 +11103,8 @@ def test_rerun_from_a_block_replays_the_handoff_and_routes_on(tmp_path, monkeypa
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert order == ["backend", "tester"]     # in at the fixer, judged after
-    assert any("ball passes through" in note for note in seen["backend"])
+    assert order == ["developer", "tester"]     # in at the fixer, judged after
+    assert any("ball passes through" in note for note in seen["developer"])
     assert step.status == "done"
     assert step.resume_node == "" and step.resume_handoff == ""   # spent, not sticky
 
@@ -11088,7 +11112,7 @@ def test_rerun_from_a_block_replays_the_handoff_and_routes_on(tmp_path, monkeypa
 def test_rerunning_a_block_the_loop_no_longer_has_starts_from_the_top(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
     step = Step(role="", loop="test-and-fix", task="t")
     step.resume_node = "n_gone"
     order = []
@@ -11184,7 +11208,7 @@ def test_rerunning_a_block_refuses_the_wrong_targets(tmp_path, monkeypatch):
     client, app, sid, project = _block_rerun_app(tmp_path, monkeypatch)
     project.mkdir(parents=True, exist_ok=True)
     session = app.state.store.get(sid)
-    plain = Step(role="backend", task="t")
+    plain = Step(role="developer", task="t")
     plain.attempts = [Attempt(n=1)]
     looped = Step(role="", loop="test-and-fix", task="t")
     looped.attempts = [Attempt(n=1)]                # recorded before nodes were kept
@@ -11211,7 +11235,7 @@ def test_the_last_shots_of_a_block_are_shown_to_the_next_one(tmp_path, monkeypat
     relay the tester's as if they showed its fix."""
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
     step = Step(role="", loop="test-and-fix", task="t")
     step.images = ["chat/000.png"]                 # the user's own screenshot
     order, shown = [], []
@@ -11227,7 +11251,7 @@ def test_the_last_shots_of_a_block_are_shown_to_the_next_one(tmp_path, monkeypat
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert order == ["tester", "backend", "tester"]
+    assert order == ["tester", "developer", "tester"]
     assert shown[0] == ["chat/000.png"]            # the entry has only the user's
     # The fixer: the user's shot plus the tester's last two.
     assert shown[1] == ["chat/000.png", "st/002.png", "st/003.png"]
@@ -11239,7 +11263,7 @@ def test_the_last_shots_of_a_block_are_shown_to_the_next_one(tmp_path, monkeypat
 def test_a_block_rerun_replays_the_screenshots_too(tmp_path, monkeypatch):
     from trance.flow import Step
 
-    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
     step = Step(role="", loop="test-and-fix", task="t")
     step.resume_node = "n_fix"
     step.resume_handoff = "ball passes through"
@@ -11253,7 +11277,7 @@ def test_a_block_rerun_replays_the_screenshots_too(tmp_path, monkeypatch):
     monkeypatch.setattr("trance.engine.run_agent", fake)
     engine._execute(step)
 
-    assert shown["backend"] == ["st/007.png"]
+    assert shown["developer"] == ["st/007.png"]
     assert step.resume_shots == []                 # spent, not sticky
 
 
@@ -11297,3 +11321,53 @@ def test_a_retired_builtin_disappears_unless_the_user_edited_it(tmp_path):
     store = RoleStore(path)
     assert store.get("devops") is None                # retired, never made theirs
     assert store.get("my-devops") is not None         # edited: the user's, kept
+
+
+# =============================== the shipped roster, exactly
+
+def test_a_fresh_install_ships_exactly_this_roster():
+    """One developer instead of frontend/backend/fullstack, no factchecker,
+    no devops. The roster the user asked for, verbatim — a fresh install
+    greets its user with these and nothing else."""
+    from trance.agents.roles import BUILTIN_ROLES, default_team
+    from trance.agents.store import default_loops
+
+    assert sorted(BUILTIN_ROLES) == ["developer", "orchestrator", "planner",
+                                     "regression", "reviewer", "tester",
+                                     "visual-tester"]
+    assert BUILTIN_ROLES["planner"].title == "Planner / architect"
+    assert [r.name for r in default_team()] == ["planner", "developer", "tester"]
+    assert sorted(l.name for l in default_loops()) == ["test-and-fix",
+                                                      "visual-test-and-fix"]
+    for loop in default_loops():
+        for node in loop.nodes:
+            assert node.role in BUILTIN_ROLES, (loop.name, node.role)
+
+
+def test_a_stored_shipped_loop_still_naming_old_coders_is_rewired(tmp_path):
+    """The two shipped loops are trance's own: a copy on disk that still wires
+    backend or fullstack as the fixer gets the developer, while a custom loop
+    keeps whatever the user named."""
+    import json
+
+    from trance.agents.store import LoopStore
+
+    store = LoopStore(tmp_path / "loops.json")           # seeds the defaults
+    data = json.loads((tmp_path / "loops.json").read_text())
+    for loop in data["loops"]:
+        for node in loop["nodes"]:
+            if loop["name"] == "test-and-fix" and node["id"] == "n_fix":
+                node["role"] = "backend"                 # an old install's copy
+            if loop["name"] == "visual-test-and-fix" and node["id"] == "n_repair":
+                node["role"] = "fullstack"
+    data["loops"].append({"name": "my-loop", "start": "a", "max_steps": 4,
+                          "nodes": [{"id": "a", "role": "backend", "focus": "",
+                                     "on": {"SUCCESS": [{"target": "exit"}]}}]})
+    (tmp_path / "loops.json").write_text(json.dumps(data))
+
+    again = LoopStore(tmp_path / "loops.json")
+    fix = next(n for n in again.get("test-and-fix").nodes if n.id == "n_fix")
+    repair = next(n for n in again.get("visual-test-and-fix").nodes
+                  if n.id == "n_repair")
+    assert fix.role == "developer" and repair.role == "developer"
+    assert again.get("my-loop").nodes[0].role == "backend"   # the user's, kept

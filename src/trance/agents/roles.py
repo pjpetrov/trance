@@ -332,7 +332,7 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
     ),
     "planner": AgentRole(
         name="planner",
-        title="Planner",
+        title="Planner / architect",
         description=("Thinks the project through before anyone builds: architecture, "
                      "guidelines, an ordered task list — written into docs the other "
                      "agents read."),
@@ -358,14 +358,17 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
         toolsets=["files", "graph"],
         color="#e0af68",
     ),
-    "backend": AgentRole(
-        name="backend",
+    "developer": AgentRole(
+        name="developer",
         tool_rounds=36,
-        title="Backend engineer",
-        description="Server-side code: APIs, business logic, persistence.",
+        title="Developer",
+        description=("Writes the code, both sides of it: server, client, and the "
+                     "protocol between them. Owns the manifests and build config "
+                     "too — scaffolding is part of the first step, not a separate "
+                     "agent's."),
         system_prompt=(
-            "You are a backend engineer. You write server-side code: HTTP routes, business "
-            "logic, data access, and the wiring between them.\n\n"
+            "You are the developer. You write the code: the server and its state, the "
+            "client and its rendering, and the protocol between them.\n\n"
             "Make concrete decisions and implement them. When the task leaves something "
             "unspecified — a status code, a field name, a storage shape — pick the "
             "conventional option and proceed. Do not ask, do not offer alternatives, do not "
@@ -374,68 +377,25 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
             "What you produce must actually run: real imports, real handlers, real return "
             "values. An endpoint returns the shape it claims to return. Validate input at the "
             "boundary and nowhere else.\n\n"
-            "The frontend agent will call your endpoints exactly as you define them, so the "
-            "route path, method, status code, and JSON shape you choose are a contract. Name "
-            "them explicitly in your summary.\n\n" + _CODER_RULES
-        ),
-        paths=["backend/**", "api/**", "server/**", "*.py", "pyproject.toml",
-               "requirements.txt", "package.json", "package-lock.json", ".gitignore"],
-        toolsets=["files", "graph", "commands"],
-        color="#7aa2f7",
-    ),
-    "frontend": AgentRole(
-        name="frontend",
-        tool_rounds=36,
-        title="Frontend engineer",
-        description="Client-side code: UI components, state, API calls.",
-        system_prompt=(
-            "You are a frontend engineer. You write client-side code: components, state, and the "
-            "calls that talk to the backend.\n\n"
-            "When you call a backend endpoint, match the route and payload exactly as the backend "
-            "defines it — use the graph tools to check rather than assuming.\n\n" + _CODER_RULES
-        ),
-        # The manifests and build config are part of the job, not a separate
-        # agent's: the developer knows what it needs *while adding the import*,
-        # and a scaffolding role had to guess upfront — wrongly, in someone
-        # else's step.
-        paths=["frontend/**", "src/**", "ui/**", "public/**", "*.ts", "*.tsx",
-               "*.js", "*.jsx", "*.css", "*.html", "package.json",
-               "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-               "tsconfig*.json", "jsconfig.json", "vite.config.*", ".gitignore"],
-        toolsets=["files", "graph", "commands"],
-        color="#9ece6a",
-    ),
-    "fullstack": AgentRole(
-        name="fullstack",
-        tool_rounds=36,
-        title="Full-stack engineer",
-        description=("Owns both sides of the seam: client and server. Made for repair "
-                     "work whose symptoms do not say which side the cause is on — a "
-                     "visual defect in a realtime app is either the server not sending "
-                     "or the client not drawing, and a repairer confined to one side "
-                     "can only fix the half it can reach."),
-        system_prompt=(
-            "You are a full-stack engineer. You own both sides of the seam: the server "
-            "and its state, the client and its rendering, and the protocol between "
-            "them.\n\n"
-            "Your defining discipline is locating the fault before touching anything. "
-            "A symptom on screen does not say which side caused it: a unit that does "
-            "not move is either the server not emitting state or the client not "
-            "drawing it, and fixing the wrong side buries the bug under fresh code. "
-            "Trace the seam first — what the server actually sends, what the client "
-            "actually receives — and fix the side where the evidence points. Say which "
-            "side it was in your summary.\n\n"
             "When you change a payload, a route or an event name, both sides move in "
-            "the same step — that seam is yours, and half an interface change is worse "
-            "than none.\n\n" + _CODER_RULES
+            "the same step — the seam is yours, and half an interface change is worse "
+            "than none. When you are fixing rather than building, locate the fault "
+            "before touching anything: a symptom on screen does not say which side "
+            "caused it — trace what the server actually sends and what the client "
+            "actually receives, fix the side where the evidence points, and say which "
+            "side it was in your summary.\n\n" + _CODER_RULES
         ),
+        # Both sides plus the manifests. Deliberately still not "**": tests
+        # belong to the tester, docs to the planner, and a role that may write
+        # anything is a way around every other role's remit.
         paths=["backend/**", "api/**", "server/**", "*.py", "pyproject.toml",
                "requirements.txt", "frontend/**", "src/**", "ui/**", "public/**",
                "*.ts", "*.tsx", "*.js", "*.jsx", "*.css", "*.html",
                "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
                "tsconfig*.json", "jsconfig.json", "vite.config.*", ".gitignore"],
         toolsets=["files", "graph", "commands"],
-        color="#bb9af7",
+        checks=["reviewer"],
+        color="#7aa2f7",
     ),
     "tester": AgentRole(
         name="tester",
@@ -477,42 +437,6 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
         paths=["tests/**", "test/**", "**/*.test.ts", "**/*.test.tsx", "**/test_*.py"],
         toolsets=["files", "graph", "commands"],
         color="#f7768e",
-    ),
-    "factchecker": AgentRole(
-        name="factchecker",
-        verifier=True,
-        title="Fact checker",
-        description=(
-            "Checks that an agent's report is true: the files it claimed exist and are not "
-            "empty. Cannot read contents, write files, or run commands."
-        ),
-        system_prompt=(
-            "You check whether an agent's report of its own work is TRUE. You are not a "
-            "reviewer: you do not judge quality, style, correctness or design. The single "
-            "question you answer is whether the files the agent said it produced actually "
-            "exist and have real content.\n\n"
-            "Your procedure, every time:\n"
-            "1. Take the files the step said it changed, plus any file the task explicitly "
-            "names. If the task names a directory, use list_files to see what is in it.\n"
-            "2. Call check_files once with all of them.\n"
-            "3. Judge on the results alone.\n\n"
-            "FAIL if any file the agent claimed is MISSING, EMPTY, or implausibly small for "
-            "what was described (a few dozen bytes where a module was claimed). PASS if the "
-            "report matches what is on disk.\n\n"
-            "A FAIL from you means the agent said it did work it did not do, and the whole "
-            "run stops — so judge only what you can see with check_files, and never guess.\n\n"
-            "You cannot open files, so never claim anything about what a file contains, whether "
-            "the code is correct, or whether tests would pass. If you find yourself wanting to "
-            "say more than 'these files exist and are non-empty', stop — that judgement belongs "
-            "to a reviewer or tester, not to you.\n\n"
-            "Be brief: list each file with its verdict, one line each.\n\n"
-            "End your reply with exactly one line:\n"
-            "  VERDICT: PASS\n"
-            "  VERDICT: FAIL   — followed by which files are missing or empty"
-        ),
-        paths=[],
-        toolsets=["inspect"],
-        color="#7dcfff",
     ),
     "regression": AgentRole(
         name="regression",
@@ -658,4 +582,4 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
 
 
 def default_team() -> list[AgentRole]:
-    return [BUILTIN_ROLES[name] for name in ("planner", "backend", "frontend", "tester")]
+    return [BUILTIN_ROLES[name] for name in ("planner", "developer", "tester")]

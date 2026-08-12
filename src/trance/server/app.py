@@ -665,7 +665,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         # Merge onto what is stored: a partial update ("just change the command
         # list") must not blank the prompt and the remit by omission.
         existing = roles.get(name.strip())
-        base = existing.to_dict() if existing else {}
+        # A partial body aimed at a name that is not there is a typo or a
+        # retired agent, not a request to create a husk — and letting it fall
+        # through returned a 500 from the dataclass rather than an answer.
+        if existing is None and not (body.get("title") and body.get("system_prompt")):
+            raise HTTPException(404, (
+                f"no agent named {name.strip()!r} to update — creating a new "
+                f"one needs at least a title and a system_prompt."))
+        base = existing.to_dict() if existing else {"description": ""}
         body = {**base, **body, "name": name.strip()}
         error = validate_agent(body)
         if error:
@@ -1541,7 +1548,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 + "\n\n".join(rendered)
                 + "\n\nWhere a comment is a question rather than an instruction, answer "
                   "it in your report instead of changing code.")
-        step = Step(role="" if loop_name else "backend", loop=loop_name, task=task,
+        step = Step(role="" if loop_name else "developer", loop=loop_name, task=task,
                     points=3, max_loops=2)
         # Next, not last. The comments name lines in the code as it is right
         # now; run them after everything else and those lines have moved.

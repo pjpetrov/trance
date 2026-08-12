@@ -30,7 +30,7 @@ trance serve            # http://localhost:8080
 - **End-to-end visual testing.** A real browser, driven: `open_page` starts
   the project's own dev server on a free port, `press_key` / `click` /
   `watch` interact and film, a vision model answers pointed questions with
-  evidence per check. Failures route to a full-stack repairer.
+  evidence per check. Failures route back to the developer.
 - **Plans.** Describe a project; the orchestrator proposes a team and an
   ordered flow. Editable, size-estimated, nothing runs until you press Run.
 - **Runs, visibly.** A live console: every model call, command, diff, lookup,
@@ -38,9 +38,9 @@ trance serve            # http://localhost:8080
 - **Remits, enforced.** Each agent owns path globs, a toolset and a command
   allowlist, checked at the tool boundary. Refusals can pause and ask you:
   allow once, always, or refuse.
-- **Checks.** Verifier chains on every step — factchecker by rule on anything
-  that writes; regression, reviewer, or your own as chips on agents, steps
-  and loop nodes. A failed check sends the work back with the objection.
+- **Checks.** Verifier chains on every step — the reviewer by rule on anything
+  that writes; regression, or your own as chips on agents, steps and loop
+  nodes. A failed check sends the work back with the objection.
 - **Steering.** Type mid-run; it reaches the working agent on its next round.
 - **Git as the record.** Every step runs between two commits. Per-step
   **revert commits** / **apply commits**, one inverse commit each, all acts
@@ -207,12 +207,11 @@ onto its steps (and its loop nodes) where you can see and change them per
 task; a removed chip stays removed. "After every step, run the regression
 tests" lives here, not ticked onto twenty steps by hand.
 
-Ships with backend, frontend, fullstack (both remits — the visual loop's
-repairer, because a symptom on screen does not say which side its cause is
-on), tester, reviewer, planner (whose product is documents: docs/** and
-*.md), factchecker, regression and the orchestrator. The coders own their
-manifests and build config too — scaffolding is part of the first coding
-step, not a separate agent's. All editable; new
+Ships with the planner/architect (whose product is documents: docs/** and
+*.md), the developer (both sides of the seam — server, client and the
+protocol between them, plus the manifests and build config: scaffolding is
+part of the first coding step, not a separate agent's), tester,
+visual-tester, reviewer, regression and the orchestrator. All editable; new
 ones can be added — a new agent starts from a template with the parts to
 replace marked «like this», and one button drafts a first prompt from the
 name you gave it.
@@ -240,7 +239,7 @@ runs again, so a fix that breaks an earlier check cannot pass. When a check
 contradicts a claimed success, the agent is told exactly what the check found
 and tries again — a missing file is usually something forgotten, and it can be
 finished. Only a check that keeps failing halts the run. Every step that
-writes files gets the factchecker by rule — always the same one, chosen by
+writes files gets the reviewer by rule — always the same one, chosen by
 nobody: the planner model is deliberately not asked to pick verifiers, because
 asked, it picked from the shape of the sentence in front of it, differently
 each time. Everything above that floor comes from the agents' own chips.
