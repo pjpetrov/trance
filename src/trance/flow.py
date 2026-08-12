@@ -65,6 +65,8 @@ class Attempt:
     #: together, enough to go back and run the block again with the same input.
     node: str = ""
     handoff: str = ""
+    #: Screenshots the previous block took and this one was shown.
+    shots: list[str] = field(default_factory=list)
 
     @property
     def failed_gate(self) -> str | None:
@@ -158,9 +160,11 @@ class Step:
     #: User steering notes waiting to reach this step's agent.
     steering: list[str] = field(default_factory=list)
     #: Set by "rerun from this block": where the next execution of this loop
-    #: step re-enters, and the handoff to replay there. Consumed on entry.
+    #: step re-enters, and the handoff and screenshots to replay there.
+    #: Consumed on entry.
     resume_node: str = ""
     resume_handoff: str = ""
+    resume_shots: list[str] = field(default_factory=list)
 
     def take_steering(self) -> list[str]:
         """Hand over every waiting note, exactly once."""

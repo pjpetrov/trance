@@ -2470,6 +2470,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
         step.resume_node = attempt.node
         step.resume_handoff = attempt.handoff
+        step.resume_shots = list(attempt.shots)
         step.status = "pending"
         was_paused = session.paused
         session.resume()

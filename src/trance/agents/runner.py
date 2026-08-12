@@ -223,12 +223,14 @@ def _with_user_images(text: str, images: list[str], project: Path, config) -> st
         return text
     kind = getattr(config, "kind", "") or "llamacpp"
     if kind not in VISION_KINDS:
-        return (text + f"\n\n[The user attached {len(kept)} screenshot(s) to this "
-                f"request ({', '.join(kept)}), but this model cannot be shown "
-                f"images. Ask the visual tester about them, or reason from the "
-                f"task text.]")
+        return (text + f"\n\n[{len(kept)} screenshot(s) travel with this task "
+                f"({', '.join(kept)}) — attached by the user, or taken in the "
+                f"browser by the agent before you — but this model cannot be "
+                f"shown images. Ask the visual tester about them, or reason "
+                f"from the task text.]")
     blocks: list[dict] = [{"type": "text", "text": (
-        text + f"\n\nThe user attached {len(kept)} screenshot(s) to this request; "
+        text + f"\n\n{len(kept)} screenshot(s) travel with this task — attached "
+               f"by the user, or taken in the browser by the agent before you; "
                f"they follow. What they show is part of the task.")}]
     shown = 0
     for name in kept:
@@ -341,6 +343,10 @@ class AgentTurn:
     #: to a fixer. Never fed back to this agent; the conversation already holds
     #: it, and it is trimmed there.
     transcript: list[dict] = field(default_factory=list)
+    #: Screenshots this turn saved (paths under .trance/shots), in order. A
+    #: loop hands the last of them to the next block, so a fixer sees what
+    #: the tester saw.
+    shots: list[str] = field(default_factory=list)
 
     @property
     def verdict(self) -> str | None:
@@ -449,10 +455,17 @@ def run_agent(**kwargs) -> AgentTurn:
     out of it, including the ones that raise.
     """
     opened: list = []
+    turn = None
     try:
-        return _run_agent(_opened=opened, **kwargs)
+        turn = _run_agent(_opened=opened, **kwargs)
+        return turn
     finally:
         for closable in opened:
+            # Harvested here rather than at each of the turn's returns: the
+            # toolset knows what it saved, and this is the one place that sees
+            # both it and the finished turn on every way out.
+            if turn is not None and hasattr(closable, "shots_taken"):
+                turn.shots = closable.shots_taken()
             try:
                 closable.close()
             except Exception:              # noqa: BLE001 — teardown never fails a step
@@ -508,7 +521,9 @@ def _run_agent(
             # One image per internal turn would multiply badly on this
             # backend; it gets the fact and the paths instead, and can read
             # the files itself if its tools allow.
-            task = (task + f"\n\nThe user attached screenshot(s) to this request: "
+            task = (task + f"\n\nScreenshot(s) travel with this task — attached "
+                    f"by the user, or taken in the browser by the agent before "
+                    f"you: "
                     + ", ".join(f".trance/shots/{name}" for name in images[:3])
                     + ". What they show is part of the task.")
         handed = delegate.run_delegated(

@@ -246,15 +246,20 @@ class FlowEngine:
         walked = 0
         on_backup_route = False        # set by a route that asks for the backup
 
+        #: What the previous block photographed, for the next one to see.
+        carry_shots: list[str] = []
+
         # "Rerun from this block": re-enter where the user pointed, replaying
         # the handoff that block received the first time — same input, fresh
         # visit budgets, and routing continues normally from its outcome.
         asked, step.resume_node = step.resume_node, ""
         replay, step.resume_handoff = step.resume_handoff, ""
+        replay_shots, step.resume_shots = list(step.resume_shots), []
         if asked:
             wanted = loop.node(asked)
             if wanted is not None:
                 node = wanted
+                carry_shots = replay_shots
                 if replay:
                     carry = Handoff(body=replay, chars=len(replay))
                 self._emit("loop_resumed", agent=wanted.role, step_id=step.id, payload={
@@ -304,6 +309,7 @@ class FlowEngine:
             if carry and carry.body:
                 steering.append(f"What the previous block did:\n{carry.body}")
                 attempt.handoff = carry.body
+            attempt.shots = list(carry_shots)
 
             runs[role.name] = runs.get(role.name, 0) + 1
             # A route's backup applies to the block it points at, and only that
@@ -313,7 +319,11 @@ class FlowEngine:
                 role, step, runs[role.name], force_backup=forced)
             node_t0 = time.monotonic()
             turn = run_agent(
-                role=role, images=step.images,
+                # The step's own screenshots plus what the previous block just
+                # photographed — newest last, and the last three win, because
+                # the tester's picture of the failure outranks a chat shot
+                # from before the run.
+                role=role, images=(list(step.images) + carry_shots)[-3:],
                 # Three prompts, narrowing: what the project is, what this step
                 # asks for, and what this agent's part in the loop is.
                 task=f"{step.task}\n\n## Your part in this block\n{node.focus or role.description}",
@@ -367,6 +377,11 @@ class FlowEngine:
             })
 
             carry = build_handoff(turn.transcript, turn.text)
+            # The last shots are where the evidence of a failure sits, and two
+            # is already most of a small model's patience. A block that took
+            # none passes none on — a fixer's turn must not relay the tester's
+            # pictures as if they showed its fix.
+            carry_shots = list(turn.shots)[-2:]
             key = (node.id, exit_name)
             edge = node.route(exit_name, visits.get(key, 0))
             if edge is None:

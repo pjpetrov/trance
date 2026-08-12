@@ -1013,6 +1013,10 @@ class AgentTools:
                 cancel_token=self.session_id)
         return self._visual
 
+    def shots_taken(self) -> list[str]:
+        """Every screenshot this turn saved, in order — read before close()."""
+        return list(self._visual.taken) if self._visual is not None else []
+
     def close(self) -> None:
         """Release anything the step held open. Safe to call twice."""
         if self._visual is not None:

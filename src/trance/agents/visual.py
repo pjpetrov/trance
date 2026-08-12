@@ -77,6 +77,9 @@ class VisualSession:
         #: the agent knows what it is looking at.
         self.dev_command = ""
         self._shots = 0
+        #: Every screenshot this session saved, in order, as paths relative to
+        #: .trance/shots — the evidence trail a loop can hand to the next block.
+        self.taken: list[str] = []
         self.page = ""
 
     # ------------------------------------------------------------- lifecycle
@@ -324,4 +327,5 @@ class VisualSession:
         self._shots += 1
         name = f"{self._shots:03d}.png"
         (folder / name).write_bytes(png)
+        self.taken.append(f"{step}/{name}")
         return f"{step}/{name}"

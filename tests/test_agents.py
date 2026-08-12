@@ -771,9 +771,11 @@ def _engine(tmp_path, team, bus=None):
 class _Turn:
     """Stands in for agents.runner.AgentTurn."""
 
-    def __init__(self, verdict, text="", outcome=("SUCCESS", ""), transcript=None):
+    def __init__(self, verdict, text="", outcome=("SUCCESS", ""), transcript=None,
+                 shots=None):
         self.verdict = verdict
         self.transcript = transcript or []
+        self.shots = shots or []
         self.outcome = outcome
         self.reported_outcome = True
         self.text = text or f"VERDICT: {verdict}"
@@ -9842,23 +9844,32 @@ def test_the_engine_sweeps_on_every_way_out_of_a_run(tmp_path):
     from trance.flow import Flow
     from trance.session import Session
 
-    proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
-    with tools_module._RUNNING_LOCK:
-        tools_module._RUNNING["cmd_stray"] = RunningCommand(
-            command_id="cmd_stray", proc=proc, pgid=os.getpgid(proc.pid),
-            command="npm run dev -w backend", background=False, log_path="")
-
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
     session.flow = Flow(steps=[])
     bus = EventBus()
     seen = []
     bus.subscribe_sync(lambda e: seen.append(e) if e.type == "background_stopped" else None)
 
-    FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)._run()
+    # Up to three tries: the command table is process-global, and a stray
+    # engine thread left by an earlier test in this worker can sweep it in
+    # the window between registering and running — reaping our process and
+    # reporting it on *its* bus. That theft was a once-in-thirty flake, and
+    # it cannot happen twice in a row to a fresh registration.
+    for _ in range(3):
+        proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
+        with tools_module._RUNNING_LOCK:
+            tools_module._RUNNING["cmd_stray"] = RunningCommand(
+                command_id="cmd_stray", proc=proc, pgid=os.getpgid(proc.pid),
+                command="npm run dev -w backend", background=False, log_path="")
 
-    assert session.status == "finished"
-    assert any("npm run dev -w backend" in e.payload["command"] for e in seen)
-    proc.wait(timeout=5)
+        FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)._run()
+
+        assert session.status == "finished"
+        proc.wait(timeout=5)
+        if any("npm run dev -w backend" in e.payload["command"] for e in seen):
+            break
+    else:
+        raise AssertionError("the sweep never reported the stray command")
 
 
 # =========================== the clock says who the working time went to
@@ -9886,6 +9897,7 @@ def test_working_time_is_charged_to_the_agent_and_the_step(tmp_path, monkeypatch
         usage: dict = {}
         context: dict = {}
         transcript: list = []
+        shots: list = []
         verdict = None
         notes_written = 0
 
@@ -10293,6 +10305,7 @@ def _turn_reporting_success():
         usage: dict = {}
         context: dict = {}
         transcript: list = []
+        shots: list = []
         verdict = None
         notes_written = 0
     return _Turn()
@@ -10710,6 +10723,7 @@ def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
         usage: dict = {}
         context: dict = {}
         transcript: list = []
+        shots: list = []
         verdict = None
         notes_written = 0
 
@@ -10719,7 +10733,11 @@ def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
         model_event_ids: list = []
 
     def _ran(*, role, **_kw):
-        asked.append(role.name)
+        # Only this test's session. The monkeypatch is process-global, and a
+        # stray engine thread left by an earlier test in this worker calls it
+        # too — its roles landing in `asked` was a once-in-thirty flake.
+        if _kw.get("session_id") == "s1":
+            asked.append(role.name)
         return _Turn() if role.name == "frontend" else _Verdict()
 
     monkeypatch.setattr("trance.engine.run_agent", _ran)
@@ -11116,7 +11134,8 @@ def test_one_block_of_a_loop_can_be_rerun_from_where_it_stood(tmp_path, monkeypa
     step.attempts = [
         Attempt(n=1, node="n_test"),
         Attempt(n=2, node="n_fix", commit=fumbled.sha,
-                handoff="the tester saw: ball passes through"),
+                handoff="the tester saw: ball passes through",
+                shots=["st/004.png", "st/005.png"]),
         Attempt(n=3, node="n_test", commit=judged.sha),
     ]
     session.flow = Flow(steps=[step])
@@ -11127,6 +11146,7 @@ def test_one_block_of_a_loop_can_be_rerun_from_where_it_stood(tmp_path, monkeypa
     assert (project / "game.js").read_text() == "v0\n"     # back to what block 2 saw
     assert step.resume_node == "n_fix"
     assert "ball passes through" in step.resume_handoff
+    assert step.resume_shots == ["st/004.png", "st/005.png"]
     subjects = [c["subject"] for c in vcs.log(project)]
     assert any("rewound to block 2" in s for s in subjects)
     assert any("fix [SUCCESS]" in s for s in subjects)      # the work stays in history
@@ -11162,3 +11182,78 @@ def test_rerunning_a_block_refuses_the_wrong_targets(tmp_path, monkeypatch):
     session.status = "running"
     busy = client.post(f"/api/sessions/{sid}/steps/{looped.id}/blocks/1/rerun")
     assert busy.status_code == 409
+
+
+# ==================== the tester's screenshots follow the handoff
+
+def test_the_last_shots_of_a_block_are_shown_to_the_next_one(tmp_path, monkeypatch):
+    """The fixer sees what the tester saw. Only the last two frames — that is
+    where the evidence sits, and two is most of a 64k window's patience — and
+    only from the block just before: a fixer that took no pictures must not
+    relay the tester's as if they showed its fix."""
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    step = Step(role="", loop="test-and-fix", task="t")
+    step.images = ["chat/000.png"]                 # the user's own screenshot
+    order, shown = [], []
+
+    def fake(**kw):
+        order.append(kw["role"].name)
+        shown.append(list(kw.get("images") or []))
+        if kw["role"].name == "tester" and order.count("tester") == 1:
+            return _Turn(None, "x", outcome=("FAILED", "broken"),
+                         shots=["st/001.png", "st/002.png", "st/003.png"])
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert order == ["tester", "backend", "tester"]
+    assert shown[0] == ["chat/000.png"]            # the entry has only the user's
+    # The fixer: the user's shot plus the tester's last two.
+    assert shown[1] == ["chat/000.png", "st/002.png", "st/003.png"]
+    # The re-judging tester: the fixer photographed nothing, so nothing rides.
+    assert shown[2] == ["chat/000.png"]
+    assert step.attempts[1].shots == ["st/002.png", "st/003.png"]
+
+
+def test_a_block_rerun_replays_the_screenshots_too(tmp_path, monkeypatch):
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "backend"], _tf_loop())
+    step = Step(role="", loop="test-and-fix", task="t")
+    step.resume_node = "n_fix"
+    step.resume_handoff = "ball passes through"
+    step.resume_shots = ["st/007.png"]
+    shown = {}
+
+    def fake(**kw):
+        shown.setdefault(kw["role"].name, list(kw.get("images") or []))
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    assert shown["backend"] == ["st/007.png"]
+    assert step.resume_shots == []                 # spent, not sticky
+
+
+def test_a_turn_reports_the_screenshots_its_browser_saved(tmp_path):
+    """The harvest in run_agent's finally: whoever owns a browser toolset gets
+    its saved shots onto the turn, on every way out."""
+    from trance.agents.tools import AgentTools
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.visual import VisualSession
+
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["visual-tester"])
+    assert tools.shots_taken() == []               # no browser opened, no shots
+
+    session = VisualSession(tmp_path, session_id="s", step_id="st-9")
+    first = session.save(b"png-bytes-1")
+    second = session.save(b"png-bytes-2")
+    assert session.taken == [first, second]
+    assert (tmp_path / ".trance" / "shots" / first).read_bytes() == b"png-bytes-1"
+
+    tools._visual = session
+    assert tools.shots_taken() == [first, second]
