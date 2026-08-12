@@ -435,12 +435,13 @@ the way the project is built, and tuning an agent for one project leaves every
 other alone. Sessions live there too, under `.trance/sessions/`: the chat, the
 plan, the run trace, all travelling with the project.
 
-The workspace keeps everything else in `<workspace>/.trance/`: the models
+The machine keeps one set of everything else, at `system_dir` (point it at
+`~/.trance`; unset, it sits beside the runs dir): the models
 (`providers.json`, with their API keys — deliberately never copied into a
-project, which is a folder you zip and share), the **Default** scope new
-projects start from (an overlay on trance's shipped definitions), and the
-usage ledger. Switching workspaces switches all of it; a workspace with no
-state of its own adopts what the machine's legacy `runs/` had, once.
+project, which is a folder you zip and share), the settings, the **Default**
+scope new projects are provisioned from (an overlay on trance's shipped
+definitions), and the usage ledger. A workspace is nothing but its projects:
+switching workspaces switches the sessions and nothing else needs switching.
 
 The graph index is `<repo>/.trance/graph.db`.
 

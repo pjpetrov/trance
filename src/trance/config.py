@@ -125,8 +125,20 @@ class Config:
     #: stronger model.
     escalation_role: str = ""
     runs_dir: str = "runs"
+    #: Where the machine-wide state lives: the models (providers.json), the
+    #: settings, the Default scope every new project is provisioned from, and
+    #: the usage ledger. One machine, one set — a workspace holds only its
+    #: projects, a project holds its own agents/loops/commands and sessions.
+    #: Empty = beside the runs dir, where this state always was; point it at
+    #: ~/.trance to give it a fixed home.
+    system_dir: str = ""
     #: Root for new projects. Empty means "the directory trance was started in".
     workspace: str = ""
+
+    @property
+    def system_root(self) -> Path:
+        return (Path(self.system_dir).expanduser().resolve() if self.system_dir
+                else Path(self.runs_dir))
 
     @property
     def workspace_root(self) -> Path:
@@ -236,6 +248,8 @@ class Config:
             cfg.workspace = os.environ["TRANCE_WORKSPACE"]
         if os.environ.get("TRANCE_RUNS_DIR"):
             cfg.runs_dir = os.environ["TRANCE_RUNS_DIR"]
+        if os.environ.get("TRANCE_SYSTEM_DIR"):
+            cfg.system_dir = os.environ["TRANCE_SYSTEM_DIR"]
 
         for env_name, (section, attr, cast) in {
             "TRANCE_MAX_HOPS": ("curator", "max_hops", int),

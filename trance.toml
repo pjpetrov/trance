@@ -65,3 +65,7 @@ skip_ambiguous = false
 
 max_recurate_rounds = 2
 runs_dir = "runs"
+# Machine-wide state: models, settings, the Default scope new projects are
+# provisioned from, the usage ledger. One set per machine, whatever the
+# workspace.
+system_dir = "~/.trance"

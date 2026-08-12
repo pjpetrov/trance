@@ -358,16 +358,15 @@ def test_editing_the_defaults_leaves_existing_projects_alone(tmp_path):
 
 
 def test_the_defaults_are_a_real_place_on_disk(tmp_path):
-    """Inside the workspace's own .trance — everything a workspace is travels
-    with its directory, and switching workspaces switches all of it."""
+    """In the system dir — the machine-wide home of models, settings and the
+    Default scope every project is provisioned from."""
     import json as _json
 
     client, config = _serve(tmp_path)
     client.put("/api/agents/developer", json={"tool_rounds": 44},
                params={"session": "defaults"})
 
-    stored = _json.loads(
-        (Path(config.workspace) / ".trance" / "agents.json").read_text())
+    stored = _json.loads((config.system_root / "agents.json").read_text())
     role = next(a for a in stored["agents"] if a["name"] == "developer")
     assert role["tool_rounds"] == 44
 
@@ -391,69 +390,69 @@ def test_the_defaults_have_their_own_settings(tmp_path):
     assert client.get(f"/api/sessions/{made}/settings").json()["git_commits"] is False
 
 
-# ------------------- the workspace carries its own models and defaults
+# --------------- three layers: system, workspace, project
 
-def test_a_workspace_carries_its_own_models_and_defaults(tmp_path):
-    """Models, the Default scope and the ledger live in <workspace>/.trance —
-    so switching workspaces switches all of it, not only the session list."""
+def _layered(tmp_path, ws):
     from fastapi.testclient import TestClient
 
     from trance.config import Config
     from trance.server import app as app_module
 
-    def serve(ws):
-        config = Config.load(tmp_path / "none.toml")
-        config.runs_dir = str(tmp_path / "runs")
-        config.workspace = str(ws)
-        return TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.system_dir = str(tmp_path / "system")
+    config.workspace = str(ws)
+    ws.mkdir(exist_ok=True)
+    return TestClient(app_module.create_app(config, tmp_path / "sessions"))
 
-    one, two = tmp_path / "ws_one", tmp_path / "ws_two"
-    one.mkdir(), two.mkdir()
 
-    first = serve(one)
+def test_models_and_defaults_are_the_machines_not_the_workspaces(tmp_path):
+    """One system dir per machine: every workspace sees the same models and
+    the same Default scope, and a workspace directory holds nothing but its
+    projects. Per-workspace copies were how workspace three greeted its user
+    with the loop library of workspace one."""
+    first = _layered(tmp_path, tmp_path / "ws_one")
     first.put("/api/presets/local-qwen",
               json={"kind": "llamacpp", "model": "qwen-27b"})
     first.put("/api/agents/developer", json={"tool_rounds": 44},
               params={"session": "defaults"})
-    assert (one / ".trance" / "providers.json").exists()
 
-    other = serve(two)                       # a different workspace: fresh
-    assert "local-qwen" not in {p["name"] for p in
-                                other.get("/api/presets").json()["presets"]}
-
-    back = serve(one)                        # switching back: all still there
+    other = _layered(tmp_path, tmp_path / "ws_two")
     assert "local-qwen" in {p["name"] for p in
-                            back.get("/api/presets").json()["presets"]}
-    role = back.get("/api/agents", params={"session": "defaults"}).json()
-    dev = next(a for a in role["agents"] if a["name"] == "developer")
+                            other.get("/api/presets").json()["presets"]}
+    dev = next(a for a in other.get("/api/agents",
+                                    params={"session": "defaults"}).json()["agents"]
+               if a["name"] == "developer")
     assert dev["tool_rounds"] == 44
+    assert (tmp_path / "system" / "providers.json").exists()
+    assert not (tmp_path / "ws_one" / ".trance").exists()   # workspaces hold no state
 
 
-def test_the_legacy_runs_state_is_adopted_by_a_workspace_once(tmp_path):
-    """The move is invisible on the setup that already exists: a workspace
-    with no state of its own inherits what the machine had in runs/."""
+def test_a_new_project_is_provisioned_from_the_system_defaults(tmp_path):
+    client = _layered(tmp_path, tmp_path / "ws")
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+
+    loops = client.get("/api/loops", params={"session": sid}).json()["loops"]
+    assert {l["name"] for l in loops} == {"test-and-fix", "visual-test-and-fix"}
+    agents = client.get("/api/agents", params={"session": sid}).json()["agents"]
+    assert {a["name"] for a in agents} == {"developer", "orchestrator", "planner",
+                                           "regression", "reviewer", "tester",
+                                           "visual-tester"}
+
+
+def test_the_legacy_runs_state_is_adopted_into_the_system_dir_once(tmp_path):
     import json
-
-    from fastapi.testclient import TestClient
-
-    from trance.config import Config
-    from trance.server import app as app_module
 
     runs = tmp_path / "runs"
     runs.mkdir(parents=True)
     (runs / "providers.json").write_text(json.dumps({"providers": [
         {"name": "old-local", "kind": "llamacpp", "model": "qwen"}], "presets": []}))
 
-    config = Config.load(tmp_path / "none.toml")
-    config.runs_dir = str(runs)
-    config.workspace = str(tmp_path / "ws")
-    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
-
-    assert (tmp_path / "ws" / ".trance" / "providers.json").exists()
-    names = {p["name"] for p in client.get("/api/presets").json()["presets"]}
-    assert "old-local" in names
-    # And the legacy file is left for the next workspace to adopt from.
-    assert (runs / "providers.json").exists()
+    client = _layered(tmp_path, tmp_path / "ws")
+    assert (tmp_path / "system" / "providers.json").exists()
+    assert "old-local" in {p["name"] for p in
+                           client.get("/api/presets").json()["presets"]}
+    assert (runs / "providers.json").exists()   # the legacy file is left alone
 
 
 def test_an_unedited_builtin_in_a_project_tracks_shipped(tmp_path):
@@ -487,42 +486,34 @@ def test_an_unedited_builtin_in_a_project_tracks_shipped(tmp_path):
     assert again.roles.get("tester").system_prompt == "my own tester prompt"
 
 
-def test_only_the_first_workspace_inherits_everything(tmp_path):
-    """Found live: workspace three greeted its user with the loop library of
-    workspace one. Full adoption happens once; after that a new workspace is
-    a fresh install, except the models — the machine's own hardware and
-    endpoints, the one thing nobody wants to retype."""
+def test_an_unedited_builtin_in_a_project_tracks_shipped(tmp_path):
+    """The Default scope's contract, extended to projects: found live twice —
+    a tester running a frozen months-old prompt, then a new tool whose prompt
+    guidance reached no existing project, because every copy froze at
+    creation day. Edited copies are the user's and stay frozen."""
     import json
 
-    from fastapi.testclient import TestClient
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.workspace import ProjectStores
 
-    from trance.config import Config
-    from trance.server import app as app_module
+    project = tmp_path / "game"
+    stores = ProjectStores(project)
+    stale = json.loads((project / ".trance" / "agents.json").read_text())
+    for agent in stale["agents"]:
+        if agent["name"] == "visual-tester":
+            agent["system_prompt"] = "an old frozen prompt"
+            agent["preset"] = "local-qwen"                # the user's wiring
+            agent["definition_edited"] = False
+        if agent["name"] == "tester":
+            agent["system_prompt"] = "my own tester prompt"
+            agent["definition_edited"] = True             # a real edit
+    (project / ".trance" / "agents.json").write_text(json.dumps(stale))
 
-    runs = tmp_path / "runs"
-    runs.mkdir(parents=True)
-    (runs / "providers.json").write_text(json.dumps({"providers": [
-        {"name": "local-qwen", "kind": "llamacpp", "model": "qwen"}], "presets": []}))
-    (runs / "loops.json").write_text(json.dumps({"loops": [{
-        "name": "test-and-fix-frontend", "description": "old", "prompt": "",
-        "start": "n1", "max_steps": 4,
-        "nodes": [{"id": "n1", "role": "tester", "focus": "", "check": None,
-                   "on": {"SUCCESS": [{"target": "exit"}]}}]}]}))
+    again = ProjectStores(project)
+    tracked = again.roles.get("visual-tester")
+    assert tracked.system_prompt == BUILTIN_ROLES["visual-tester"].system_prompt
+    assert "move_mouse" in tracked.system_prompt          # improvements arrive
+    assert tracked.preset == "local-qwen"                 # wiring is kept
+    assert again.roles.get("tester").system_prompt == "my own tester prompt"
 
-    def serve(ws):
-        config = Config.load(tmp_path / "none.toml")
-        config.runs_dir = str(runs)
-        config.workspace = str(ws)
-        ws.mkdir(exist_ok=True)
-        return TestClient(app_module.create_app(config, tmp_path / "sessions"))
 
-    serve(tmp_path / "first")                  # inherits everything, plants the marker
-    first = json.loads((tmp_path / "first" / ".trance" / "loops.json").read_text())
-    assert "test-and-fix-frontend" in {l["name"] for l in first["loops"]}
-
-    serve(tmp_path / "third")                  # fresh install, plus the models
-    third = json.loads((tmp_path / "third" / ".trance" / "loops.json").read_text())
-    assert {l["name"] for l in third["loops"]} == {"test-and-fix",
-                                                  "visual-test-and-fix"}
-    assert (tmp_path / "third" / ".trance" / "providers.json").exists()
-    assert not (tmp_path / "third" / ".trance" / "usage.json").exists()

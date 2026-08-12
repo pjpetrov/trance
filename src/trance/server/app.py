@@ -79,44 +79,30 @@ def engine_alive(session) -> bool:
 
 
 def _adopt_runs_state(state_dir: Path, runs_dir: Path) -> None:
-    """Copy the machine-global files into the workspace's own .trance — whole
-    once, models forever after.
+    """Copy the legacy runs/ files into the system dir, once.
 
-    Models, the Default scope and the usage ledger used to live in runs/ —
-    one set for the whole machine. The *first* workspace to adopt inherits
-    all of it, so the move is invisible on the setup that already exists;
-    from then on a marker in runs/ says the legacy state has a home, and a
-    new workspace is what it should be — a fresh install — except for the
-    models, which describe the machine's own hardware and endpoints and are
-    the one thing nobody wants to retype. Found live: workspace number three
-    greeted its user with the loop library of workspace number one.
+    Three layers now, each owning its own kind of state: the *system*
+    (models, settings, the Default scope, the ledger — one set per machine),
+    the *workspace* (nothing but its projects and their sessions), and the
+    *project* (its own agents, loops and allowlists, provisioned from the
+    system defaults). The per-workspace copies this replaces were how
+    workspace three greeted its user with the loop library of workspace one.
     """
     if not runs_dir.is_dir() or state_dir.resolve() == runs_dir.resolve():
         return
-    marker = runs_dir / ".adopted"
-    names = (("providers.json",) if marker.exists()
-             else ("providers.json", "agents.json", "loops.json",
-                   "commands.json", "settings.json", "usage.json"))
-    for name in names:
+    for name in ("providers.json", "agents.json", "loops.json",
+                 "commands.json", "settings.json", "usage.json"):
         source, target = runs_dir / name, state_dir / name
         if source.exists() and not target.exists():
             state_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
-    if not marker.exists():
-        try:
-            marker.write_text(str(state_dir), encoding="utf8")
-        except OSError:
-            pass
 
 
 def create_app(config: Config | None = None, sessions_dir: Path | None = None) -> FastAPI:
     config = config or Config.load()
-    # Everything the workspace is — its models, its Default scope, its usage
-    # ledger — lives in the workspace's own .trance, so switching workspaces
-    # switches all of it. Without a configured workspace the runs dir keeps
-    # its old double duty.
-    state_dir = (config.workspace_root / STORE_DIR if config.workspace
-                 else Path(config.runs_dir))
+    # The machine's own state — models, settings, the Default scope, the
+    # ledger — at its system home. A workspace holds only its projects.
+    state_dir = config.system_root
     _adopt_runs_state(state_dir, Path(config.runs_dir))
     store = SessionStore(sessions_dir or Path(config.runs_dir) / "sessions",
                          workspace=config.workspace_root)
