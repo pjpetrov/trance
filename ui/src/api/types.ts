@@ -250,6 +250,22 @@ export interface Approval {
   message?: string;
 }
 
+/** One iteration in the request history: the card the commits page draws
+ *  collapsed. The expanded detail comes from MessageCommits. */
+export interface RequestItem {
+  reply_id: string;
+  ts: string;
+  request: string;
+  base: string;
+  after: string;
+  commit_count: number;
+  file_count: number;
+  still_to_run: number;
+  worked_seconds: number;
+  /** Paths under .trance/shots — the user's attachments, then the run's. */
+  shots: string[];
+}
+
 /** What one request turned into: the steps it added and the commits they made. */
 export interface MessageCommits {
   message: { id: string; role: string; content: string; ts: string };

@@ -280,6 +280,26 @@ export function useRevertStep(sessionId: string) {
   };
 }
 
+/** Rewind to an iteration, or serve the project exactly as it stood then. */
+export function useIterationActions(sessionId: string) {
+  const client = useQueryClient();
+  const everything = () => {
+    void client.invalidateQueries({ queryKey: keys.session(sessionId) });
+    void client.invalidateQueries({ queryKey: keys.files(sessionId) });
+    void client.invalidateQueries({ queryKey: ["commitLog", sessionId] });
+    void client.invalidateQueries({ queryKey: ["requestHistory", sessionId] });
+  };
+  return {
+    rewind: useMutation({
+      mutationFn: (messageId: string) => api.rewindTo(sessionId, messageId),
+      onSuccess: everything,
+    }),
+    serve: useMutation({
+      mutationFn: (messageId: string) => api.serveVersion(sessionId, messageId),
+    }),
+  };
+}
+
 export function useFileMutations(sessionId: string) {
   const client = useQueryClient();
   return {

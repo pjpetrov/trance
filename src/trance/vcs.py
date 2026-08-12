@@ -191,6 +191,39 @@ def head(project: Path) -> str:
     return out.strip() if code == 0 else ""
 
 
+def make_branch(project: Path, name: str, sha: str = "HEAD") -> GitResult:
+    """A branch at `sha`, so what is about to be left can still be reached."""
+    code, out = _run(project, "branch", "-f", name, sha)
+    if code != 0:
+        return GitResult(False, out.strip() or "git branch failed")
+    return GitResult(True, f"branch {name} at {sha[:8]}")
+
+
+def reset_hard(project: Path, sha: str) -> GitResult:
+    """Move the branch and the tree to `sha`, discarding what came after.
+
+    Only ever called with the abandoned tip already saved on a branch — a hard
+    reset with no way back is deletion, and deletion is never this layer's
+    decision.
+    """
+    code, out = _run(project, "reset", "--hard", sha)
+    if code != 0:
+        return GitResult(False, out.strip() or "git reset failed")
+    return GitResult(True, f"reset to {sha[:8]}", sha=head(project))
+
+
+def worktree_add(project: Path, where: Path, sha: str) -> GitResult:
+    """A detached checkout of `sha` at `where` — the repo's own copy of an
+    older version, readable and runnable while the branch moves on."""
+    if (Path(where) / ".git").exists():
+        return GitResult(True, "already checked out")
+    _run(project, "worktree", "prune")
+    code, out = _run(project, "worktree", "add", "--detach", str(where), sha)
+    if code != 0:
+        return GitResult(False, out.strip() or "git worktree failed")
+    return GitResult(True, f"checked out {sha[:8]}")
+
+
 def dirty(project: Path) -> list[str]:
     """Paths that differ from HEAD, including untracked ones."""
     code, out = _run(project, "status", "--porcelain")

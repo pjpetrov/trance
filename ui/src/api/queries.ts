@@ -265,6 +265,15 @@ export function useMessageCommits(sessionId: string | null, messageId: string | 
   });
 }
 
+export function useRequestHistory(sessionId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["requestHistory", sessionId],
+    queryFn: () => api.requestHistory(sessionId!).then((out) => out.requests),
+    enabled: Boolean(sessionId) && enabled,
+    refetchInterval: 15_000,
+  });
+}
+
 export function useCommitLog(sessionId: string | null, enabled = true) {
   return useQuery({
     queryKey: ["commitLog", sessionId ?? ""] as const,

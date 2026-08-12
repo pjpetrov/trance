@@ -33,6 +33,12 @@ const ANSWER = {
   files: ["src/menu.js"],
 };
 
+const HISTORY = { requests: [{
+  reply_id: "m2", ts: "2026-08-10T12:00:00Z", request: "add a level select",
+  base: "abc123", after: "def456", commit_count: 1, file_count: 1,
+  still_to_run: 0, worked_seconds: 754, shots: [],
+}] };
+
 beforeEach(() => {
   stubWebSocket();
   useUi.setState({ sessionId: "s1", screen: "home", commitsFor: null });
@@ -48,6 +54,7 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: "m2" });
     fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
       "/api/sessions/s1/messages/m2/commits": ANSWER,
       "/api/sessions/s1/commits": { commits: [
         { sha: "aaa111", short: "aaa111", subject: "user: cleared the generated files",
@@ -57,7 +64,7 @@ describe("from a reply to its commits", () => {
       ] },
     });
     renderWithQuery(<CommitsScreen />);
-    await screen.findByText(/What came of this/);
+    await screen.findByText(/What each request became/);
 
     await user.click(screen.getByRole("button", { name: "All commits" }));
     expect(await screen.findByText(/Every commit/)).toBeInTheDocument();
@@ -66,7 +73,7 @@ describe("from a reply to its commits", () => {
 
     // And back, without losing the request that was open.
     await user.click(screen.getByRole("button", { name: "By request" }));
-    expect(await screen.findByText(/What came of this/)).toBeInTheDocument();
+    expect(await screen.findByText(/What each request became/)).toBeInTheDocument();
   });
 
   it("says how long this iteration was worked on", async () => {
@@ -75,14 +82,11 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: "m2" });
     fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
-      "/api/sessions/s1/messages/m2/commits": {
-        ...ANSWER,
-        steps: [step({ id: "st1", task: "add level select", status: "done",
-                       seconds: 754 })],
-      },
+      "/api/sessions/s1/requests": HISTORY,
+      "/api/sessions/s1/messages/m2/commits": ANSWER,
     });
     renderWithQuery(<CommitsScreen />);
-    expect(await screen.findByText(/worked on for 12m 34s/)).toBeInTheDocument();
+    expect(await screen.findByText(/worked 12m 34s/)).toBeInTheDocument();
   });
 
   it("offers the way through only on a reply that proposed work", async () => {
@@ -116,13 +120,15 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: "m2" });
     fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
       "/api/sessions/s1/messages/m2/commits": ANSWER,
     });
     renderWithQuery(<CommitsScreen />);
 
     // The request, because that is the thing you recognise.
     expect(await screen.findByText("add a level select")).toBeInTheDocument();
-    expect(screen.getByText("frontend: add level select")).toBeInTheDocument();
+    // The detail loads a beat later — the expanded card fetches it on its own.
+    expect(await screen.findByText("frontend: add level select")).toBeInTheDocument();
     expect(screen.getByText("src/menu.js")).toBeInTheDocument();
     expect(screen.getByText(/1 commit/)).toBeInTheDocument();
   });
@@ -132,6 +138,7 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: "m2" });
     const server = fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
       "/api/sessions/s1/messages/m2/commits": ANSWER,
       "/api/sessions/s1/commit/def456": {
         sha: "def456", short: "def456", subject: "frontend: add level select",
@@ -153,6 +160,7 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: "m2" });
     fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
       "/api/sessions/s1/messages/m2/commits": ANSWER,
     });
     renderWithQuery(<CommitsScreen />);
@@ -166,6 +174,7 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: "m2" });
     const server = fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
       "/api/sessions/s1/messages/m2/commits": {
         ...ANSWER, still_to_run: 1,
         steps: [step({ id: "st1", task: "add level select", status: "pending" })],
@@ -183,6 +192,7 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: "m2" });
     fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
       "/api/sessions/s1/messages/m2/commits": ANSWER,   // its one step is done
     });
     renderWithQuery(<CommitsScreen />);
@@ -196,6 +206,7 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: null });
     fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
       "/api/sessions/s1/messages/m2/commits": ANSWER,
     });
     renderWithQuery(<CommitsScreen />);
@@ -206,6 +217,9 @@ describe("from a reply to its commits", () => {
     useUi.setState({ screen: "commits", commitsFor: "m2" });
     fakeServer({
       "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": { requests: [{
+        ...HISTORY.requests[0], commit_count: 0, file_count: 0, still_to_run: 2,
+      }] },
       "/api/sessions/s1/messages/m2/commits": {
         ...ANSWER, commits: [], files: [], still_to_run: 2,
         steps: [step({ id: "st1", task: "add level select", status: "running" })],
@@ -215,5 +229,61 @@ describe("from a reply to its commits", () => {
 
     expect(await screen.findByText(/Nothing committed yet/)).toBeInTheDocument();
     expect(screen.getByText(/2 step\(s\) still to run/)).toBeInTheDocument();
+  });
+
+
+  it("clicking a changed file opens it on the files page", async () => {
+    const user = userEvent.setup();
+    useUi.setState({ screen: "commits", commitsFor: "m2" });
+    fakeServer({
+      "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
+      "/api/sessions/s1/messages/m2/commits": ANSWER,
+    });
+    renderWithQuery(<CommitsScreen />);
+
+    await user.click(await screen.findByText("src/menu.js"));
+    expect(useUi.getState().screen).toBe("files");
+    expect(useUi.getState().filePath).toBe("src/menu.js");
+  });
+
+  it("rewinding asks first, then posts, then reports the kept branch", async () => {
+    const user = userEvent.setup();
+    useUi.setState({ screen: "commits", commitsFor: "m2" });
+    const server = fakeServer({
+      "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
+      "/api/sessions/s1/messages/m2/commits": ANSWER,
+      "/api/sessions/s1/messages/m2/rewind":
+        { to: "def456ab", kept_branch: "trance/pre-rewind-x", trimmed_messages: 1 },
+    });
+    renderWithQuery(<CommitsScreen />);
+
+    await user.click(await screen.findByRole("button", { name: /rewind here/ }));
+    // Nothing sent yet — the confirmation stands between the click and the reset.
+    expect(server.to("/api/sessions/s1/messages/m2/rewind")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Rewind" }));
+    await waitFor(() =>
+      expect(server.to("/api/sessions/s1/messages/m2/rewind")).toHaveLength(1));
+  });
+
+  it("run this version posts and opens the served URL", async () => {
+    const user = userEvent.setup();
+    const opened: string[] = [];
+    vi.stubGlobal("open", (url: string) => { opened.push(url); return null; });
+    useUi.setState({ screen: "commits", commitsFor: "m2" });
+    const server = fakeServer({
+      "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
+      "/api/sessions/s1/messages/m2/commits": ANSWER,
+      "/api/sessions/s1/messages/m2/serve":
+        { open: "http://127.0.0.1:4173/", version: "def456ab", of_message: "m2" },
+    });
+    renderWithQuery(<CommitsScreen />);
+
+    await user.click(await screen.findByRole("button", { name: /run this version/ }));
+    await waitFor(() =>
+      expect(server.to("/api/sessions/s1/messages/m2/serve")).toHaveLength(1));
+    await waitFor(() => expect(opened).toEqual(["http://127.0.0.1:4173/"]));
   });
 });

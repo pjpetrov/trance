@@ -9,8 +9,8 @@
 
 import type {
   AgentRole, Approval, AppConfig, CommandLists, FileListing, Flow, Loop, ModelPreset,
-  MessageCommits, Planning, Preview, ReviewChanges, ReviewComment, RunPlan,
-  Session, Step,
+  MessageCommits, Planning, Preview, RequestItem, ReviewChanges, ReviewComment,
+  RunPlan, Session, Step,
   TranceEvent, Usage,
 } from "./types";
 
@@ -237,6 +237,16 @@ export const api = {
       `/api/sessions/${id(sid)}/steps/${id(stepId)}/apply`, { method: "POST" }),
   commitLog: (sid: string) =>
     request<{ commits: Commit[] }>(`/api/sessions/${id(sid)}/commits`),
+  requestHistory: (sid: string) =>
+    request<{ requests: RequestItem[] }>(`/api/sessions/${id(sid)}/requests`),
+  rewindTo: (sid: string, messageId: string) =>
+    request<{ to: string; kept_branch: string; trimmed_messages: number }>(
+      `/api/sessions/${id(sid)}/messages/${id(messageId)}/rewind`,
+      { method: "POST" }),
+  serveVersion: (sid: string, messageId: string) =>
+    request<{ open: string; version: string; of_message: string }>(
+      `/api/sessions/${id(sid)}/messages/${id(messageId)}/serve`,
+      { method: "POST" }),
   clearFiles: (sid: string) =>
     request<{ removed: number; committed: boolean }>(
       `/api/sessions/${id(sid)}/files`, { method: "DELETE" }),

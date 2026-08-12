@@ -1,20 +1,25 @@
-/** What one request turned into.
+/** What each request became — the project's own timeline.
  *
  * A request becomes a plan, the plan becomes a run, and the run becomes
- * commits. Each of those was visible on its own screen and none of them was
- * connected to the one before, so "what actually came of what I asked for" was
- * a question you answered by remembering. The orchestrator's reply records
- * where the code stood when it was written; everything committed between there
- * and the next request is the answer, and this is where it is read.
+ * commits. The by-request mode shows one item per iteration: the user's own
+ * words as the title, the screenshots its run produced as the face, and —
+ * expanded — the reply, the steps, the commits and the files. Each item is
+ * also a point in time the project can go back to: rewind moves the branch
+ * there (the abandoned tip is kept on a branch), and serve runs that exact
+ * version so a bug can be chased to the iteration that introduced it.
  */
 
 import { useState } from "react";
-import { useCommitLog, useMessageCommits, useSession } from "@/api/queries";
-import { duration } from "@/lib/format";
+import { api } from "@/api/client";
+import { useCommitLog, useMessageCommits, useRequestHistory, useSession }
+  from "@/api/queries";
+import { useIterationActions, useStartRun } from "@/api/mutations";
+import type { RequestItem } from "@/api/types";
+import { duration, timeOf } from "@/lib/format";
 import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
-import { useStartRun } from "@/api/mutations";
 import { CommitRow } from "@/components/Commits";
+import { Confirm } from "@/components/ui/Confirm";
 import { toast } from "@/components/Toaster";
 import { stepTone } from "@/components/Shell";
 import { Badge, Button, Dot, Empty, Panel, PanelHeader, Spinner }
@@ -23,24 +28,13 @@ import { Badge, Button, Dot, Empty, Panel, PanelHeader, Spinner }
 export function CommitsScreen() {
   const { sessionId, commitsFor, go } = useUi();
   const session = useSession(sessionId);
-  const asked = session.data?.chat ?? [];
-
-  // Reached from a reply, or from the tab. Arriving by tab means no reply was
-  // chosen, so it opens on the most recent request that produced work — which
-  // is the one you would have clicked.
-  const latest = [...asked].reverse().find((message) => message.base)?.id ?? null;
-  const showing = commitsFor ?? latest;
-  const answer = useMessageCommits(sessionId, showing);
-  // Above the early return: hooks cannot be conditional, and this page has one
-  // — a session whose chat has not loaded renders the empty state first, then
-  // re-renders with a request to show.
-  const start = useStartRun(sessionId ?? "");
-  // Two questions this page can answer, as modes: "what came of what I asked"
-  // (requests coupled to their steps and commits) and "what is actually in
-  // the repo" — plain git history, which includes the user's own commits and
-  // the clears, which no request owns.
   const [mode, setMode] = useState<"requests" | "log">("requests");
   const log = useCommitLog(sessionId, mode === "log");
+  const history = useRequestHistory(sessionId, mode === "requests");
+  // Which card is open. Arriving from a reply opens that one; arriving by tab
+  // opens the newest, which is the one you would have clicked.
+  const [picked, setPicked] = useState<string | null>(null);
+  const showing = picked ?? commitsFor ?? history.data?.[0]?.reply_id ?? null;
 
   const switcher = (
     <div className="flex rounded-[--radius] border border-line p-0.5 text-xs">
@@ -79,37 +73,12 @@ export function CommitsScreen() {
     );
   }
 
-  if (!showing) {
-    return (
-      <Empty
-        title="Nothing has been asked for yet."
-        hint="Describe a feature or a bug on the chat page. When the orchestrator turns it into a plan, what the run commits for it shows up here."
-      />
-    );
-  }
-
-  const data = answer.data;
-  // Only the steps this request added — running is offered for its own work,
-  // not for whatever else is pending elsewhere in the plan.
-  const pending = (data?.steps ?? []).filter((step) => step.status === "pending");
-  // What this iteration has cost so far, in working time — summed from its own
-  // steps, so a request that reused old work is not billed for it.
-  const worked = (data?.steps ?? [])
-    .reduce((sum, step) => sum + (step.seconds ?? 0), 0);
-  // The request is the message before the reply, and it is the thing you
-  // actually recognise — the reply is the orchestrator agreeing with it.
-  const replyAt = asked.findIndex((message) => message.id === showing);
-  const request = replyAt > 0 ? asked[replyAt - 1] : null;
-
   return (
     <div className="h-full overflow-y-auto p-3">
       <Panel className="mx-auto max-w-4xl">
         <PanelHeader
-          title="What came of this"
-          subtitle={data
-            ? `${data.commits.length} commit(s)`
-              + (data.still_to_run ? ` · ${data.still_to_run} step(s) still to run` : "")
-            : "reading the history"}
+          title="What each request became"
+          subtitle="one item per iteration, newest first — expand for the plan, the commits and the files"
           actions={
             <>
               {switcher}
@@ -117,120 +86,228 @@ export function CommitsScreen() {
             </>
           }
         />
-
-        <div className="space-y-4 p-4">
-          {request && (
-            <div className="rounded-[--radius] bg-accent-soft px-3 py-2">
-              <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">
-                you asked
-              </div>
-              <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                {request.content}
-              </p>
-            </div>
+        <div className="space-y-2 p-3">
+          {history.isLoading && <Spinner className="m-3 text-muted" />}
+          {history.data?.length === 0 && (
+            <Empty
+              title="Nothing has been asked for yet."
+              hint="Describe a feature or a bug on the chat page. When the orchestrator turns it into a plan, what the run commits for it shows up here."
+            />
           )}
-
-          {data && (
-            <div className="rounded-[--radius] border border-line bg-panel-2 px-3 py-2">
-              <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">
-                the orchestrator said
-              </div>
-              <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                {data.message.content}
-              </p>
-            </div>
-          )}
-
-          {answer.isLoading && <Spinner className="m-3 text-muted" />}
-          {answer.isError && (
-            <p className="text-sm text-err">
-              That could not be read ({String(answer.error)}).
-            </p>
-          )}
-
-          {data && data.steps.length > 0 && (
-            <section>
-              <div className="mb-1 flex items-baseline gap-2">
-                <h3 className="text-xs font-medium text-muted">
-                  The plan it produced
-                  {worked > 0 && (
-                    <span className="ml-2 font-normal"
-                          title="Working time across these steps: every attempt, fix and check">
-                      · worked on for {duration(worked)}
-                    </span>
-                  )}
-                </h3>
-                <div className="flex-1" />
-                {pending.length > 0 && (
-                  <Button
-                    size="sm" variant="primary" busy={start.isPending}
-                    title={`Start the run — ${pending.length} of these have not run yet`}
-                    onClick={() => start.mutateAsync()
-                      .then(() => go("run"))
-                      .catch((error) => toast.err(String(error)))}
-                  >Run {pending.length} pending</Button>
-                )}
-              </div>
-              {/* The steps are the plan; clicking them goes to the plan, where
-                  they can be edited. A list you can read but not act on is a
-                  dead end at exactly the moment you want to change something. */}
-              <button
-                onClick={() => go("plan")}
-                title="Open the plan"
-                className="w-full space-y-1 rounded-[--radius] border border-line p-2
-                           text-left transition-colors hover:bg-panel-2"
-              >
-                {data.steps.map((step) => (
-                  <span key={step.id} className="flex items-center gap-2 text-sm">
-                    <Dot tone={stepTone(step.status)}
-                         pulse={step.status === "running"} />
-                    <span className="min-w-0 flex-1 truncate">{step.task}</span>
-                    <Badge>{step.status}</Badge>
-                  </span>
-                ))}
-              </button>
-            </section>
-          )}
-
-          {data && (
-            <section>
-              <h3 className="mb-1 text-xs font-medium text-muted">
-                The commits, oldest first
-              </h3>
-              {data.commits.length === 0 ? (
-                <Empty
-                  title="Nothing committed yet."
-                  hint={data.still_to_run
-                    ? "The steps this asked for have not finished. The commits appear "
-                      + "here as each agent finishes — one per step."
-                    : data.base
-                      ? "The run made no commits for this request."
-                      : "This project is not a git repository, so there is nothing to "
-                        + "show. Turn on git in settings and later requests will be "
-                        + "recorded."}
-                />
-              ) : (
-                <div className={cn("space-y-px rounded-[--radius] border border-line p-1")}>
-                  {data.commits.map((commit) => (
-                    <CommitRow key={commit.sha} commit={commit} />
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-
-          {data && data.files.length > 0 && (
-            <section>
-              <h3 className="mb-1 text-xs font-medium text-muted">
-                {data.files.length} file(s) changed in total
-              </h3>
-              <ul className="font-code space-y-0.5 text-xs text-accent">
-                {data.files.map((path) => <li key={path}>{path}</li>)}
-              </ul>
-            </section>
-          )}
+          {history.data?.map((item) => (
+            <IterationCard
+              key={item.reply_id}
+              item={item}
+              sessionId={sessionId!}
+              running={session.data?.status === "running"}
+              expanded={item.reply_id === showing}
+              onToggle={() => setPicked(
+                item.reply_id === showing ? "" : item.reply_id)}
+            />
+          ))}
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function IterationCard(
+  { item, sessionId, running, expanded, onToggle }:
+  {
+    item: RequestItem; sessionId: string; running: boolean;
+    expanded: boolean; onToggle: () => void;
+  },
+) {
+  return (
+    <div className={cn("rounded-[--radius] border",
+                       expanded ? "border-accent/40" : "border-line")}>
+      <button
+        onClick={onToggle}
+        className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-panel-2"
+      >
+        <span className="w-3 shrink-0 text-xs text-muted">{expanded ? "▾" : "▸"}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm">
+            {item.request || "(no request text)"}
+          </span>
+          <span className="mt-0.5 block text-[11px] text-muted">
+            {timeOf(item.ts)} · {item.commit_count} commit(s)
+            · {item.file_count} file(s)
+            {item.worked_seconds > 0 && ` · worked ${duration(item.worked_seconds)}`}
+            {item.still_to_run > 0 && ` · ${item.still_to_run} step(s) still to run`}
+          </span>
+        </span>
+        {item.shots.length > 0 && (
+          <span className="flex shrink-0 gap-1">
+            {item.shots.slice(0, 4).map((shot) => (
+              <img
+                key={shot}
+                src={api.shotUrl(sessionId, shot)}
+                alt=""
+                className="h-10 w-14 rounded-[--radius-sm] border border-line object-cover"
+              />
+            ))}
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <IterationDetail item={item} sessionId={sessionId} running={running} />
+      )}
+    </div>
+  );
+}
+
+function IterationDetail(
+  { item, sessionId, running }:
+  { item: RequestItem; sessionId: string; running: boolean },
+) {
+  const { go, openFile } = useUi();
+  const answer = useMessageCommits(sessionId, item.reply_id);
+  const start = useStartRun(sessionId);
+  const acts = useIterationActions(sessionId);
+  const [confirming, setConfirming] = useState(false);
+  const data = answer.data;
+  const pending = (data?.steps ?? []).filter((step) => step.status === "pending");
+
+  return (
+    <div className="space-y-4 border-t border-line p-4">
+      {answer.isLoading && <Spinner className="m-2 text-muted" />}
+
+      {data && (
+        <div className="rounded-[--radius] border border-line bg-panel-2 px-3 py-2">
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">
+            the orchestrator said
+          </div>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed">
+            {data.message.content}
+          </p>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button
+          size="sm"
+          title={"Run this exact version: a checkout of where this iteration "
+            + "ended, served the way the files page serves — replacing whatever "
+            + "is currently being served. For chasing a bug to the iteration "
+            + "that introduced it."}
+          busy={acts.serve.isPending}
+          onClick={() => acts.serve.mutateAsync(item.reply_id)
+            .then((out) => {
+              toast.ok(`Serving the project as of ${out.version} at ${out.open}`);
+              window.open(out.open, "_blank");
+            })
+            .catch((error) => toast.err(String(error)))}
+        >▶ run this version</Button>
+        <Button
+          size="sm" variant="danger"
+          title={"Put the project back to exactly where this iteration left "
+            + "it. The abandoned work is kept on a branch."}
+          disabled={running}
+          onClick={() => setConfirming(true)}
+        >⏪ rewind here</Button>
+        {pending.length > 0 && (
+          <Button
+            size="sm" variant="primary" busy={start.isPending}
+            title={`Start the run — ${pending.length} of these have not run yet`}
+            onClick={() => start.mutateAsync()
+              .then(() => go("run"))
+              .catch((error) => toast.err(String(error)))}
+          >Run {pending.length} pending</Button>
+        )}
+      </div>
+
+      <Confirm
+        open={confirming}
+        title="Rewind the project to this point?"
+        confirmLabel="Rewind"
+        danger
+        busy={acts.rewind.isPending}
+        onClose={() => setConfirming(false)}
+        onConfirm={() => {
+          setConfirming(false);
+          acts.rewind.mutateAsync(item.reply_id)
+            .then((out) => toast.ok(
+              `Rewound to ${out.to.slice(0, 8)}. Everything after is on branch `
+              + `${out.kept_branch}; the chat and plan continue from here.`))
+            .catch((error) => toast.err(String(error)));
+        }}
+      >
+        <p>
+          The branch and the working tree move back to where this iteration
+          ended, and the chat and plan below it are trimmed — the session
+          continues from this point. Nothing is destroyed: the abandoned tip
+          stays on a branch, and the trimmed chat is archived in the session
+          directory.
+        </p>
+      </Confirm>
+
+      {data && data.steps.length > 0 && (
+        <section>
+          <h3 className="mb-1 text-xs font-medium text-muted">The plan it produced</h3>
+          <button
+            onClick={() => go("plan")}
+            title="Open the plan"
+            className="w-full space-y-1 rounded-[--radius] border border-line p-2
+                       text-left transition-colors hover:bg-panel-2"
+          >
+            {data.steps.map((step) => (
+              <span key={step.id} className="flex items-center gap-2 text-sm">
+                <Dot tone={stepTone(step.status)}
+                     pulse={step.status === "running"} />
+                <span className="min-w-0 flex-1 truncate">{step.task}</span>
+                <Badge>{step.status}</Badge>
+              </span>
+            ))}
+          </button>
+        </section>
+      )}
+
+      {data && (
+        <section>
+          <h3 className="mb-1 text-xs font-medium text-muted">
+            The commits, oldest first
+          </h3>
+          {data.commits.length === 0 ? (
+            <Empty
+              title="Nothing committed yet."
+              hint={data.still_to_run
+                ? "The steps this asked for have not finished. The commits appear "
+                  + "here as each agent finishes — one per step."
+                : data.base
+                  ? "The run made no commits for this request."
+                  : "This project is not a git repository, so there is nothing to "
+                    + "show. Turn on git in settings and later requests will be "
+                    + "recorded."}
+            />
+          ) : (
+            <div className="space-y-px rounded-[--radius] border border-line p-1">
+              {data.commits.map((commit) => (
+                <CommitRow key={commit.sha} commit={commit} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {data && data.files.length > 0 && (
+        <section>
+          <h3 className="mb-1 text-xs font-medium text-muted">
+            {data.files.length} file(s) changed in total — click one to open it
+          </h3>
+          <ul className="font-code space-y-0.5 text-xs">
+            {data.files.map((path) => (
+              <li key={path}>
+                <button
+                  className="text-accent hover:underline"
+                  title={`Open ${path} on the files page`}
+                  onClick={() => { openFile(path); go("files"); }}
+                >{path}</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }

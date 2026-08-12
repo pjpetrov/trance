@@ -11414,3 +11414,140 @@ def test_bounding_a_command_in_time_needs_no_approval():
     assert programs_in("timeout 5 npx vite --host") == ["timeout", "npx"]
     assert programs_in("timeout -k 2 10s rm -rf /") == ["timeout", "rm"]
     assert programs_in("env FOO=1 pytest -q") == ["env", "pytest"]
+
+
+# ==================== the commits page: iterations, rewind, serve-a-version
+
+def _iterations_app(tmp_path):
+    """A project with two request iterations, each ending in a commit."""
+    import pathlib
+
+    from fastapi.testclient import TestClient
+
+    from trance import vcs
+    from trance.config import Config
+    from trance.flow import Flow, Step
+    from trance.server import app as app_module
+    from trance.session import ChatMessage
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    made = client.post("/api/sessions", json={"name": "game"}).json()
+    sid, project = made["id"], pathlib.Path(made["project_dir"])
+
+    project.mkdir(parents=True, exist_ok=True)
+    vcs.ensure_repo(project)
+    (project / "game.js").write_text("v0\n", encoding="utf8")
+    vcs.commit_all(project, "start")
+    base1 = vcs.head(project)
+    (project / "game.js").write_text("v1\n", encoding="utf8")
+    vcs.commit_all(project, "developer: first feature [SUCCESS]")
+    base2 = vcs.head(project)
+    (project / "game.js").write_text("v2\n", encoding="utf8")
+    (project / "extra.js").write_text("x\n", encoding="utf8")
+    vcs.commit_all(project, "developer: second feature [SUCCESS]")
+
+    session = app.state.store.get(sid)
+    s1 = Step(id="st_one", role="developer", task="first", status="done")
+    s2 = Step(id="st_two", role="developer", task="second", status="done")
+    session.flow = Flow(steps=[s1, s2])
+    session.chat = [
+        ChatMessage(role="user", content="make the map bigger"),
+        ChatMessage(role="orchestrator", content="plan: bigger map",
+                    base=base1, steps=["st_one"], id="m_first"),
+        ChatMessage(role="user", content="now add enemies"),
+        ChatMessage(role="orchestrator", content="plan: enemies",
+                    base=base2, steps=["st_two"], id="m_second"),
+    ]
+    return client, app, sid, project, session
+
+
+def test_the_request_history_is_one_item_per_iteration(tmp_path):
+    client, app, sid, project, session = _iterations_app(tmp_path)
+    # A step screenshot and a chat attachment both belong to the iteration.
+    shots = project / ".trance" / "shots" / "st_one"
+    shots.mkdir(parents=True)
+    (shots / "001.png").write_bytes(b"png")
+    session.chat[1].images = ["chat/paste.png"]
+
+    items = client.get(f"/api/sessions/{sid}/requests").json()["requests"]
+    assert [i["request"] for i in items] == ["now add enemies", "make the map bigger"]
+    first = items[1]
+    assert first["commit_count"] == 1 and first["file_count"] == 1
+    assert first["shots"] == ["chat/paste.png", "st_one/001.png"]
+    assert items[0]["commit_count"] == 1 and items[0]["file_count"] == 2
+
+
+def test_rewinding_puts_the_code_and_the_chat_back(tmp_path):
+    from trance import vcs
+
+    client, app, sid, project, session = _iterations_app(tmp_path)
+    tip_before = vcs.head(project)
+
+    out = client.post(f"/api/sessions/{sid}/messages/m_first/rewind")
+    assert out.status_code == 200
+    body = out.json()
+
+    # The code is where iteration one left it, and the tip is still reachable.
+    assert (project / "game.js").read_text() == "v1\n"
+    assert not (project / "extra.js").exists()
+    assert vcs.head(project) == body["to"]
+    kept = body["kept_branch"]
+    code, shas = vcs._run(project, "rev-parse", kept)
+    assert shas.strip() == tip_before
+
+    # The history below the point is gone from the session — and archived.
+    assert [m.content for m in session.chat] == ["make the map bigger",
+                                                 "plan: bigger map"]
+    assert [s.id for s in session.flow.steps] == ["st_one"]
+    archives = list(session.store_dir.glob("chat-rewound-*.json"))
+    assert len(archives) == 1 and "enemies" in archives[0].read_text()
+
+    # And the request list now ends at the point rewound to.
+    items = client.get(f"/api/sessions/{sid}/requests").json()["requests"]
+    assert [i["request"] for i in items] == ["make the map bigger"]
+
+
+def test_rewind_refuses_while_running_and_for_unknown_requests(tmp_path):
+    client, app, sid, project, session = _iterations_app(tmp_path)
+    assert client.post(f"/api/sessions/{sid}/messages/m_none/rewind").status_code == 404
+    session.status = "running"
+    busy = client.post(f"/api/sessions/{sid}/messages/m_first/rewind")
+    assert busy.status_code == 409
+
+
+def test_an_old_version_can_be_served_and_replaced(tmp_path):
+    import json
+    import urllib.request
+
+    client, app, sid, project, session = _iterations_app(tmp_path)
+    (project / "index.html").write_text("<title>v3</title>", encoding="utf8")
+    from trance import vcs
+    vcs.commit_all(project, "user: index arrives late")
+
+    # Rewrite history so each version has an index.html to serve.
+    # Simpler: serve the latest iteration (HEAD) and the first one.
+    served = client.post(f"/api/sessions/{sid}/messages/m_second/serve")
+    assert served.status_code == 200, served.text
+    body = served.json()
+    assert body["version"]
+    copy_dir = project / ".trance" / "versions" / body["version"]
+    assert (copy_dir / "game.js").read_text() == "v2\n"
+
+    # The URL in the answer carries the caller's own host; fetch by port.
+    port = json.loads((project / ".trance" / "preview.json").read_text())["port"]
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/index.html",
+                                timeout=5) as answer:
+        page = answer.read().decode()
+    assert "v3" in page                        # the version's own tree answers
+
+    # Serving another version replaces the first server, same-port-or-not.
+    second = client.post(f"/api/sessions/{sid}/messages/m_first/serve")
+    assert second.status_code == 200
+    other_dir = project / ".trance" / "versions" / second.json()["version"]
+    assert (other_dir / "game.js").read_text() == "v1\n"
+    record = json.loads((project / ".trance" / "preview.json").read_text())
+    assert record["version"] == second.json()["version"]

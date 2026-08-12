@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import json
+import re
 import os
 import shutil
 import threading
@@ -1733,6 +1734,184 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             })
         return {"reviews": out}
 
+    def _range_end(session, message_id: str) -> str:
+        """Where a proposal's work ends: the next proposal's base, else HEAD."""
+        root = Path(session.project_dir).expanduser()
+        proposals = [m for m in session.chat if m.base]
+        for earlier, later in zip(proposals, proposals[1:]):
+            if earlier.id == message_id:
+                return later.base
+        return vcs.head(root) if vcs.is_repo(root) else ""
+
+    def _request_of(session, reply) -> str:
+        """The user message a proposal answered — the text a person recognises."""
+        at = next((i for i, m in enumerate(session.chat) if m.id == reply.id), -1)
+        for earlier in reversed(session.chat[:at]):
+            if earlier.role == "user":
+                return earlier.content
+        return ""
+
+    @app.get("/api/sessions/{session_id}/requests")
+    def request_history(session_id: str):
+        """Every iteration the user asked for, newest first — one item each.
+
+        The card the commits page draws collapsed: the request's own words as
+        the title, the screenshots its run produced as the face, and enough
+        counts to know whether expanding is worth it. The expanded detail
+        stays with /messages/{id}/commits.
+        """
+        session = _need(store, session_id)
+        root = Path(session.project_dir).expanduser()
+        shots_root = root / ".trance" / "shots"
+        by_id = {step.id: step for step in session.flow.steps}
+        items = []
+        for reply in session.chat:
+            if not reply.base:
+                continue
+            after = _range_end(session, reply.id)
+            commits = (vcs.commits_between(root, reply.base, after)
+                       if reply.base and after else [])
+            files = (vcs.changed_between(root, reply.base, after)
+                     if reply.base and after else [])
+            # The pictures this iteration produced: what the user attached to
+            # the request, then what the visual steps photographed.
+            shots = list(reply.images or [])
+            for step_id in reply.steps or []:
+                folder = shots_root / re.sub(r"[^A-Za-z0-9._-]+", "-", step_id)
+                if folder.is_dir():
+                    shots += [f"{folder.name}/{p.name}"
+                              for p in sorted(folder.glob("*.png"))[-4:]]
+            steps = [by_id[i] for i in (reply.steps or []) if i in by_id]
+            items.append({
+                "reply_id": reply.id, "ts": reply.ts,
+                "request": _request_of(session, reply),
+                "base": reply.base, "after": after,
+                "commit_count": len(commits), "file_count": len(files),
+                "still_to_run": sum(1 for s in steps
+                                    if s.status not in Flow.TERMINAL),
+                "worked_seconds": round(sum(s.seconds or 0 for s in steps), 1),
+                "shots": shots[:8],
+            })
+        return {"requests": list(reversed(items))}
+
+    @app.post("/api/sessions/{session_id}/messages/{message_id}/rewind")
+    def rewind_to_message(session_id: str, message_id: str):
+        """Put the project back to exactly where this iteration left it.
+
+        The abandoned tip is saved on a branch first — a hard reset with no
+        way back is deletion — then the branch and tree move to this
+        request's end, and the chat and plan below it are trimmed so the
+        session continues from that point. The trimmed chat is archived in
+        the session's own directory, beside its trace.
+        """
+        session = _need(store, session_id)
+        if session.status == "running":
+            raise HTTPException(409, "the run is writing right now — stop it first")
+        reply = next((m for m in session.chat if m.id == message_id), None)
+        if reply is None or not reply.base:
+            raise HTTPException(404, "no such request")
+        project = _project_of(session)
+        if not vcs.is_repo(project):
+            raise HTTPException(400, "this project is not a git repository")
+        target = _range_end(session, message_id)
+        if not target:
+            raise HTTPException(400, "this request's end point is not recorded")
+
+        # Whatever is lying around belongs to the tip being left behind.
+        vcs.commit_all(project, "before rewinding")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        keep = f"trance/pre-rewind-{stamp}"
+        saved = vcs.make_branch(project, keep)
+        if not saved:
+            raise HTTPException(409, f"could not save the current tip: {saved.detail}")
+        moved = vcs.reset_hard(project, target)
+        if not moved:
+            raise HTTPException(409, f"the reset did not apply: {moved.detail}")
+
+        # The history below this point disappears from the session — archived,
+        # not destroyed, like the code on its branch.
+        at = next(i for i, m in enumerate(session.chat) if m.id == message_id)
+        trimmed = session.chat[at + 1:]
+        if trimmed:
+            archive = session.store_dir / f"chat-rewound-{stamp}.json"
+            archive.write_text(json.dumps([m.__dict__ for m in trimmed],
+                                          default=str, indent=2), encoding="utf8")
+            session.chat = session.chat[:at + 1]
+            gone_steps = {sid for m in trimmed for sid in (m.steps or [])}
+            session.flow.steps = [s for s in session.flow.steps
+                                  if s.id not in gone_steps]
+        touch(session)
+        bus.emit("rewound", session_id, agent="you", payload={
+            "to": target, "kept": keep,
+            "message": (f"Rewound the project to {target[:8]} — where this request "
+                        f"left it. Everything after is on branch {keep}."),
+        })
+        bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
+        return {"to": target, "kept_branch": keep,
+                "trimmed_messages": len(trimmed)}
+
+    @app.post("/api/sessions/{session_id}/messages/{message_id}/serve")
+    async def serve_message_version(request: Request, session_id: str, message_id: str):
+        """Run the project exactly as this iteration left it.
+
+        A detached checkout of that commit under .trance/versions — the
+        working tree stays untouched — served the same way the files page
+        serves: the project's own dev server when it needs one, static files
+        otherwise. One preview per session: starting a version replaces
+        whatever was being served, exactly as starting anything else does.
+        """
+        from ..agents.visual import default_page
+
+        session = _need(store, session_id)
+        reply = next((m for m in session.chat if m.id == message_id), None)
+        if reply is None or not reply.base:
+            raise HTTPException(404, "no such request")
+        project = _project_of(session)
+        target = _range_end(session, message_id)
+        if not target:
+            raise HTTPException(400, "this request's end point is not recorded")
+
+        copy_dir = project / ".trance" / "versions" / target[:8]
+        made = vcs.worktree_add(project, copy_dir, target)
+        if not made:
+            raise HTTPException(409, f"could not check out {target[:8]}: {made.detail}")
+
+        page = default_page(copy_dir)
+        web_root = preview.web_root_for(copy_dir, page)
+        wants = preview.dev_command(copy_dir, web_root)
+
+        _revive_preview(session_id, session)
+        existing = previews.pop(session_id, None)
+        if existing is not None:
+            existing.stop()
+        if wants and wants.get("needed"):
+            try:
+                running = await asyncio.to_thread(
+                    preview.run_dev, Path(wants["dir"]), wants["command"],
+                    log_dir=project / ".trance")
+            except preview.DevServerFailed as exc:
+                raise HTTPException(502, f"{exc}\n\n{exc.output}"[:4000]) from exc
+            previews[session_id] = running
+            _remember_preview(session, {
+                "mode": "dev", "command": wants["command"], "root": running.root,
+                "port": running.port, "pid": running.pid, "log": running.log,
+                "version": target[:8], "of_message": message_id,
+            })
+            url = running.at(request.url.hostname)
+        else:
+            served = preview.serve(web_root, host="0.0.0.0", port=0)
+            previews[session_id] = served
+            _remember_preview(session, {
+                "mode": "static", "root": str(web_root), "port": served.port,
+                "version": target[:8], "of_message": message_id,
+            })
+            url = served.at(request.url.hostname) + (Path(page).name if page else "")
+        bus.emit("preview", session_id, agent="you", payload={
+            "url": url, "version": target[:8],
+            "message": f"Serving the project as of {target[:8]} at {url}",
+        })
+        return {"open": url, "version": target[:8], "of_message": message_id}
+
     @app.get("/api/sessions/{session_id}/messages/{message_id}/commits")
     def commits_for_message(session_id: str, message_id: str):
         """What came of one thing the orchestrator said it would do.
@@ -1749,14 +1928,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(404, "no such message")
 
         root = Path(session.project_dir).expanduser()
-        proposals = [m for m in session.chat if m.base]
-        after = ""
-        for earlier, later in zip(proposals, proposals[1:]):
-            if earlier.id == message_id:
-                after = later.base
-                break
-        head = vcs.head(root) if vcs.is_repo(root) else ""
-        after = after or head
+        after = _range_end(session, message_id)
 
         steps = [step.to_dict() for step in session.flow.steps
                  if step.id in (message.steps or [])]
