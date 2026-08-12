@@ -31,7 +31,7 @@ const SCREENS: { id: Screen; label: string }[] = [
   { id: "run", label: "Run" },
   // Named for what it shows. "Iterations" would collide with a loop's visits,
   // which is a different thing entirely and already on the run screen.
-  { id: "commits", label: "Commits" },
+  { id: "commits", label: "History" },
   { id: "files", label: "Files" },
   { id: "reviews", label: "Reviews" },
   { id: "stats", label: "Statistics" },

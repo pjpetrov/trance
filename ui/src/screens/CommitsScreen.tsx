@@ -28,7 +28,7 @@ import { Badge, Button, Dot, Empty, Panel, PanelHeader, Spinner }
   from "@/components/ui/primitives";
 
 export function CommitsScreen() {
-  const { sessionId, commitsFor, go } = useUi();
+  const { sessionId, commitsFor } = useUi();
   const session = useSession(sessionId);
   const [mode, setMode] = useState<"requests" | "log">("requests");
   const log = useCommitLog(sessionId, mode === "log");
@@ -81,12 +81,7 @@ export function CommitsScreen() {
         <PanelHeader
           title="What each request became"
           subtitle="one item per iteration, newest first — expand for the plan, the commits and the files"
-          actions={
-            <>
-              {switcher}
-              <Button size="sm" onClick={() => go("home")}>back to the chat</Button>
-            </>
-          }
+          actions={switcher}
         />
         <div className="space-y-2 p-3">
           {history.isLoading && <Spinner className="m-3 text-muted" />}
@@ -163,7 +158,7 @@ function IterationDetail(
   { item, sessionId, running }:
   { item: RequestItem; sessionId: string; running: boolean },
 ) {
-  const { go, openFile, setOpenStep, focusPlanStep } = useUi();
+  const { go, openFile, showStep, focusPlanStep } = useUi();
   const answer = useMessageCommits(sessionId, item.reply_id);
   const start = useStartRun(sessionId);
   const acts = useIterationActions(sessionId);
@@ -290,7 +285,7 @@ function IterationDetail(
                   className="flex min-w-0 flex-1 items-center gap-2 rounded-[--radius-sm]
                              px-1 py-0.5 text-left transition-colors hover:bg-panel-2"
                   title="Open this step on the run page — its history, its console"
-                  onClick={() => { setOpenStep(step.id); go("run"); }}
+                  onClick={() => showStep(step.id)}
                 >
                   <Dot tone={stepTone(step.status)}
                        pulse={step.status === "running"} />

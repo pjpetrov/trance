@@ -100,3 +100,18 @@ describe("opening the run page", () => {
     await waitFor(() => expect(useUi.getState().openStep).toBe("st1"));
   });
 });
+
+describe("arriving with a step already chosen", () => {
+  it("keeps the pinned step instead of the one that is running", async () => {
+    // The history page sends you here pointing at one step. Landing logic
+    // that picks "whatever is running" over it is how the click landed on
+    // the wrong step.
+    useUi.setState({ sessionId: "s1", screen: "run",
+                     openStep: "st1", stepPinned: true });
+    serve(plan(["st1", "done", 1], ["st2", "running", 4]));
+    renderWithQuery(<RunScreen />);
+
+    await waitFor(() => expect(useUi.getState().stepPinned).toBe(false));
+    expect(useUi.getState().openStep).toBe("st1");
+  });
+});

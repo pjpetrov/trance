@@ -26,7 +26,7 @@ import { Confirm } from "@/components/ui/Confirm";
 import type { Step, TranceEvent } from "@/api/types";
 
 export function RunScreen() {
-  const { sessionId, openStep, setOpenStep, setFollow } = useUi();
+  const { sessionId, openStep, setOpenStep, setFollow, stepPinned, unpinStep } = useUi();
   const session = useSession(sessionId);
   const steps = session.data?.flow.steps ?? [];
 
@@ -50,13 +50,21 @@ export function RunScreen() {
   const picked = useRef(false);
   useEffect(() => {
     if (!sessionId || picked.current) return;
+    // Sent here by another page pointing at one step — the history's cards do
+    // this — that step IS the answer; picking "whatever is running" over it
+    // is how the click landed on the wrong step.
+    if (stepPinned) {
+      picked.current = true;
+      unpinStep();
+      return;
+    }
     const target = steps.find((step) => step.status === "running")
       ?? [...steps].reverse().find((step) => step.runs > 0)
       ?? steps[steps.length - 1];
     if (!target) return;                       // no plan yet; nothing to open
     picked.current = true;
     setOpenStep(target.id);
-  }, [sessionId, steps, setOpenStep]);
+  }, [sessionId, steps, setOpenStep, stepPinned, unpinStep]);
 
   if (!sessionId) return <Empty title="No session selected." />;
 

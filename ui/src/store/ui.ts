@@ -20,6 +20,9 @@ interface UiStore {
   openStep: string | null;
   /** A step the plan page should scroll to and flash, set by another page. */
   planFocus: string | null;
+  /** Set when another page chose the step deliberately — the run page's
+   *  "open whatever is running" landing logic must stand down for it. */
+  stepPinned: boolean;
   /** Whether the console follows the run: the newest lines stay in view, the
    *  open step moves to whatever is working, and the newest run is the one
    *  shown. It was implicit before, and something implicit that sometimes
@@ -45,6 +48,9 @@ interface UiStore {
   openModal: (modal: Modal) => void;
   setOpenStep: (stepId: string | null) => void;
   focusPlanStep: (stepId: string | null) => void;
+  /** Open the run page on exactly this step. */
+  showStep: (stepId: string) => void;
+  unpinStep: () => void;
   setFollow: (follow: boolean) => void;
   setConsoleStep: (stepId: string | null) => void;
   toggleReads: () => void;
@@ -59,6 +65,7 @@ export const useUi = create<UiStore>((set) => ({
   modal: null,
   openStep: null,
   planFocus: null,
+  stepPinned: false,
   follow: true,
   showReads: false,
   hideFinished: false,
@@ -79,6 +86,8 @@ export const useUi = create<UiStore>((set) => ({
   // Clearing the focus must not yank the user back to the plan page.
   focusPlanStep: (planFocus) =>
     set(planFocus ? { planFocus, screen: "plan" } : { planFocus }),
+  showStep: (openStep) => set({ openStep, stepPinned: true, screen: "run" }),
+  unpinStep: () => set({ stepPinned: false }),
   setFollow: (follow) => set({ follow }),
   setConsoleStep: (consoleStep) => set({ consoleStep }),
   toggleReads: () => set((s) => ({ showReads: !s.showReads })),
