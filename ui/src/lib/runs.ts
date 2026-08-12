@@ -224,7 +224,8 @@ export function tallyOf(events: TranceEvent[]): string {
     else if (kind === "write") counts.edits += 1;
     else if (kind === "command" || kind === "background") counts.commands += 1;
     else if (kind === "page" || kind === "key" || kind === "canvas"
-             || kind === "wait" || kind === "screenshot") counts.browser += 1;
+             || kind === "wait" || kind === "screenshot" || kind === "click"
+             || kind === "mouse") counts.browser += 1;
   }
   const said = (n: number, one: string, many = `${one}s`) =>
     n ? `${n} ${n === 1 ? one : many}` : "";

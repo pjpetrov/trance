@@ -306,13 +306,16 @@ export type ToolDetail =
   | { kind: "click"; text: string; x?: number | null; y?: number | null;
       label?: string; delivered?: boolean; changed?: boolean | null; frames: number;
       diff?: ImageDiff | null; shot_before?: string; shot_after?: string }
+  | { kind: "mouse"; dx: number; dy: number; delivered?: boolean; locked?: boolean;
+      movement?: [number, number]; changed?: boolean | null; frames: number;
+      diff?: ImageDiff | null; shot_before?: string; shot_after?: string }
   | { kind: "film"; shots: string[]; question: string; checks: string[];
       answer: string; frames: number; frames_between: number;
       /** Fraction of the picture that changed between consecutive frames. */
       motion: number[]; moving: boolean; prompt?: string; model?: string;
       preset?: string; usage?: CallUsage; error?: string }
   | { kind: "page_failed" | "canvas_failed" | "key_failed" | "look_failed"
-        | "wait_failed" | "watch_failed" | "click_failed"; error: string;
+        | "wait_failed" | "watch_failed" | "click_failed" | "mouse_failed"; error: string;
       text?: string; candidates?: string[] };
 
 export interface ImageDiff {

@@ -1419,3 +1419,97 @@ def test_the_team_is_told_to_keep_the_playbook_and_the_tester_to_follow_it():
     tester = BUILTIN_ROLES["visual-tester"].system_prompt
     assert "follow its entry steps" in tester
     assert "is itself a finding" in tester
+
+
+# ---------------- honest movement wording: numbers graded, located, judged
+
+def test_a_tiny_pixel_diff_is_not_called_a_response(tmp_path):
+    """Found live: a frozen game flickered 0.05-0.29% per keypress, the tool
+    said "the screen changed — the app responded", and the tester built a
+    PASS on that sentence over its own eyes."""
+    from trance.agents.tools import AgentTools
+    from trance.agents.roles import AgentRole
+
+    role = AgentRole(name="vt", title="VT", description="", system_prompt="p",
+                     paths=[], toolsets=["browser"])
+    tools = AgentTools(tmp_path, role)
+
+    class _Visual:
+        def press(self, key, times=1, hold_frames=None):
+            return {"key": key, "times": 1, "delivered": ["W"], "changed": True,
+                    "frames": 60, "held_frames": hold_frames, "probe": {},
+                    "diff": {"fraction": 0.0013, "described":
+                             "The two screenshots differ in 647 of 506700 pixels (0.13%)."}}
+
+    tools._visual = _Visual()
+    out = tools.call("press_key", {"key": "W", "hold": 60})
+    assert "flicker or a HUD tick" in out.text
+    assert "it did not" in out.text
+    assert "the app responded" not in out.text
+
+
+def test_a_substantial_diff_still_reads_as_the_app_responding(tmp_path):
+    from trance.agents.tools import AgentTools
+    from trance.agents.roles import AgentRole
+
+    role = AgentRole(name="vt", title="VT", description="", system_prompt="p",
+                     paths=[], toolsets=["browser"])
+    tools = AgentTools(tmp_path, role)
+
+    class _Visual:
+        def click(self, text="", x=None, y=None):
+            return {"found": True, "x": 10, "y": 10, "delivered": True,
+                    "changed": True, "frames": 60,
+                    "diff": {"fraction": 0.98, "described": "big change"}}
+
+    tools._visual = _Visual()
+    out = tools.call("click", {"x": 10, "y": 10})
+    assert "the app responded" in out.text
+
+
+def test_the_diff_says_where_the_change_sits():
+    """A HUD tick is a small patch; the scene moving is most of the frame —
+    the location is the difference between them, so the sentence carries it."""
+    from trance.imagediff import compare
+
+    still = _png(60, 40, lambda x, y: (10, 10, 10, 255))
+    hud_tick = _png(60, 40, lambda x, y: (200, 0, 0, 255)
+                    if 50 <= x < 56 and 2 <= y < 6 else (10, 10, 10, 255))
+    diff = compare(still, hud_tick)
+    assert diff.box == (50, 2, 6, 4)
+    assert "a patch of the screen, not the scene moving" in diff.describe()
+
+    moved = _png(60, 40, lambda x, y: (0, int(x * 2) % 255, int(y * 3) % 255, 255))
+    big = compare(still, moved)
+    assert "span most of the frame" in big.describe()
+
+
+def test_move_mouse_reports_lock_and_an_unmoved_camera(tmp_path):
+    from trance.agents.tools import AgentTools
+    from trance.agents.roles import AgentRole
+
+    role = AgentRole(name="vt", title="VT", description="", system_prompt="p",
+                     paths=[], toolsets=["browser"])
+    tools = AgentTools(tmp_path, role)
+    assert "move_mouse" in {s["function"]["name"] for s in tools.specs()}
+
+    class _Visual:
+        def move_mouse(self, dx, dy, steps=12):
+            return {"dx": dx, "dy": dy, "steps": steps, "delivered": True,
+                    "moves_seen": 12, "movement": (200.0, 0.0), "locked": False,
+                    "changed": False, "frames": 12, "diff": None}
+
+    tools._visual = _Visual()
+    out = tools.call("move_mouse", {"dx": 200, "dy": 0})
+    assert "Pointer lock was NOT engaged" in out.text
+    assert "the camera did not move" in out.text
+    assert out.detail["kind"] == "mouse" and out.detail["locked"] is False
+
+
+def test_the_tester_is_told_how_to_judge_movement():
+    from trance.agents.roles import BUILTIN_ROLES
+
+    prompt = BUILTIN_ROLES["visual-tester"].system_prompt
+    assert "move_mouse" in prompt
+    assert "Never conclude movement from diff percentages alone" in prompt
+    assert "the frames win" in prompt

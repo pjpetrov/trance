@@ -72,6 +72,27 @@ _WRAPPERS = {"timeout", "nice", "stdbuf", "nohup", "time", "env"}
 _WRAPPER_ARG = re.compile(r"^(-|\d+(\.\d+)?[smhd]?$)")
 
 
+#: Below this share of pixels, a "changed" screen is flicker, not a response.
+#: Scene movement in a game changes a large share of the frame; measured live,
+#: a genuinely frozen game still flickered 0.05-0.29% per press — and the old
+#: unconditional "the app responded" line talked the tester into a PASS its
+#: own eyes had already contradicted.
+FLICKER_SHARE = 0.01
+
+
+def _responded_line(result: dict, acted_on: str) -> str:
+    """The honest sentence about whether the app acted on what was just done."""
+    frames = result.get("frames", 0)
+    fraction = (result.get("diff") or {}).get("fraction")
+    if fraction is not None and fraction < FLICKER_SHARE:
+        return (f"The page received it, but over {frames} frames only "
+                f"{fraction * 100:.2f}% of pixels changed — flicker or a HUD "
+                f"tick, not evidence the app acted on {acted_on}. If you "
+                f"expected the scene to move, it did not.")
+    return (f"The page received it and the screen changed over {frames} "
+            f"frames — the app responded.")
+
+
 def programs_in(command: str) -> list[str]:
     """Every program a shell string would actually invoke.
 
@@ -575,6 +596,22 @@ class AgentTools:
                      "y": {"type": "number",
                            "description": "CSS pixels from the top. Only with x."}},
                     []),
+                _fn("move_mouse",
+                    "Sweep the mouse by (dx, dy) pixels, as a hand would — for free "
+                    "look and mouse-driven cameras. A game holding pointer lock reads "
+                    "the movement deltas; one without lock sees the cursor travel. "
+                    "The result says whether the page saw the moves, whether pointer "
+                    "lock was engaged, and whether the picture changed. Camera "
+                    "rotation changes most of the frame — a fraction of a percent "
+                    "means the camera did not move.",
+                    {"dx": {"type": "number",
+                            "description": "Pixels to sweep horizontally; negative is left."},
+                     "dy": {"type": "number",
+                            "description": "Pixels to sweep vertically; negative is up."},
+                     "steps": {"type": "integer",
+                               "description": ("How many small moves to split the sweep "
+                                               "into. Default 12.")}},
+                    ["dx", "dy"]),
                 _fn("wait",
                     "Let the app run for a number of animation frames before you judge "
                     "it. A screen is not finished the moment it appears — characters "
@@ -670,6 +707,7 @@ class AgentTools:
             "open_page": self.open_page,
             "press_key": self.press_key,
             "click": self.click,
+            "move_mouse": self.move_mouse,
             "wait": self.wait,
             "check_canvas": self.check_canvas,
             "look": self.look,
@@ -1136,8 +1174,7 @@ class AgentTools:
             lines.append("The page did not receive the key at all. That is a browser "
                          "problem, not the app ignoring you.")
         elif changed is True:
-            lines.append(f"The page received it and the screen changed over "
-                         f"{result.get('frames', 0)} frames — the app responded.")
+            lines.append(_responded_line(result, "the key"))
         elif changed is False:
             lines.append(f"The page received it but the screen did not change over "
                          f"{result.get('frames', 0)} frames. Either the app does not act "
@@ -1197,8 +1234,7 @@ class AgentTools:
             lines.append("The page did not receive the click at all. That is a browser "
                          "problem, not the app ignoring you.")
         elif result.get("changed") is True:
-            lines.append(f"The page received it and the screen changed over "
-                         f"{result.get('frames', 0)} frames — the app responded.")
+            lines.append(_responded_line(result, "the click"))
         elif result.get("changed") is False:
             lines.append(f"The page received it but the screen did not change over "
                          f"{result.get('frames', 0)} frames. Either this control does "
@@ -1213,6 +1249,53 @@ class AgentTools:
                     "x": result.get("x"), "y": result.get("y"),
                     "label": result.get("label", ""),
                     "delivered": result.get("delivered"), "changed": result.get("changed"),
+                    "frames": result.get("frames", 0), "diff": result.get("diff"),
+                    "shot_before": result.get("shot_before", ""),
+                    "shot_after": result.get("shot_after", "")})
+
+    def move_mouse(self, dx=0, dy=0, steps: int = 12) -> ToolOutcome:
+        from ..browser import BrowserUnavailable
+
+        try:
+            dx, dy = float(dx), float(dy)
+        except (TypeError, ValueError):
+            return ToolOutcome("move_mouse needs numeric dx and dy.", ok=False,
+                               detail={"kind": "mouse_failed", "error": "bad delta"})
+        try:
+            result = self.visual.move_mouse(dx, dy, steps=int(steps or 12))
+        except (BrowserUnavailable, ValueError) as exc:
+            return ToolOutcome(f"Could not move the mouse: {exc}", ok=False,
+                               detail={"kind": "mouse_failed", "error": str(exc)})
+
+        lines = [f"Swept the mouse by ({dx:g}, {dy:g}) in {result.get('steps')} moves."]
+        if not result.get("delivered"):
+            lines.append("The page did not receive any mousemove events. That is a "
+                         "browser problem, not the app ignoring you.")
+        else:
+            moved = result.get("movement") or (0, 0)
+            lines.append(f"The page saw {result.get('moves_seen')} mousemove event(s), "
+                         f"total movement ({moved[0]:g}, {moved[1]:g}).")
+            lines.append("Pointer lock was engaged while the mouse moved."
+                         if result.get("locked") else
+                         "Pointer lock was NOT engaged — a free-look camera that "
+                         "needs lock will not turn, however far the mouse travels. "
+                         "If this game asked for lock and did not get it, that is "
+                         "the finding.")
+        if result.get("changed") is True:
+            lines.append(_responded_line(result, "the mouse"))
+        elif result.get("changed") is False:
+            lines.append(f"The screen did not change over {result.get('frames', 0)} "
+                         f"frames — the camera did not move.")
+        described = (result.get("diff") or {}).get("described")
+        if described:
+            lines.append(described)
+        return ToolOutcome(
+            " ".join(lines), ok=True,
+            detail={"kind": "mouse", "dx": dx, "dy": dy,
+                    "delivered": result.get("delivered"),
+                    "locked": result.get("locked"),
+                    "movement": result.get("movement"),
+                    "changed": result.get("changed"),
                     "frames": result.get("frames", 0), "diff": result.get("diff"),
                     "shot_before": result.get("shot_before", ""),
                     "shot_after": result.get("shot_after", "")})

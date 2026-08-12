@@ -220,6 +220,20 @@ _FIND_CLICK_JS = r"""
 })()
 """
 
+_MOUSE_HOOK_JS = """
+window.__tranceMouse = {moves: 0, dx: 0, dy: 0, locked: !!document.pointerLockElement};
+if (!window.__tranceMouseHooked) {
+  window.__tranceMouseHooked = true;
+  document.addEventListener('mousemove', (e) => {
+    const m = window.__tranceMouse; if (!m) return;
+    m.moves += 1;
+    m.dx += (e.movementX || 0);
+    m.dy += (e.movementY || 0);
+    m.locked = !!document.pointerLockElement;
+  }, {capture: true, passive: true});
+}
+"""
+
 _KEY_HOOK_JS = """
 (() => {
   window.__tranceKeys = [];
@@ -638,6 +652,46 @@ class Browser:
         return {"key": key, "times": max(1, times), "delivered": [str(s) for s in seen],
                 "changed": _differs(before, after), "frames": frames, "probe": after,
                 "held_frames": held,
+                "png_before": shot_before, "png_after": self._safe_shot(after)}
+
+    def move_mouse(self, dx: float, dy: float, steps: int = 12,
+                   settle_frames: int = PRESS_SETTLE_FRAMES) -> dict:
+        """Sweep the mouse by (dx, dy) the way a hand would — many small moves.
+
+        Free look in a pointer-lock game reads movementX/Y off mousemove
+        events, so one jump from A to B is a single event that reads as a
+        teleport; a sweep is what a camera can follow. Starts from wherever
+        the last sweep ended (the viewport centre at first) and stays inside
+        the viewport. Answers the same two questions as a keypress —
+        *delivered*, *changed* — plus whether pointer lock was engaged while
+        the mouse moved, because free look without lock is usually a game
+        that never got the lock it asked for.
+        """
+        self._eval(_MOUSE_HOOK_JS)
+        before = self.probe()
+        shot_before = self._safe_shot(before)
+        x, y = getattr(self, "_mouse", (self.width / 2.0, self.height / 2.0))
+        steps = max(1, min(int(steps or 12), 60))
+        for i in range(1, steps + 1):
+            nx = min(max(x + dx * i / steps, 0.0), self.width - 1.0)
+            ny = min(max(y + dy * i / steps, 0.0), self.height - 1.0)
+            self._call("Input.dispatchMouseEvent",
+                       {"type": "mouseMoved", "x": nx, "y": ny, "buttons": 0},
+                       session=True)
+            self.wait_frames(1)
+        self._mouse = (min(max(x + dx, 0.0), self.width - 1.0),
+                       min(max(y + dy, 0.0), self.height - 1.0))
+        frames = self.wait_frames(settle_frames)
+        seen = self._eval("window.__tranceMouse") or {}
+        after = self.probe()
+        return {"dx": dx, "dy": dy, "steps": steps,
+                "delivered": int(seen.get("moves") or 0) > 0,
+                "moves_seen": int(seen.get("moves") or 0),
+                "movement": (round(float(seen.get("dx") or 0), 1),
+                             round(float(seen.get("dy") or 0), 1)),
+                "locked": bool(seen.get("locked")),
+                "changed": _differs(before, after), "frames": frames,
+                "probe": after,
                 "png_before": shot_before, "png_after": self._safe_shot(after)}
 
     def click(self, x: float | None = None, y: float | None = None, text: str = "",

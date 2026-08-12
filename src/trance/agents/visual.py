@@ -212,6 +212,10 @@ class VisualSession:
             return result                  # nothing happened; nothing to compare
         return self._with_shots(result)
 
+    def move_mouse(self, dx: float, dy: float, steps: int = 12) -> dict:
+        self._needs_a_page()
+        return self._with_shots(self.browser.move_mouse(dx, dy, steps=steps))
+
     def wait(self, frames: int = 120) -> dict:
         """Let the app run before judging it.
 

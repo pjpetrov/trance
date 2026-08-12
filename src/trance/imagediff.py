@@ -49,6 +49,12 @@ class Diff:
     #: "pixels" — decoded and counted. "bytes" — byte-compared only.
     how: str = "pixels"
     note: str = ""
+    #: Where the change sits: (x, y, w, h) around every differing pixel, with
+    #: the frame size beside it. A HUD tick is a 40x12 patch; the scene moving
+    #: is most of the frame — the location is the difference between them.
+    box: tuple | None = None
+    width: int = 0
+    height: int = 0
 
     @property
     def fraction(self) -> float:
@@ -69,8 +75,17 @@ class Diff:
         # Spelled out because "0.3% of pixels differ" is the difference between
         # "the app is frozen" and "one sprite moved", and an agent told only
         # "changed" cannot tell those apart.
+        where = ""
+        if self.box and self.width and self.height:
+            x, y, w, h = self.box
+            share = (w * h) / (self.width * self.height)
+            if share <= 0.25:
+                where = (f" All of it inside one {w}x{h} region at ({x}, {y}) — "
+                         f"a patch of the screen, not the scene moving.")
+            elif share >= 0.7 and self.fraction >= 0.05:
+                where = " The changes span most of the frame."
         return (f"The two screenshots differ in {self.differing} of {self.total} pixels "
-                f"({percent:.2f}%).")
+                f"({percent:.2f}%).{where}")
 
 
 def _decode(png: bytes) -> tuple[int, int, int, bytearray]:
@@ -163,6 +178,7 @@ def compare(before: bytes, after: bytes) -> Diff:
     stride = w1 * step1
     rows = range(0, h1, ROW_STRIDE_WHEN_LARGE if w1 * h1 > FULL_COMPARE_PIXELS else 1)
     differing = counted = 0
+    min_x = min_y = max_x = max_y = None
     for row in rows:
         base = row * stride
         line1 = pixels1[base:base + stride]
@@ -170,7 +186,18 @@ def compare(before: bytes, after: bytes) -> Diff:
         counted += w1
         if line1 == line2:
             continue
+        if min_y is None:
+            min_y = row
+        max_y = row
         for x in range(0, stride, step1):
             if line1[x:x + step1] != line2[x:x + step1]:
                 differing += 1
-    return Diff(identical=differing == 0, differing=differing, total=counted, how="pixels")
+                col = x // step1
+                if min_x is None or col < min_x:
+                    min_x = col
+                if max_x is None or col > max_x:
+                    max_x = col
+    box = (None if min_x is None
+           else (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
+    return Diff(identical=differing == 0, differing=differing, total=counted,
+                how="pixels", box=box, width=w1, height=h1)
