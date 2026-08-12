@@ -11530,7 +11530,8 @@ def test_an_old_version_can_be_served_and_replaced(tmp_path):
 
     # Rewrite history so each version has an index.html to serve.
     # Simpler: serve the latest iteration (HEAD) and the first one.
-    served = client.post(f"/api/sessions/{sid}/messages/m_second/serve")
+    served = client.post(f"/api/sessions/{sid}/preview",
+                         json={"of_message": "m_second"})
     assert served.status_code == 200, served.text
     body = served.json()
     assert body["version"]
@@ -11545,9 +11546,16 @@ def test_an_old_version_can_be_served_and_replaced(tmp_path):
     assert "v3" in page                        # the version's own tree answers
 
     # Serving another version replaces the first server, same-port-or-not.
-    second = client.post(f"/api/sessions/{sid}/messages/m_first/serve")
+    second = client.post(f"/api/sessions/{sid}/preview",
+                         json={"of_message": "m_first"})
     assert second.status_code == 200
     other_dir = project / ".trance" / "versions" / second.json()["version"]
     assert (other_dir / "game.js").read_text() == "v1\n"
     record = json.loads((project / ".trance" / "preview.json").read_text())
     assert record["version"] == second.json()["version"]
+    # And the shared status endpoint says which version is being served —
+    # the same stop and share the files page uses apply to it.
+    status = client.get(f"/api/sessions/{sid}/preview").json()
+    assert status["version"] == second.json()["version"]
+    assert status["of_message"] == "m_first"
+    assert client.delete(f"/api/sessions/{sid}/preview").json()["stopped"] is True

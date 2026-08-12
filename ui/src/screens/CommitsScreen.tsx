@@ -11,9 +11,10 @@
 
 import { useState } from "react";
 import { api } from "@/api/client";
-import { useCommitLog, useMessageCommits, useRequestHistory, useSession }
-  from "@/api/queries";
-import { useIterationActions, useStartRun } from "@/api/mutations";
+import { useCommitLog, useMessageCommits, usePreview, useRequestHistory,
+  useSession } from "@/api/queries";
+import { useIterationActions, usePreviewMutations, useStartRun }
+  from "@/api/mutations";
 import type { RequestItem } from "@/api/types";
 import { duration, timeOf } from "@/lib/format";
 import { useUi } from "@/store/ui";
@@ -161,10 +162,16 @@ function IterationDetail(
   { item, sessionId, running }:
   { item: RequestItem; sessionId: string; running: boolean },
 ) {
-  const { go, openFile } = useUi();
+  const { go, openFile, setOpenStep, focusPlanStep } = useUi();
   const answer = useMessageCommits(sessionId, item.reply_id);
   const start = useStartRun(sessionId);
   const acts = useIterationActions(sessionId);
+  // The one preview the session has — the same one the files page drives, so
+  // stop and share here are the same stop and share there.
+  const preview = usePreview(sessionId);
+  const { stop, share } = usePreviewMutations(sessionId);
+  const servingThis = preview.data?.of_message === item.reply_id
+    && Boolean(preview.data?.url || preview.data?.port);
   const [confirming, setConfirming] = useState(false);
   const data = answer.data;
   const pending = (data?.steps ?? []).filter((step) => step.status === "pending");
@@ -185,20 +192,49 @@ function IterationDetail(
       )}
 
       <div className="flex flex-wrap items-center gap-1.5">
-        <Button
-          size="sm"
-          title={"Run this exact version: a checkout of where this iteration "
-            + "ended, served the way the files page serves — replacing whatever "
-            + "is currently being served. For chasing a bug to the iteration "
-            + "that introduced it."}
-          busy={acts.serve.isPending}
-          onClick={() => acts.serve.mutateAsync(item.reply_id)
-            .then((out) => {
-              toast.ok(`Serving the project as of ${out.version} at ${out.open}`);
-              window.open(out.open, "_blank");
-            })
-            .catch((error) => toast.err(String(error)))}
-        >▶ run this version</Button>
+        {!servingThis && (
+          <Button
+            size="sm"
+            title={"Run this exact version: a checkout of where this iteration "
+              + "ended, served the way the files page serves — replacing whatever "
+              + "is currently being served. For chasing a bug to the iteration "
+              + "that introduced it."}
+            busy={acts.serve.isPending}
+            onClick={() => acts.serve.mutateAsync(item.reply_id)
+              .then((out) => {
+                toast.ok(`Serving the project as of ${out.version} at ${out.open}`);
+                if (out.open) window.open(out.open, "_blank");
+              })
+              .catch((error) => toast.err(String(error)))}
+          >▶ run this version</Button>
+        )}
+        {servingThis && (
+          <>
+            <a href={preview.data?.open || preview.data?.url} target="_blank"
+               rel="noreferrer">
+              <Badge tone="ok">serving {preview.data?.version}</Badge>
+            </a>
+            <Button
+              size="sm" busy={share.isPending}
+              title="A public link to this version, through a tunnel — same as the files page"
+              onClick={() => share.mutateAsync(undefined)
+                .then((result) => {
+                  if (result.url) {
+                    void navigator.clipboard.writeText(result.url).then(
+                      () => toast.ok(`Share link copied: ${result.url}`));
+                  }
+                })
+                .catch((error) => toast.err(String(error)))}
+            >share</Button>
+            <Button
+              size="sm" variant="danger" busy={stop.isPending}
+              title="Stop serving this version (takes the tunnel with it)"
+              onClick={() => stop.mutateAsync()
+                .then(() => toast.ok("Stopped."))
+                .catch((error) => toast.err(String(error)))}
+            >stop</Button>
+          </>
+        )}
         <Button
           size="sm" variant="danger"
           title={"Put the project back to exactly where this iteration left "
@@ -245,21 +281,28 @@ function IterationDetail(
       {data && data.steps.length > 0 && (
         <section>
           <h3 className="mb-1 text-xs font-medium text-muted">The plan it produced</h3>
-          <button
-            onClick={() => go("plan")}
-            title="Open the plan"
-            className="w-full space-y-1 rounded-[--radius] border border-line p-2
-                       text-left transition-colors hover:bg-panel-2"
-          >
+          <div className="space-y-1 rounded-[--radius] border border-line p-2">
             {data.steps.map((step) => (
-              <span key={step.id} className="flex items-center gap-2 text-sm">
-                <Dot tone={stepTone(step.status)}
-                     pulse={step.status === "running"} />
-                <span className="min-w-0 flex-1 truncate">{step.task}</span>
-                <Badge>{step.status}</Badge>
-              </span>
+              <div key={step.id} className="flex items-center gap-2 text-sm">
+                <button
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-[--radius-sm]
+                             px-1 py-0.5 text-left transition-colors hover:bg-panel-2"
+                  title="Open this step on the run page — its history, its console"
+                  onClick={() => { setOpenStep(step.id); go("run"); }}
+                >
+                  <Dot tone={stepTone(step.status)}
+                       pulse={step.status === "running"} />
+                  <span className="min-w-0 flex-1 truncate">{step.task}</span>
+                  <Badge>{step.status}</Badge>
+                </button>
+                <button
+                  className="shrink-0 px-1 text-muted hover:text-fg"
+                  title="Edit this step on the plan page"
+                  onClick={() => focusPlanStep(step.id)}
+                >✎</button>
+              </div>
             ))}
-          </button>
+          </div>
         </section>
       )}
 

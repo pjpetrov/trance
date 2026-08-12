@@ -294,8 +294,13 @@ export function useIterationActions(sessionId: string) {
       mutationFn: (messageId: string) => api.rewindTo(sessionId, messageId),
       onSuccess: everything,
     }),
+    // The same preview as the files page — same server, same stop, same
+    // share — pointed at the iteration's checkout instead of the tree.
     serve: useMutation({
-      mutationFn: (messageId: string) => api.serveVersion(sessionId, messageId),
+      mutationFn: (messageId: string) =>
+        api.startPreview(sessionId, { of_message: messageId }),
+      onSuccess: () =>
+        void client.invalidateQueries({ queryKey: keys.preview(sessionId) }),
     }),
   };
 }

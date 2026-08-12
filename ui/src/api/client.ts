@@ -243,10 +243,7 @@ export const api = {
     request<{ to: string; kept_branch: string; trimmed_messages: number }>(
       `/api/sessions/${id(sid)}/messages/${id(messageId)}/rewind`,
       { method: "POST" }),
-  serveVersion: (sid: string, messageId: string) =>
-    request<{ open: string; version: string; of_message: string }>(
-      `/api/sessions/${id(sid)}/messages/${id(messageId)}/serve`,
-      { method: "POST" }),
+
   clearFiles: (sid: string) =>
     request<{ removed: number; committed: boolean }>(
       `/api/sessions/${id(sid)}/files`, { method: "DELETE" }),
@@ -256,7 +253,9 @@ export const api = {
 
   // ------------------------------------------------------------ preview
   startPreview: (sid: string,
-                 body: { path?: string; mode?: "dev"; command?: string; dir?: string }) =>
+                 body: { path?: string; mode?: "dev"; command?: string; dir?: string;
+                         /** Serve the project as this iteration left it. */
+                         of_message?: string }) =>
     request<Preview>(`/api/sessions/${id(sid)}/preview`, { method: "POST", body }),
   /** Ask the orchestrator how this project is started. Reads the README. */
   planPreview: (sid: string) =>

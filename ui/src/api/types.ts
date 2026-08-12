@@ -551,6 +551,9 @@ export interface Preview {
   command?: string;
   /** Where the page is opened from — the host this browser reached trance on. */
   open?: string;
+  /** Set when an iteration's version is being served rather than the tree. */
+  version?: string;
+  of_message?: string;
   /** What still has to be done by hand, if anything. Currently the one thing:
    *  a Vite dev server refuses a tunnel until its host is allowed. */
   hint?: string;

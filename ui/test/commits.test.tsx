@@ -155,20 +155,6 @@ describe("from a reply to its commits", () => {
     expect(await screen.findByText(/the new menu/)).toBeInTheDocument();
   });
 
-  it("opens the plan when you click the steps", async () => {
-    const user = userEvent.setup();
-    useUi.setState({ screen: "commits", commitsFor: "m2" });
-    fakeServer({
-      "/api/sessions/s1": session({ chat: CHAT }),
-      "/api/sessions/s1/requests": HISTORY,
-      "/api/sessions/s1/messages/m2/commits": ANSWER,
-    });
-    renderWithQuery(<CommitsScreen />);
-
-    await user.click(await screen.findByTitle("Open the plan"));
-    expect(useUi.getState().screen).toBe("plan");
-  });
-
   it("offers to run the steps this request added, and only while some are pending", async () => {
     const user = userEvent.setup();
     useUi.setState({ screen: "commits", commitsFor: "m2" });
@@ -276,14 +262,67 @@ describe("from a reply to its commits", () => {
       "/api/sessions/s1": session({ chat: CHAT }),
       "/api/sessions/s1/requests": HISTORY,
       "/api/sessions/s1/messages/m2/commits": ANSWER,
-      "/api/sessions/s1/messages/m2/serve":
-        { open: "http://127.0.0.1:4173/", version: "def456ab", of_message: "m2" },
+      // Nothing served until the button asks for it: GET answers empty, POST
+      // answers with the started version.
+      "/api/sessions/s1/preview": (call: { method: string }) =>
+        call.method === "POST"
+          ? { open: "http://127.0.0.1:4173/", url: "http://127.0.0.1:4173/",
+              version: "def456ab", of_message: "m2", root: "/x", port: 4173,
+              public: "" }
+          : { root: "", port: 0, url: "", public: "" },
     });
     renderWithQuery(<CommitsScreen />);
 
     await user.click(await screen.findByRole("button", { name: /run this version/ }));
-    await waitFor(() =>
-      expect(server.to("/api/sessions/s1/messages/m2/serve")).toHaveLength(1));
+    await waitFor(() => expect(
+      server.calls.filter((c) => c.method === "POST"
+        && c.url.includes("/preview"))).toHaveLength(1));
     await waitFor(() => expect(opened).toEqual(["http://127.0.0.1:4173/"]));
+  });
+
+  it("a plan step opens on the run page, its pencil on the plan page", async () => {
+    const user = userEvent.setup();
+    useUi.setState({ screen: "commits", commitsFor: "m2" });
+    fakeServer({
+      "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
+      "/api/sessions/s1/messages/m2/commits": ANSWER,
+    });
+    renderWithQuery(<CommitsScreen />);
+
+    await user.click(await screen.findByTitle(
+      "Open this step on the run page — its history, its console"));
+    expect(useUi.getState().screen).toBe("run");
+    expect(useUi.getState().openStep).toBe("st1");
+
+    useUi.setState({ screen: "commits" });
+    await user.click(await screen.findByTitle("Edit this step on the plan page"));
+    expect(useUi.getState().screen).toBe("plan");
+    expect(useUi.getState().planFocus).toBe("st1");
+  });
+
+  it("a served version shows the same stop and share the files page has", async () => {
+    const user = userEvent.setup();
+    useUi.setState({ screen: "commits", commitsFor: "m2" });
+    const server = fakeServer({
+      "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
+      "/api/sessions/s1/messages/m2/commits": ANSWER,
+      "/api/sessions/s1/preview": (call: { method: string }) =>
+        call.method === "DELETE"
+          ? { stopped: true }
+          : { root: "/x", port: 4173, url: "http://127.0.0.1:4173/",
+              open: "http://127.0.0.1:4173/", public: "",
+              version: "def456ab", of_message: "m2" },
+    });
+    renderWithQuery(<CommitsScreen />);
+
+    // The status says this very iteration is being served, so the card offers
+    // stop and share instead of another start.
+    expect(await screen.findByText(/serving def456ab/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "stop" }));
+    await waitFor(() => expect(
+      server.calls.some((c) => c.method === "DELETE"
+        && c.url.includes("/preview"))).toBe(true));
   });
 });

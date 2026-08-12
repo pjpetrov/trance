@@ -1274,10 +1274,46 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     @app.post("/api/sessions/{session_id}/preview")
     async def start_preview(request: Request, session_id: str, body: dict | None = None):
-        """Serve the folder a page lives in, and hand back its URL."""
+        """Serve the folder a page lives in, and hand back its URL.
+
+        With `of_message`, serve the project *as one iteration left it*: a
+        detached worktree of that commit under .trance/versions becomes the
+        root, and everything after — dev server or static, remembering,
+        stopping, sharing — is this same procedure, deliberately not a second
+        one. The worktree sits inside the project so a dev server finds
+        node_modules by walking up.
+        """
         session = _need(store, session_id)
         root = _project_of(session)
         body = body or {}
+
+        of_message = str(body.get("of_message") or "").strip()
+        version = ""
+        if of_message:
+            from ..agents.visual import default_page
+
+            reply = next((m for m in session.chat if m.id == of_message), None)
+            if reply is None or not reply.base:
+                raise HTTPException(404, "no such request")
+            target = _range_end(session, of_message)
+            if not target:
+                raise HTTPException(400, "this request's end point is not recorded")
+            copy_dir = root / ".trance" / "versions" / target[:8]
+            made = vcs.worktree_add(root, copy_dir, target)
+            if not made:
+                raise HTTPException(
+                    409, f"could not check out {target[:8]}: {made.detail}")
+            version, root = target[:8], copy_dir
+            if not body.get("mode"):
+                # Decided the way the visual tester decides: the version's own
+                # dev server when its manifest wants one, static otherwise.
+                page = default_page(root)
+                wants = preview.dev_command(root, preview.web_root_for(root, page))
+                if wants and wants.get("needed"):
+                    body = {**body, "mode": "dev", "command": wants["command"],
+                            "dir": str(Path(wants["dir"]).relative_to(root))}
+                else:
+                    body = {**body, "path": page}
 
         # Running the project rather than serving its files. Asked for
         # explicitly and with a command someone has seen: this starts a build
@@ -1309,6 +1345,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             _remember_preview(session, {
                 "mode": "dev", "command": command, "root": running.root,
                 "port": running.port, "pid": running.pid, "log": running.log,
+                **({"version": version, "of_message": of_message} if version else {}),
             })
             here = running.at(request.url.hostname)
             bus.emit("preview", session_id, agent="you", payload={
@@ -1320,6 +1357,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             shared = preview.public_url(running.port)
             return {**running.to_dict(), "open": here,
                     "network": running.url, "public": shared or "",
+                    "version": version, "of_message": of_message,
                     "needs_build": False, "blocked_by": [], "build_command": "",
                     "hint": (preview.allowed_hosts_note(Path(running.root), shared)
                              if shared else "")}
@@ -1341,8 +1379,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 web_root, port=preview_ports.get((session_id, str(web_root)), 0))
             previews[session_id] = served
             preview_ports[(session_id, str(web_root))] = served.port
-        _remember_preview(session, {"mode": "static", "root": str(web_root),
-                                    "port": served.port})
+        _remember_preview(session, {
+            "mode": "static", "root": str(web_root), "port": served.port,
+            **({"version": version, "of_message": of_message} if version else {}),
+        })
 
         # Opened at the host this browser already used to reach trance, so a
         # phone on the same network gets a link that works from where it is.
@@ -1370,6 +1410,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         shared = preview.public_url(served.port)
         return {**served.to_dict(), "open": here, "network": served.url + page,
                 "public": (shared + "/" + page) if shared else "",
+                "version": version, "of_message": of_message,
                 "needs_build": needs_build, "blocked_by": blockers,
                 "build_command": (dev or {}).get("command", "")}
 
@@ -1493,7 +1534,13 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             previews.pop(session_id, None)
             _forget_preview(session)
             return {"root": "", "port": 0, "url": "", "public": ""}
+        try:
+            record = json.loads(_preview_state(session).read_text(encoding="utf8"))
+        except (OSError, json.JSONDecodeError):
+            record = {}
         return {"port": 0, **served.to_dict(),
+                "version": record.get("version", ""),
+                "of_message": record.get("of_message", ""),
                 "public": preview.public_url(served.port)}
 
     # ------------------------------------------------------------- review
@@ -1849,68 +1896,6 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
         return {"to": target, "kept_branch": keep,
                 "trimmed_messages": len(trimmed)}
-
-    @app.post("/api/sessions/{session_id}/messages/{message_id}/serve")
-    async def serve_message_version(request: Request, session_id: str, message_id: str):
-        """Run the project exactly as this iteration left it.
-
-        A detached checkout of that commit under .trance/versions — the
-        working tree stays untouched — served the same way the files page
-        serves: the project's own dev server when it needs one, static files
-        otherwise. One preview per session: starting a version replaces
-        whatever was being served, exactly as starting anything else does.
-        """
-        from ..agents.visual import default_page
-
-        session = _need(store, session_id)
-        reply = next((m for m in session.chat if m.id == message_id), None)
-        if reply is None or not reply.base:
-            raise HTTPException(404, "no such request")
-        project = _project_of(session)
-        target = _range_end(session, message_id)
-        if not target:
-            raise HTTPException(400, "this request's end point is not recorded")
-
-        copy_dir = project / ".trance" / "versions" / target[:8]
-        made = vcs.worktree_add(project, copy_dir, target)
-        if not made:
-            raise HTTPException(409, f"could not check out {target[:8]}: {made.detail}")
-
-        page = default_page(copy_dir)
-        web_root = preview.web_root_for(copy_dir, page)
-        wants = preview.dev_command(copy_dir, web_root)
-
-        _revive_preview(session_id, session)
-        existing = previews.pop(session_id, None)
-        if existing is not None:
-            existing.stop()
-        if wants and wants.get("needed"):
-            try:
-                running = await asyncio.to_thread(
-                    preview.run_dev, Path(wants["dir"]), wants["command"],
-                    log_dir=project / ".trance")
-            except preview.DevServerFailed as exc:
-                raise HTTPException(502, f"{exc}\n\n{exc.output}"[:4000]) from exc
-            previews[session_id] = running
-            _remember_preview(session, {
-                "mode": "dev", "command": wants["command"], "root": running.root,
-                "port": running.port, "pid": running.pid, "log": running.log,
-                "version": target[:8], "of_message": message_id,
-            })
-            url = running.at(request.url.hostname)
-        else:
-            served = preview.serve(web_root, host="0.0.0.0", port=0)
-            previews[session_id] = served
-            _remember_preview(session, {
-                "mode": "static", "root": str(web_root), "port": served.port,
-                "version": target[:8], "of_message": message_id,
-            })
-            url = served.at(request.url.hostname) + (Path(page).name if page else "")
-        bus.emit("preview", session_id, agent="you", payload={
-            "url": url, "version": target[:8],
-            "message": f"Serving the project as of {target[:8]} at {url}",
-        })
-        return {"open": url, "version": target[:8], "of_message": message_id}
 
     @app.get("/api/sessions/{session_id}/messages/{message_id}/commits")
     def commits_for_message(session_id: str, message_id: str):

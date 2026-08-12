@@ -18,6 +18,8 @@ interface UiStore {
   modal: Modal;
   /** The step whose detail panel is open, if any. */
   openStep: string | null;
+  /** A step the plan page should scroll to and flash, set by another page. */
+  planFocus: string | null;
   /** Whether the console follows the run: the newest lines stay in view, the
    *  open step moves to whatever is working, and the newest run is the one
    *  shown. It was implicit before, and something implicit that sometimes
@@ -42,6 +44,7 @@ interface UiStore {
   go: (screen: Screen) => void;
   openModal: (modal: Modal) => void;
   setOpenStep: (stepId: string | null) => void;
+  focusPlanStep: (stepId: string | null) => void;
   setFollow: (follow: boolean) => void;
   setConsoleStep: (stepId: string | null) => void;
   toggleReads: () => void;
@@ -55,6 +58,7 @@ export const useUi = create<UiStore>((set) => ({
   screen: "home",
   modal: null,
   openStep: null,
+  planFocus: null,
   follow: true,
   showReads: false,
   hideFinished: false,
@@ -72,6 +76,9 @@ export const useUi = create<UiStore>((set) => ({
   go: (screen) => set({ screen }),
   openModal: (modal) => set({ modal }),
   setOpenStep: (openStep) => set({ openStep }),
+  // Clearing the focus must not yank the user back to the plan page.
+  focusPlanStep: (planFocus) =>
+    set(planFocus ? { planFocus, screen: "plan" } : { planFocus }),
   setFollow: (follow) => set({ follow }),
   setConsoleStep: (consoleStep) => set({ consoleStep }),
   toggleReads: () => set((s) => ({ showReads: !s.showReads })),

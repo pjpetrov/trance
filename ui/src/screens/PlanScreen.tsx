@@ -30,7 +30,7 @@ const GENERATE =
   "Propose the plan now, based on everything we have discussed. Call propose_flow.";
 
 export function PlanScreen() {
-  const { sessionId, go } = useUi();
+  const { sessionId, go, planFocus, focusPlanStep } = useUi();
   const session = useSession(sessionId);
   const agents = useAgents(sessionId ?? "");
   const loops = useLoops(sessionId ?? "");
@@ -99,6 +99,19 @@ export function PlanScreen() {
 
   const done = steps.filter((step) => step.status !== "pending");
   const shown = showDone ? steps : steps.filter((step) => step.status === "pending");
+  // Arrived from another page pointing at one step: scroll to it, flash it,
+  // then let go — the highlight is a landing light, not a selection.
+  useEffect(() => {
+    if (!planFocus) return;
+    const el = document.getElementById(`plan-step-${planFocus}`);
+    if (!el && !showDone) {
+      setShowDone(true);              // the step is done and therefore hidden
+      return;
+    }
+    el?.scrollIntoView({ block: "center" });
+    const timer = setTimeout(() => focusPlanStep(null), 2500);
+    return () => clearTimeout(timer);
+  }, [planFocus, focusPlanStep, steps.length, showDone]);
 
   return (
     <div className="h-full overflow-y-auto p-3">
@@ -154,6 +167,7 @@ export function PlanScreen() {
               <div key={step.id}>
                 {dropAt === index && <DropMarker />}
                 <div
+                  id={`plan-step-${step.id}`}
                   draggable
                   onDragStart={() => setDragging(index)}
                   onDragEnd={() => { setDragging(null); setDropAt(null); }}
@@ -167,6 +181,7 @@ export function PlanScreen() {
                     "rounded-[--radius] border border-line bg-panel-2 p-2.5",
                     "transition-opacity", dragging === index && "opacity-40",
                     step.status !== "pending" && "opacity-75",
+                    planFocus === step.id && "ring-2 ring-accent",
                   )}
                 >
                   <div className="flex items-center gap-2">
