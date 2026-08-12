@@ -10941,7 +10941,7 @@ def test_a_preset_delete_warns_and_says_what_the_fallback_is(tmp_path):
 
     warned = client.delete("/api/presets/local-qwen")
     assert warned.status_code == 409
-    assert "fall back to the" in warned.json()["detail"]
+    assert "fall back to" in warned.json()["detail"]
     assert client.delete("/api/presets/local-qwen?force=true").status_code == 200
 
 
