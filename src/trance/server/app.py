@@ -1791,9 +1791,15 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"reviews": out}
 
     def _range_end(session, message_id: str) -> str:
-        """Where a proposal's work ends: the next proposal's base, else HEAD."""
+        """Where a proposal's work ends: the next proposal's base, else HEAD.
+
+        Proposals are replies that added steps (base alone predates the
+        field). The next one's base can be empty — two proposals in a row
+        before the first run has made a repo — and empty is the honest
+        answer: nothing ran between them, so the earlier one owns nothing.
+        """
         root = Path(session.project_dir).expanduser()
-        proposals = [m for m in session.chat if m.base]
+        proposals = [m for m in session.chat if m.base or m.steps]
         for earlier, later in zip(proposals, proposals[1:]):
             if earlier.id == message_id:
                 return later.base
@@ -1822,16 +1828,23 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         by_id = {step.id: step for step in session.flow.steps}
         items = []
         for reply in session.chat:
-            # A proposal is a reply that added steps. The first one of a new
-            # project has no base — the repo did not exist yet — and an empty
-            # base reads as "from the start of history", not "not a request".
-            if not (reply.base or reply.steps):
+            # An iteration is a reply that added plan steps. The first one of
+            # a new project has no base — the repo did not exist yet — and an
+            # empty base reads as "from the start of history".
+            if not reply.steps:
                 continue
             after = _range_end(session, reply.id)
             commits = (vcs.commits_between(root, reply.base, after)
                        if after else [])
             files = (vcs.changed_between(root, reply.base, after)
                      if after else [])
+            # A proposal whose steps were all replaced before anything ran is
+            # a superseded draft, not an iteration: the user asked again and
+            # got a better plan. It owns no steps and no commits — showing it
+            # was two "starts" for one start.
+            alive = [i for i in reply.steps if i in by_id]
+            if not alive and not commits:
+                continue
             # The pictures this iteration produced: what the user attached to
             # the request, then what the visual steps photographed.
             shots = list(reply.images or [])

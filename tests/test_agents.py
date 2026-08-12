@@ -11614,3 +11614,49 @@ def test_the_first_iteration_of_a_new_project_is_in_the_history(tmp_path):
     assert [c["subject"] for c in detail["commits"]] \
         == ["trance: developer: build it [SUCCESS]"]
     assert "game.js" in detail["files"]
+
+
+def test_a_superseded_proposal_is_not_a_second_start(tmp_path):
+    """Seen live: 'propose the plan now' after a discussion made a second
+    proposal that replaced the first's steps — and the history showed two
+    items for one start, each claiming the whole repo since both lacked a
+    base. A draft that lost all its steps before anything ran is not an
+    iteration; and a proposal followed by another owns nothing that was
+    committed after its successor took over."""
+    import pathlib as _pl
+
+    from fastapi.testclient import TestClient
+
+    from trance import vcs
+    from trance.config import Config
+    from trance.flow import Flow, Step
+    from trance.server import app as app_module
+    from trance.session import ChatMessage
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    made = client.post("/api/sessions", json={"name": "worms"}).json()
+    sid, project = made["id"], _pl.Path(made["project_dir"])
+
+    session = app.state.store.get(sid)
+    kept = Step(id="st_final", role="developer", task="build it", status="done")
+    session.flow = Flow(steps=[kept])                  # the draft's steps are gone
+    session.chat = [
+        ChatMessage(role="user", content="use the same engine"),
+        ChatMessage(role="orchestrator", content="draft plan",
+                    base="", steps=["st_draft_1", "st_draft_2"], id="m_draft"),
+        ChatMessage(role="user", content="propose the plan now"),
+        ChatMessage(role="orchestrator", content="the real plan",
+                    base="", steps=["st_final"], id="m_real"),
+    ]
+    project.mkdir(parents=True, exist_ok=True)
+    vcs.ensure_repo(project)
+    (project / "game.js").write_text("v1\n", encoding="utf8")
+    vcs.commit_all(project, "developer: build it [SUCCESS]")
+
+    items = client.get(f"/api/sessions/{sid}/requests").json()["requests"]
+    assert [i["request"] for i in items] == ["propose the plan now"]
+    assert items[0]["commit_count"] == 1
