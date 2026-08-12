@@ -148,7 +148,13 @@ class ProjectStores:
             for name in (AGENTS, LOOPS, COMMANDS, SETTINGS)
         }
 
-        self.roles = RoleStore(self.dir / AGENTS)
+        # Overlay, the same contract as the Default scope: a built-in whose
+        # definition was never edited *here* keeps tracking trance's shipped
+        # version. Found live twice — a tester running a months-old frozen
+        # prompt in one project, then a new tool's guidance reaching no
+        # existing project at all, because every copy froze at creation day.
+        # Anything the user actually edited is theirs and stays frozen.
+        self.roles = RoleStore(self.dir / AGENTS, overlay=True)
         self.loops = LoopStore(self.dir / LOOPS)
         self.commands = CommandStore(self.dir / COMMANDS)
         self.settings = SettingsStore(self.dir / SETTINGS)

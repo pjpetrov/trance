@@ -454,3 +454,34 @@ def test_the_legacy_runs_state_is_adopted_by_a_workspace_once(tmp_path):
     assert "old-local" in names
     # And the legacy file is left for the next workspace to adopt from.
     assert (runs / "providers.json").exists()
+
+
+def test_an_unedited_builtin_in_a_project_tracks_shipped(tmp_path):
+    """The Default scope's contract, extended to projects: found live twice —
+    a tester running a frozen months-old prompt, then a new tool whose prompt
+    guidance reached no existing project, because every copy froze at
+    creation day. Edited copies are the user's and stay frozen."""
+    import json
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.workspace import ProjectStores
+
+    project = tmp_path / "game"
+    stores = ProjectStores(project)
+    stale = json.loads((project / ".trance" / "agents.json").read_text())
+    for agent in stale["agents"]:
+        if agent["name"] == "visual-tester":
+            agent["system_prompt"] = "an old frozen prompt"
+            agent["preset"] = "local-qwen"                # the user's wiring
+            agent["definition_edited"] = False
+        if agent["name"] == "tester":
+            agent["system_prompt"] = "my own tester prompt"
+            agent["definition_edited"] = True             # a real edit
+    (project / ".trance" / "agents.json").write_text(json.dumps(stale))
+
+    again = ProjectStores(project)
+    tracked = again.roles.get("visual-tester")
+    assert tracked.system_prompt == BUILTIN_ROLES["visual-tester"].system_prompt
+    assert "move_mouse" in tracked.system_prompt          # improvements arrive
+    assert tracked.preset == "local-qwen"                 # wiring is kept
+    assert again.roles.get("tester").system_prompt == "my own tester prompt"
