@@ -21,6 +21,7 @@ import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { CommitRow } from "@/components/Commits";
 import { Confirm } from "@/components/ui/Confirm";
+import { copyText } from "@/lib/clipboard";
 import { toast } from "@/components/Toaster";
 import { stepTone } from "@/components/Shell";
 import { Badge, Button, Dot, Empty, Panel, PanelHeader, Spinner }
@@ -218,11 +219,12 @@ function IterationDetail(
               size="sm" busy={share.isPending}
               title="A public link to this version, through a tunnel — same as the files page"
               onClick={() => share.mutateAsync(undefined)
-                .then((result) => {
-                  if (result.url) {
-                    void navigator.clipboard.writeText(result.url).then(
-                      () => toast.ok(`Share link copied: ${result.url}`));
-                  }
+                .then(async (result) => {
+                  if (!result.url) return;
+                  const copied = await copyText(result.url);
+                  toast.ok(copied
+                    ? `Share link copied: ${result.url}`
+                    : `Share link (copy it by hand): ${result.url}`);
                 })
                 .catch((error) => toast.err(String(error)))}
             >share</Button>

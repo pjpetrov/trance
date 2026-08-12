@@ -21,6 +21,7 @@ import { Badge, Button, Empty, Input, Panel, PanelHeader, Select, Textarea }
 import { Modal } from "@/components/ui/Modal";
 import { Confirm } from "@/components/ui/Confirm";
 import { CodeView, type LineComment } from "@/components/CodeView";
+import { copyText } from "@/lib/clipboard";
 import { toast } from "@/components/Toaster";
 import type { ProjectFile, ReviewComment, RunPlan, TreeNode } from "@/api/types";
 
@@ -177,10 +178,13 @@ show you the command, and run it after you confirm."
                     size="sm" busy={share.isPending}
                     title="Make the preview reachable from outside this machine"
                     onClick={() => share.mutateAsync(undefined)
-                      .then((result) => result.url
-                        ? navigator.clipboard.writeText(result.url).then(
-                            () => toast.ok(`Share link copied: ${result.url}`))
-                        : toast.info("Sharing stopped."))
+                      .then(async (result) => {
+                        if (!result.url) return toast.info("Sharing stopped.");
+                        const copied = await copyText(result.url);
+                        toast.ok(copied
+                          ? `Share link copied: ${result.url}`
+                          : `Share link (copy it by hand): ${result.url}`);
+                      })
                       .catch((error) => toast.err(String(error)))}
                   >share</Button>
                   <Button

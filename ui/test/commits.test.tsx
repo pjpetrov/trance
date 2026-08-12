@@ -12,6 +12,7 @@ import { HomeScreen } from "@/screens/HomeScreen";
 import { CommitsScreen } from "@/screens/CommitsScreen";
 import { useUi } from "@/store/ui";
 import { fakeServer, renderWithQuery, stubWebSocket } from "./render";
+import { Toaster } from "@/components/Toaster";
 import { session, step } from "./fixtures";
 
 const CHAT = [
@@ -324,5 +325,32 @@ describe("from a reply to its commits", () => {
     await waitFor(() => expect(
       server.calls.some((c) => c.method === "DELETE"
         && c.url.includes("/preview"))).toBe(true));
+  });
+
+
+  it("share still answers when the clipboard API does not exist", async () => {
+    // navigator.clipboard is undefined over plain http on the LAN — exactly
+    // where trance is used. The link must reach the user anyway.
+    const user = userEvent.setup();
+    useUi.setState({ screen: "commits", commitsFor: "m2" });
+    fakeServer({
+      "/api/sessions/s1": session({ chat: CHAT }),
+      "/api/sessions/s1/requests": HISTORY,
+      "/api/sessions/s1/messages/m2/commits": ANSWER,
+      "/api/sessions/s1/preview": (call: { method: string }) =>
+        call.method === "POST"
+          ? { url: "" }
+          : { root: "/x", port: 4173, url: "http://127.0.0.1:4173/",
+              open: "http://127.0.0.1:4173/", public: "",
+              version: "def456ab", of_message: "m2" },
+      "/api/sessions/s1/share": { url: "https://tunnel.example/abc" },
+    });
+    const bare = { ...navigator } as Navigator;
+    Object.defineProperty(bare, "clipboard", { value: undefined });
+    vi.stubGlobal("navigator", bare);
+
+    renderWithQuery(<><CommitsScreen /><Toaster /></>);
+    await user.click(await screen.findByRole("button", { name: "share" }));
+    expect(await screen.findByText(/tunnel\.example\/abc/)).toBeInTheDocument();
   });
 });
