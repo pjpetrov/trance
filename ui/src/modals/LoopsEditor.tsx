@@ -19,7 +19,7 @@ import { DEFAULTS, ScopeSwitch, idFor, type Scope }
   from "@/components/ScopeSwitch";
 import { toast } from "@/components/Toaster";
 import { Checks } from "@/components/Checks";
-import type { Loop, LoopNode } from "@/api/types";
+import type { Loop, LoopEdge, LoopNode } from "@/api/types";
 
 /** What an exit means, so the editor can say it rather than showing a raw key. */
 const EXITS: Record<string, string> = {
@@ -236,37 +236,89 @@ export function LoopsEditor() {
                   />
 
                   <div className="space-y-1">
-                    {Object.entries(node.on).map(([exit, routes]) => (
-                      <div key={exit} className="flex flex-wrap items-center gap-2 text-xs">
-                        <span className="w-32 shrink-0 text-muted" title={EXITS[exit]}>
-                          {exit.toLowerCase().replace("_", " ")}
-                        </span>
-                        {routes.map((route, index) => (
-                          <span key={index} className="flex items-center gap-1">
-                            <span className="text-muted">→</span>
-                            <Select
-                              className="h-7 w-56 text-xs" value={route.target}
-                              onChange={(event) => editNode(node.id, {
-                                on: {
-                                  ...node.on,
-                                  [exit]: routes.map((held, at) => at === index
-                                    ? { ...held, target: event.target.value } : held),
-                                },
-                              })}
-                            >
-                              {targets(draft).map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </Select>
-                            {!STOPS.has(route.target) && (
-                              <span className="text-muted">at most {route.max_visits ?? 3}×</span>
-                            )}
+                    {/* Every outcome, always — not only the ones already
+                        routed. The old render was read-only in disguise:
+                        routes could be re-aimed but never added, removed or
+                        tiered, and the visit cap was a label. */}
+                    {Object.keys(EXITS).map((exit) => {
+                      const routes = node.on[exit] ?? [];
+                      const write = (next: LoopEdge[]) => editNode(node.id, {
+                        on: { ...node.on, [exit]: next },
+                      });
+                      return (
+                        <div key={exit} className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="w-32 shrink-0 text-muted" title={EXITS[exit]}>
+                            {exit.toLowerCase().replace("_", " ")}
                           </span>
-                        ))}
-                      </div>
-                    ))}
+                          {routes.length === 0 && (
+                            <span className="text-muted/70"
+                                  title="An outcome with no route fails the loop — the safe default for a case nobody thought about.">
+                              halts the loop
+                            </span>
+                          )}
+                          {routes.map((route, index) => (
+                            <span key={index} className="flex items-center gap-1">
+                              <span className="text-muted">
+                                {index === 0 ? "→" : "then →"}
+                              </span>
+                              <Select
+                                className="h-7 w-48 text-xs" value={route.target}
+                                onChange={(event) => write(routes.map((held, at) =>
+                                  at === index
+                                    ? { ...held, target: event.target.value } : held))}
+                              >
+                                {targets(draft).map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </Select>
+                              {!STOPS.has(route.target) && (
+                                <label className="flex items-center gap-1 text-muted"
+                                       title="How many times this arrow may be taken before the next tier (or the halt).">
+                                  at most
+                                  <input
+                                    type="number" min={1}
+                                    className="h-7 w-12 rounded-[--radius] border border-line
+                                               bg-bg px-1 text-center"
+                                    value={route.max_visits ?? 3}
+                                    onChange={(event) => write(routes.map((held, at) =>
+                                      at === index
+                                        ? { ...held, max_visits: Number(event.target.value) || 1 }
+                                        : held))}
+                                  />×
+                                </label>
+                              )}
+                              {!STOPS.has(route.target) && (
+                                <label className="flex items-center gap-1 text-muted"
+                                       title="Take this tier on the agent's backup model — 'try again with something stronger' as its own arrow.">
+                                  <input
+                                    type="checkbox" checked={Boolean(route.backup)}
+                                    onChange={(event) => write(routes.map((held, at) =>
+                                      at === index
+                                        ? { ...held, backup: event.target.checked }
+                                        : held))}
+                                  />backup
+                                </label>
+                              )}
+                              <button
+                                className="text-muted hover:text-err"
+                                title="Remove this route"
+                                onClick={() => write(routes.filter((_, at) => at !== index))}
+                              >✕</button>
+                            </span>
+                          ))}
+                          <Button
+                            size="sm" variant="ghost"
+                            title={routes.length
+                              ? "Add a tier: when the arrows above are spent, this one is taken next"
+                              : "Route this outcome"}
+                            onClick={() => write([...routes,
+                                                  { target: "exit", max_visits: 3 }])}
+                          >+</Button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
