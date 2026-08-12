@@ -398,7 +398,11 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
                "tsconfig*.json", "jsconfig.json", "vite.config.*", ".gitignore",
                "PLAYBOOK.md", "README.md"],
         toolsets=["files", "graph", "commands"],
-        checks=["reviewer"],
+        # The reviewer judges the change; the regression check runs the suite
+        # so a feature that breaks an earlier one is caught on the step that
+        # broke it, not three steps later. Chips — take either off per agent,
+        # per step, or per loop node.
+        checks=["reviewer", "regression"],
         color="#7aa2f7",
     ),
     "tester": AgentRole(

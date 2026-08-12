@@ -11559,3 +11559,10 @@ def test_an_old_version_can_be_served_and_replaced(tmp_path):
     assert status["version"] == second.json()["version"]
     assert status["of_message"] == "m_first"
     assert client.delete(f"/api/sessions/{sid}/preview").json()["stopped"] is True
+
+
+def test_the_developer_ships_with_reviewer_and_regression():
+    """The pair the user runs everything with: the reviewer judges the change,
+    the regression check catches the feature it broke — on the step that
+    broke it, not three steps later."""
+    assert BUILTIN_ROLES["developer"].checks == ["reviewer", "regression"]
