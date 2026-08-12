@@ -192,6 +192,21 @@ def _remember_prompt(turn, memory) -> str:
     )
 
 
+#: The playbook is instructions, not literature; past this it is literature.
+PLAYBOOK_MAX_CHARS = 4000
+
+
+def _playbook(project: Path) -> str:
+    try:
+        text = (Path(project) / "PLAYBOOK.md").read_text(encoding="utf8",
+                                                         errors="replace").strip()
+    except OSError:
+        return ""
+    if len(text) > PLAYBOOK_MAX_CHARS:
+        text = text[:PLAYBOOK_MAX_CHARS] + "\n… (clipped — the file goes on)"
+    return text
+
+
 def _with_user_images(text: str, images: list[str], project: Path, config) -> str | list:
     """The user's screenshots, in the shape this model can take.
 
@@ -570,6 +585,17 @@ def _run_agent(
         user_parts.append(
             "## Project map (already indexed — fetch any of these with "
             "get_definition, no need to read the whole file)\n" + project_map)
+    if "browser" in role.toolsets:
+        # The team's own instructions for driving the app. The tester has no
+        # file tools — judges must not rewrite the evidence — so the playbook
+        # arrives in the prompt or not at all. Measured without it: the first
+        # minutes of every visual step re-discovered, per run, what the dev
+        # knew the moment it built the lobby.
+        playbook = _playbook(project)
+        if playbook:
+            user_parts.append(
+                "## How to drive this app (written by the team — follow it, and "
+                "report where it is wrong)\n" + playbook)
     if context_bundle:
         user_parts.append("## Curated context\n" + context_bundle)
     if history:

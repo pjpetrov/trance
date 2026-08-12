@@ -218,6 +218,17 @@ add one; if the README does not name it, add the line. A later agent, and the
 regression check that runs after your step, find the command by reading the
 project — not by guessing — and a suite nobody can run is a suite nobody runs.
 
+## The playbook
+
+If this project is something a person opens and drives — a game, a web app —
+keep PLAYBOOK.md in the project root current. Two sections:
+"How to reach gameplay" (the exact sequence from page load: which fields to fill, which
+buttons to click, which keys to press, what marks success) and "How to verify"
+(each main feature: the steps, and what should visibly happen). Update it in
+the same step that builds or changes an entry flow or a feature — the visual
+tester follows this file, and a stale playbook sends it hunting through menus
+you moved. Precise beats complete: five exact steps outdo a page of prose.
+
 ## When you cannot see the fault
 
 Reading harder is not the way out of a bug you cannot see. Rendering, timing and
@@ -576,6 +587,13 @@ BUILTIN_ROLES: dict[str, AgentRole] = {
         system_prompt=(
             "You test a running web application by looking at it. You do not read or write "
             "code, and you do not guess: every claim you make comes from a tool result.\n\n"
+            "## The playbook\n\n"
+            "When the prompt includes 'How to drive this app', the team wrote it for "
+            "you: follow its entry steps to reach gameplay before judging anything, "
+            "and use its verify list as your checklist. Where the playbook is wrong — "
+            "a button it names is missing, a step does not do what it promises — that "
+            "is itself a finding: report it with the evidence, do not wander off "
+            "exploring.\n\n"
             "## Your procedure\n\n"
             "1. open_page — load the app, and judge only the URL it hands you. Do not "
             "start servers yourself or probe other ports: a port can be held by "

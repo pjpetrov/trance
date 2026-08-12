@@ -1344,3 +1344,78 @@ def test_the_coders_are_told_ports_come_from_the_environment():
         prompt = BUILTIN_ROLES[name].system_prompt
         assert "process.env.PORT" in prompt, name
         assert "not yours to fight" in prompt, name
+
+
+# ---------------------------------------------------------------- the playbook
+
+def test_the_playbook_reaches_the_visual_tester_and_nobody_else(tmp_path, monkeypatch):
+    """The tester has no file tools — judges must not rewrite the evidence —
+    so the team's driving instructions arrive in the prompt or not at all.
+    Coders read files themselves; the playbook in their prompt would be
+    noise they already own."""
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    (tmp_path / "PLAYBOOK.md").write_text(
+        "## How to reach gameplay\n"
+        "Type any name, click 'Join game', click 'Ready'.\n", encoding="utf8")
+
+    seen = {}
+
+    class Model:
+        def complete(self, messages, tools=None, **kwargs):
+            seen["prompt"] = str(messages[1]["content"])
+            return ChatResponse(text="fine\n\nOUTCOME: SUCCESS", finish_reason="stop")
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
+
+    looker = AgentRole(name="vt", title="VT", description="", system_prompt="p",
+                       paths=[], toolsets=["browser"])
+    run_agent(role=looker, task="judge it", project=tmp_path, config=ModelConfig(),
+              bus=EventBus(), session_id="s", step_id="st")
+    assert "How to drive this app" in seen["prompt"]
+    assert "Join game" in seen["prompt"]
+
+    coder = AgentRole(name="dev", title="Dev", description="", system_prompt="p",
+                      paths=["**"], toolsets=["files"])
+    run_agent(role=coder, task="build it", project=tmp_path, config=ModelConfig(),
+              bus=EventBus(), session_id="s", step_id="st")
+    assert "How to drive this app" not in seen["prompt"]
+
+
+def test_a_project_without_a_playbook_promises_nothing(tmp_path, monkeypatch):
+    from trance.agents.roles import AgentRole
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = {}
+
+    class Model:
+        def complete(self, messages, tools=None, **kwargs):
+            seen["prompt"] = str(messages[1]["content"])
+            return ChatResponse(text="ok\n\nOUTCOME: SUCCESS", finish_reason="stop")
+
+    monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
+    looker = AgentRole(name="vt", title="VT", description="", system_prompt="p",
+                       paths=[], toolsets=["browser"])
+    run_agent(role=looker, task="judge it", project=tmp_path, config=ModelConfig(),
+              bus=EventBus(), session_id="s", step_id="st")
+    assert "How to drive this app" not in seen["prompt"]
+
+
+def test_the_team_is_told_to_keep_the_playbook_and_the_tester_to_follow_it():
+    from trance.agents.roles import BUILTIN_ROLES
+
+    for name in ("frontend", "backend", "fullstack"):
+        prompt = BUILTIN_ROLES[name].system_prompt
+        assert "PLAYBOOK.md" in prompt, name
+        assert "How to reach gameplay" in prompt, name
+
+    tester = BUILTIN_ROLES["visual-tester"].system_prompt
+    assert "follow its entry steps" in tester
+    assert "is itself a finding" in tester
