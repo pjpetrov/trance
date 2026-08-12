@@ -1302,7 +1302,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             from ..agents.visual import default_page
 
             reply = next((m for m in session.chat if m.id == of_message), None)
-            if reply is None or not reply.base:
+            if reply is None or not (reply.base or reply.steps):
                 raise HTTPException(404, "no such request")
             target = _range_end(session, of_message)
             if not target:
@@ -1822,13 +1822,16 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         by_id = {step.id: step for step in session.flow.steps}
         items = []
         for reply in session.chat:
-            if not reply.base:
+            # A proposal is a reply that added steps. The first one of a new
+            # project has no base — the repo did not exist yet — and an empty
+            # base reads as "from the start of history", not "not a request".
+            if not (reply.base or reply.steps):
                 continue
             after = _range_end(session, reply.id)
             commits = (vcs.commits_between(root, reply.base, after)
-                       if reply.base and after else [])
+                       if after else [])
             files = (vcs.changed_between(root, reply.base, after)
-                     if reply.base and after else [])
+                     if after else [])
             # The pictures this iteration produced: what the user attached to
             # the request, then what the visual steps photographed.
             shots = list(reply.images or [])
@@ -1864,7 +1867,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         if session.status == "running":
             raise HTTPException(409, "the run is writing right now — stop it first")
         reply = next((m for m in session.chat if m.id == message_id), None)
-        if reply is None or not reply.base:
+        if reply is None or not (reply.base or reply.steps):
             raise HTTPException(404, "no such request")
         project = _project_of(session)
         if not vcs.is_repo(project):
@@ -1935,9 +1938,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             "steps": steps,
             "still_to_run": len(pending),
             "commits": (vcs.commits_between(root, message.base, after)
-                        if message.base and after else []),
+                        if after else []),
             "files": (vcs.changed_between(root, message.base, after)
-                      if message.base and after else []),
+                      if after else []),
         }
 
     @app.get("/api/sessions/{session_id}/commits")

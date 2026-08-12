@@ -165,7 +165,7 @@ export function HomeScreen() {
               {/* Only a reply that proposed work has a base, and only that has
                   anything to show: the commits between it and the next
                   request. */}
-              {message.base && (
+              {(message.base || (message.steps?.length ?? 0) > 0) && (
                 <Button
                   size="sm" className="mt-2"
                   onClick={() => showCommitsFor(message.id)}

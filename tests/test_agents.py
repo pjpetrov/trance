@@ -11566,3 +11566,51 @@ def test_the_developer_ships_with_reviewer_and_regression():
     the regression check catches the feature it broke — on the step that
     broke it, not three steps later."""
     assert BUILTIN_ROLES["developer"].checks == ["reviewer", "regression"]
+
+
+def test_the_first_iteration_of_a_new_project_is_in_the_history(tmp_path):
+    """The first request proposes before any repo exists, so its reply records
+    no base — and everything keyed on base skipped it forever: a run 15
+    minutes in, and the history page swearing nothing had been asked for.
+    An empty base means the start of history, not the absence of one."""
+    import pathlib as _pl
+
+    from fastapi.testclient import TestClient
+
+    from trance import vcs
+    from trance.config import Config
+    from trance.flow import Flow, Step
+    from trance.server import app as app_module
+    from trance.session import ChatMessage
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    made = client.post("/api/sessions", json={"name": "worms"}).json()
+    sid, project = made["id"], _pl.Path(made["project_dir"])
+
+    session = app.state.store.get(sid)
+    step = Step(id="st_one", role="developer", task="build it", status="done")
+    session.flow = Flow(steps=[step])
+    session.chat = [
+        ChatMessage(role="user", content="build a worms game"),
+        ChatMessage(role="orchestrator", content="plan: worms",
+                    base="", steps=["st_one"], id="m_first"),
+    ]
+    # The engine creates the repo when the run starts — after the proposal.
+    project.mkdir(parents=True, exist_ok=True)
+    vcs.ensure_repo(project)
+    (project / "game.js").write_text("v1\n", encoding="utf8")
+    vcs.commit_all(project, "developer: build it [SUCCESS]")
+
+    items = client.get(f"/api/sessions/{sid}/requests").json()["requests"]
+    assert [i["request"] for i in items] == ["build a worms game"]
+    assert items[0]["commit_count"] == 1
+    assert items[0]["file_count"] >= 1                  # from the start of history
+
+    detail = client.get(f"/api/sessions/{sid}/messages/m_first/commits").json()
+    assert [c["subject"] for c in detail["commits"]] \
+        == ["trance: developer: build it [SUCCESS]"]
+    assert "game.js" in detail["files"]

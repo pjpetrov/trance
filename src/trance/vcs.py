@@ -332,10 +332,14 @@ def commits_between(project: Path, before: str, after: str = "HEAD") -> list[dic
     each agent actually did — which is a more useful answer to "what was fixed"
     than one combined diff, and the only way to see the order it happened in.
     """
-    if not before:
+    if not after:
         return []
+    # No `before` is not "no answer" — it is the start of history: the first
+    # request of a brand-new project proposes before any repo exists, and its
+    # iteration was invisible forever because of this guard.
+    span = f"{before}..{after}" if before else after
     code, out = _run(project, "log", "--reverse", "--no-merges",
-                     f"{before}..{after}", "--pretty=format:%H%x1f%s%x1f%ar%x1f%an",
+                     span, "--pretty=format:%H%x1f%s%x1f%ar%x1f%an",
                      "--shortstat")
     if code != 0 or not out:
         return []
@@ -388,9 +392,15 @@ def diff(project: Path, before: str, after: str = "HEAD", path: str = "") -> str
     return out if code == 0 else ""
 
 
+#: git's well-known hash of the empty tree — the "before" of a repo's first
+#: commit, so a range with no left edge can still be diffed.
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
 def changed_between(project: Path, before: str, after: str = "HEAD") -> list[str]:
-    """The files that differ between two commits."""
-    if not before:
+    """The files that differ between two commits; from birth when `before`
+    is empty."""
+    if not after:
         return []
-    code, out = _run(project, "diff", "--name-only", f"{before}..{after}")
+    code, out = _run(project, "diff", "--name-only", f"{before or EMPTY_TREE}..{after}")
     return [line.strip() for line in out.splitlines() if line.strip()] if code == 0 else []
