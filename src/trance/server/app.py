@@ -79,23 +79,34 @@ def engine_alive(session) -> bool:
 
 
 def _adopt_runs_state(state_dir: Path, runs_dir: Path) -> None:
-    """Copy the machine-global files into the workspace's own .trance, once.
+    """Copy the machine-global files into the workspace's own .trance — whole
+    once, models forever after.
 
     Models, the Default scope and the usage ledger used to live in runs/ —
-    one set for the whole machine, which is why switching workspaces changed
-    the session list and nothing else. A workspace with no state of its own
-    inherits what the machine had, so the move is invisible on the setup that
-    already exists. Copies rather than moves: a second workspace adopting
-    later must find the legacy files still there.
+    one set for the whole machine. The *first* workspace to adopt inherits
+    all of it, so the move is invisible on the setup that already exists;
+    from then on a marker in runs/ says the legacy state has a home, and a
+    new workspace is what it should be — a fresh install — except for the
+    models, which describe the machine's own hardware and endpoints and are
+    the one thing nobody wants to retype. Found live: workspace number three
+    greeted its user with the loop library of workspace number one.
     """
     if not runs_dir.is_dir() or state_dir.resolve() == runs_dir.resolve():
         return
-    for name in ("providers.json", "agents.json", "loops.json",
-                 "commands.json", "settings.json", "usage.json"):
+    marker = runs_dir / ".adopted"
+    names = (("providers.json",) if marker.exists()
+             else ("providers.json", "agents.json", "loops.json",
+                   "commands.json", "settings.json", "usage.json"))
+    for name in names:
         source, target = runs_dir / name, state_dir / name
         if source.exists() and not target.exists():
             state_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+    if not marker.exists():
+        try:
+            marker.write_text(str(state_dir), encoding="utf8")
+        except OSError:
+            pass
 
 
 def create_app(config: Config | None = None, sessions_dir: Path | None = None) -> FastAPI:

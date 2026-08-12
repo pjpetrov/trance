@@ -485,3 +485,44 @@ def test_an_unedited_builtin_in_a_project_tracks_shipped(tmp_path):
     assert "move_mouse" in tracked.system_prompt          # improvements arrive
     assert tracked.preset == "local-qwen"                 # wiring is kept
     assert again.roles.get("tester").system_prompt == "my own tester prompt"
+
+
+def test_only_the_first_workspace_inherits_everything(tmp_path):
+    """Found live: workspace three greeted its user with the loop library of
+    workspace one. Full adoption happens once; after that a new workspace is
+    a fresh install, except the models — the machine's own hardware and
+    endpoints, the one thing nobody wants to retype."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    runs = tmp_path / "runs"
+    runs.mkdir(parents=True)
+    (runs / "providers.json").write_text(json.dumps({"providers": [
+        {"name": "local-qwen", "kind": "llamacpp", "model": "qwen"}], "presets": []}))
+    (runs / "loops.json").write_text(json.dumps({"loops": [{
+        "name": "test-and-fix-frontend", "description": "old", "prompt": "",
+        "start": "n1", "max_steps": 4,
+        "nodes": [{"id": "n1", "role": "tester", "focus": "", "check": None,
+                   "on": {"SUCCESS": [{"target": "exit"}]}}]}]}))
+
+    def serve(ws):
+        config = Config.load(tmp_path / "none.toml")
+        config.runs_dir = str(runs)
+        config.workspace = str(ws)
+        ws.mkdir(exist_ok=True)
+        return TestClient(app_module.create_app(config, tmp_path / "sessions"))
+
+    serve(tmp_path / "first")                  # inherits everything, plants the marker
+    first = json.loads((tmp_path / "first" / ".trance" / "loops.json").read_text())
+    assert "test-and-fix-frontend" in {l["name"] for l in first["loops"]}
+
+    serve(tmp_path / "third")                  # fresh install, plus the models
+    third = json.loads((tmp_path / "third" / ".trance" / "loops.json").read_text())
+    assert {l["name"] for l in third["loops"]} == {"test-and-fix",
+                                                  "visual-test-and-fix"}
+    assert (tmp_path / "third" / ".trance" / "providers.json").exists()
+    assert not (tmp_path / "third" / ".trance" / "usage.json").exists()
