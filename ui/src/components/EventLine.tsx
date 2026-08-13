@@ -157,6 +157,14 @@ function describe(event: TranceEvent, sessionId: string, live: boolean): Rendere
             : <span className="text-fg/80">{clip(payload.response_text, 90)}</span>}
           <span className="ml-2 text-muted">
             {shortModel(payload.model, payload.preset)}
+            {Boolean(payload.duration_ms && payload.usage?.completion_tokens) && (
+              <span
+                title="Output tokens per second of this call, prompt processing included"
+              >{" · "}
+                {((payload.usage!.completion_tokens!
+                   / (payload.duration_ms! / 1000))).toFixed(1)} tok/s
+              </span>
+            )}
           </span>
         </span>
       ),

@@ -582,6 +582,9 @@ export interface ModelSpend {
    *  so without this split its raw input count reads 20x every other backend
    *  while most of it is the same tokens over and over. */
   cache_read_tokens?: number;
+  /** Generation rate over the calls that reported a duration — what the
+   *  machine sustains end to end, prompt processing included. 0 = untimed. */
+  tokens_per_second?: number;
   total: number;
 }
 

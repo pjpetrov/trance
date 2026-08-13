@@ -230,6 +230,9 @@ function Spend(
                 <th className="px-2 py-1 text-right font-medium">in</th>
                 <th className="px-2 py-1 text-right font-medium">out</th>
                 <th className="px-2 py-1 text-right font-medium">in / call</th>
+                <th className="px-2 py-1 text-right font-medium"
+                    title="Output tokens per second of call time, prompt processing included — over the calls that reported a duration">
+                  tok/s</th>
                 <th className="px-2 py-1 text-right font-medium">total</th>
               </tr>
             </thead>
@@ -291,6 +294,9 @@ function Row(
       <td className={cn("px-2 py-1.5 text-right tabular-nums",
                         perCall > 30_000 ? "text-warn" : "text-muted")}>
         {tokens(perCall)}
+      </td>
+      <td className="px-2 py-1.5 text-right tabular-nums text-muted">
+        {row.tokens_per_second ? row.tokens_per_second.toFixed(1) : "—"}
       </td>
       <td className="px-2 py-1.5 text-right tabular-nums">{tokens(row.total)}</td>
     </tr>

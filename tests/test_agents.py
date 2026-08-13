@@ -6896,7 +6896,9 @@ def test_usage_is_counted_per_model_definition(tmp_path):
     run = ledger.for_session("s1")
     assert [r["model"] for r in run] == ["local", "Sonnet"]      # biggest first
     assert run[1] == {"model": "Sonnet", "calls": 2, "input_tokens": 2000,
-                      "output_tokens": 450, "cache_read_tokens": 0, "total": 2450}
+                      "output_tokens": 450, "cache_read_tokens": 0, "total": 2450,
+                      "duration_ms": 0, "timed_output_tokens": 0,
+                      "tokens_per_second": 0.0}
 
     # Lifetime spans sessions; the run does not.
     assert ledger.lifetime()["Sonnet"]["total"] == 2460
@@ -6912,7 +6914,9 @@ def test_both_spellings_of_usage_are_understood(tmp_path):
     ledger.record("s", "a", {"input_tokens": 30, "output_tokens": 4})
     assert ledger.lifetime()["a"] == {"calls": 2, "input_tokens": 40,
                                       "output_tokens": 6, "cache_read_tokens": 0,
-                                      "total": 46}
+                                      "total": 46, "duration_ms": 0,
+                                      "timed_output_tokens": 0,
+                                      "tokens_per_second": 0.0}
 
     # A call that reported nothing still happened.
     ledger.record("s", "a", {})
@@ -11862,3 +11866,22 @@ def test_a_loop_resets_down_the_same_chain_agents_do(tmp_path):
     # A custom loop has no original but its own.
     nothing = client.post(f"/api/loops/my-invention/reset?session={sid}")
     assert nothing.status_code == 404
+
+
+def test_the_ledger_measures_tokens_per_second_honestly(tmp_path):
+    """Only calls that reported a duration count toward the rate, and the
+    numerator is kept alongside — mixing timed and untimed calls would make
+    tokens-per-second a fiction. Survives a reload."""
+    from trance.usage import Spend, UsageLedger
+
+    spend = Spend()
+    spend.add({"prompt_tokens": 100, "completion_tokens": 50}, duration_ms=2000)
+    spend.add({"prompt_tokens": 100, "completion_tokens": 30}, duration_ms=1000)
+    spend.add({"prompt_tokens": 9, "completion_tokens": 9})     # untimed
+    assert spend.tokens_per_second == 26.7                      # 80 over 3s
+    assert spend.output_tokens == 89                            # all still counted
+
+    ledger = UsageLedger(tmp_path / "usage.json")
+    ledger.record("s1", "local-qwen", {"completion_tokens": 40}, duration_ms=2000)
+    again = UsageLedger(tmp_path / "usage.json")
+    assert again.lifetime()["local-qwen"]["tokens_per_second"] == 20.0

@@ -34,23 +34,42 @@ class Spend:
     #: raw input count runs 20x every other backend while most of it is the
     #: same tokens read back over and over.
     cache_read_tokens: int = 0
+    #: Wall-clock spent inside the calls, for tokens-per-second. Only calls
+    #: that reported a duration count toward it, and `timed_output_tokens`
+    #: keeps the matching numerator — mixing timed and untimed calls would
+    #: make the rate a fiction.
+    duration_ms: int = 0
+    timed_output_tokens: int = 0
 
     @property
     def total(self) -> int:
         return self.input_tokens + self.output_tokens
 
-    def add(self, usage: dict) -> None:
+    @property
+    def tokens_per_second(self) -> float:
+        """Generation rate across the timed calls: what the machine actually
+        sustains end to end, prompt processing included."""
+        if self.duration_ms <= 0:
+            return 0.0
+        return round(self.timed_output_tokens / (self.duration_ms / 1000), 1)
+
+    def add(self, usage: dict, duration_ms: int = 0) -> None:
         self.calls += 1
         # Providers disagree on the names; both spellings are common.
         self.input_tokens += int(usage.get("prompt_tokens")
                                  or usage.get("input_tokens") or 0)
-        self.output_tokens += int(usage.get("completion_tokens")
-                                  or usage.get("output_tokens") or 0)
+        out = int(usage.get("completion_tokens")
+                  or usage.get("output_tokens") or 0)
+        self.output_tokens += out
         self.cache_read_tokens += int(usage.get("cache_read_tokens")
                                       or usage.get("cache_read_input_tokens") or 0)
+        if duration_ms > 0:
+            self.duration_ms += int(duration_ms)
+            self.timed_output_tokens += out
 
     def to_dict(self) -> dict:
-        return {**asdict(self), "total": self.total}
+        return {**asdict(self), "total": self.total,
+                "tokens_per_second": self.tokens_per_second}
 
 
 class UsageLedger:
@@ -65,14 +84,15 @@ class UsageLedger:
 
     # ------------------------------------------------------------ recording
 
-    def record(self, session_id: str, name: str, usage: dict) -> None:
+    def record(self, session_id: str, name: str, usage: dict,
+               duration_ms: int = 0) -> None:
         """Count one model call. A call with no usage reported still counts."""
         if not name:
             return
         with self._lock:
             session = self._by_session.setdefault(session_id or "", {})
-            session.setdefault(name, Spend()).add(usage or {})
-            self._lifetime.setdefault(name, Spend()).add(usage or {})
+            session.setdefault(name, Spend()).add(usage or {}, duration_ms)
+            self._lifetime.setdefault(name, Spend()).add(usage or {}, duration_ms)
         self._save()
 
     def on_event(self, event) -> None:
@@ -83,7 +103,9 @@ class UsageLedger:
         # The model *definition* is the useful key — "Sonnet" is what you chose
         # and what you would delete; two definitions can share a model id.
         name = payload.get("preset") or payload.get("model") or ""
-        self.record(getattr(event, "session_id", ""), name, payload.get("usage") or {})
+        self.record(getattr(event, "session_id", ""), name,
+                    payload.get("usage") or {},
+                    int(payload.get("duration_ms") or 0))
 
     # ------------------------------------------------------------- reading
 
@@ -112,16 +134,20 @@ class UsageLedger:
             data = json.loads(self.path.read_text(encoding="utf8"))
         except (OSError, ValueError):
             return
+        def spend_of(row: dict) -> Spend:
+            return Spend(
+                calls=int(row.get("calls") or 0),
+                input_tokens=int(row.get("input_tokens") or 0),
+                output_tokens=int(row.get("output_tokens") or 0),
+                cache_read_tokens=int(row.get("cache_read_tokens") or 0),
+                duration_ms=int(row.get("duration_ms") or 0),
+                timed_output_tokens=int(row.get("timed_output_tokens") or 0))
+
         for name, row in (data.get("lifetime") or {}).items():
-            self._lifetime[name] = Spend(calls=int(row.get("calls") or 0),
-                                         input_tokens=int(row.get("input_tokens") or 0),
-                                         output_tokens=int(row.get("output_tokens") or 0))
+            self._lifetime[name] = spend_of(row)
         for session, models in (data.get("sessions") or {}).items():
             self._by_session[session] = {
-                name: Spend(calls=int(row.get("calls") or 0),
-                            input_tokens=int(row.get("input_tokens") or 0),
-                            output_tokens=int(row.get("output_tokens") or 0))
-                for name, row in models.items()}
+                name: spend_of(row) for name, row in (models or {}).items()}
 
     def _save(self) -> None:
         if not self.path:
