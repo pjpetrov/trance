@@ -407,8 +407,11 @@ def default_loops() -> list[Loop]:
         id="n_look", role="visual-tester", check=None,
         focus=("Open the app in the browser, get past any title screen, and judge what "
                "is actually on screen against the task. Do not change any code."),
+        # Six rounds, not three: measured on real games, a visual defect
+        # routinely takes more fix-look passes than a failing test does — the
+        # evidence is a picture, and pictures are argued with longer.
         on={SUCCESS: Edge(target=EXIT_LOOP),
-            FAILED: Edge(target="n_repair", max_visits=3)},
+            FAILED: Edge(target="n_repair", max_visits=6)},
     )
     repair = LoopNode(
         id="n_repair", role="developer",
@@ -420,7 +423,7 @@ def default_loops() -> list[Loop]:
                "may be on either side — the server not sending, the client not "
                "drawing, the seam between them — so find where it actually is before "
                "fixing anything. Then it looks again."),
-        on={SUCCESS: Edge(target="n_look", max_visits=3),
+        on={SUCCESS: Edge(target="n_look", max_visits=6),
             FAILED: Edge(target=FAIL_LOOP)},
     )
     return [
@@ -439,6 +442,7 @@ def default_loops() -> list[Loop]:
                     "verdict comes from what was actually on screen — a screenshot and "
                     "the measurements around it — not from anyone's description of "
                     "what the code should do."),
-            nodes=[look, repair], start="n_look", max_steps=8,
+            # Room for the look/repair pairs the six visits allow.
+            nodes=[look, repair], start="n_look", max_steps=14,
         ),
     ]
