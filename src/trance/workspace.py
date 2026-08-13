@@ -148,19 +148,31 @@ def seed(target: Path, source: Path | None) -> bool:
 
 
 class ProjectStores:
-    """One project's agents, loops, allowlists and settings."""
+    """One project's agents, loops, allowlists and settings.
 
-    def __init__(self, project: Path, defaults: Path | None = None):
+    Seeded from two places, deliberately: agents, loops and allowlists come
+    from the *workspace's* own .trance — each workspace tunes what its
+    projects start from — while the settings seed comes from the machine's
+    system dir, because they are global knobs, not workspace taste.
+    """
+
+    def __init__(self, project: Path, defaults: Path | None = None,
+                 settings_defaults: Path | None = None):
         self.project = Path(project)
         self.dir = self.project / STORE_DIR
         self.dir.mkdir(parents=True, exist_ok=True)
 
         # Seeded before each store opens, so a store that fills in defaults for
         # a missing file never gets the chance to — the copy is already there.
-        self.seeded = {
-            name: seed(self.dir / name, (defaults / name) if defaults else None)
-            for name in (AGENTS, LOOPS, COMMANDS, SETTINGS)
+        sources = {
+            AGENTS: (defaults / AGENTS) if defaults else None,
+            LOOPS: (defaults / LOOPS) if defaults else None,
+            COMMANDS: (defaults / COMMANDS) if defaults else None,
+            SETTINGS: ((settings_defaults / SETTINGS) if settings_defaults
+                       else (defaults / SETTINGS) if defaults else None),
         }
+        self.seeded = {name: seed(self.dir / name, source)
+                       for name, source in sources.items()}
 
         # Overlay, the same contract as the Default scope: a built-in whose
         # definition was never edited *here* keeps tracking trance's shipped
@@ -193,7 +205,7 @@ class DefaultStores:
     time in the fifth.
     """
 
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, settings_dir: Path | None = None):
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.project = self.dir
@@ -205,7 +217,8 @@ class DefaultStores:
         self.roles = RoleStore(self.dir / AGENTS, overlay=True)
         self.loops = LoopStore(self.dir / LOOPS)
         self.commands = CommandStore(self.dir / COMMANDS)
-        self.settings = SettingsStore(self.dir / SETTINGS)
+        # Settings are the machine's, not the workspace's: one system file.
+        self.settings = SettingsStore((settings_dir or self.dir) / SETTINGS)
 
     @property
     def migrated(self) -> bool:
@@ -220,15 +233,18 @@ class Workspace:
     disagree about what the agents are.
     """
 
-    def __init__(self, defaults: Path | None = None):
+    def __init__(self, defaults: Path | None = None,
+                 settings_defaults: Path | None = None):
         self.defaults = Path(defaults) if defaults else None
+        self.settings_defaults = (Path(settings_defaults)
+                                  if settings_defaults else None)
         self._open: dict[Path, ProjectStores] = {}
 
     def stores_for(self, project: Path | str) -> ProjectStores:
         key = Path(project).expanduser().resolve()
         held = self._open.get(key)
         if held is None:
-            held = ProjectStores(key, self.defaults)
+            held = ProjectStores(key, self.defaults, self.settings_defaults)
             self._open[key] = held
         return held
 

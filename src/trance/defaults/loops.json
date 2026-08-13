@@ -50,15 +50,15 @@
             ],
             "CHECK_FAILED": [
               {
-                "target": "n_test",
+                "target": "n_fix",
                 "max_visits": 6,
                 "backup": false
               }
             ],
             "FAILED": [
               {
-                "target": "fail",
-                "max_visits": 3,
+                "target": "n_fix",
+                "max_visits": 6,
                 "backup": false
               }
             ]
@@ -120,15 +120,15 @@
             ],
             "CHECK_FAILED": [
               {
-                "target": "n_look",
+                "target": "n_repair",
                 "max_visits": 6,
                 "backup": false
               }
             ],
             "FAILED": [
               {
-                "target": "fail",
-                "max_visits": 3,
+                "target": "n_repair",
+                "max_visits": 6,
                 "backup": false
               }
             ]

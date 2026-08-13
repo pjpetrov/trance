@@ -358,15 +358,16 @@ def test_editing_the_defaults_leaves_existing_projects_alone(tmp_path):
 
 
 def test_the_defaults_are_a_real_place_on_disk(tmp_path):
-    """In the system dir — the machine-wide home of models, settings and the
-    Default scope every project is provisioned from."""
+    """In the workspace's own .trance — each workspace tunes what its
+    projects are provisioned from."""
     import json as _json
 
     client, config = _serve(tmp_path)
     client.put("/api/agents/developer", json={"tool_rounds": 44},
                params={"session": "defaults"})
 
-    stored = _json.loads((config.system_root / "agents.json").read_text())
+    stored = _json.loads(
+        (Path(config.workspace) / ".trance" / "agents.json").read_text())
     role = next(a for a in stored["agents"] if a["name"] == "developer")
     assert role["tool_rounds"] == 44
 
@@ -406,11 +407,12 @@ def _layered(tmp_path, ws):
     return TestClient(app_module.create_app(config, tmp_path / "sessions"))
 
 
-def test_models_and_defaults_are_the_machines_not_the_workspaces(tmp_path):
-    """One system dir per machine: every workspace sees the same models and
-    the same Default scope, and a workspace directory holds nothing but its
-    projects. Per-workspace copies were how workspace three greeted its user
-    with the loop library of workspace one."""
+def test_models_are_the_machines_and_the_library_is_the_workspaces(tmp_path):
+    """Models and settings are system-wide — configure the endpoint once.
+    The agents, loops and allowlists are the workspace's own: tuning one
+    workspace's developer never leaks into another, and a fresh workspace
+    starts from shipped — the only arrangement under which no workspace can
+    inherit another's library."""
     first = _layered(tmp_path, tmp_path / "ws_one")
     first.put("/api/presets/local-qwen",
               json={"kind": "llamacpp", "model": "qwen-27b"})
@@ -418,14 +420,16 @@ def test_models_and_defaults_are_the_machines_not_the_workspaces(tmp_path):
               params={"session": "defaults"})
 
     other = _layered(tmp_path, tmp_path / "ws_two")
+    # The model reached the second workspace; the agent tuning did not.
     assert "local-qwen" in {p["name"] for p in
                             other.get("/api/presets").json()["presets"]}
     dev = next(a for a in other.get("/api/agents",
                                     params={"session": "defaults"}).json()["agents"]
                if a["name"] == "developer")
-    assert dev["tool_rounds"] == 44
+    assert dev["tool_rounds"] != 44
     assert (tmp_path / "system" / "providers.json").exists()
-    assert not (tmp_path / "ws_one" / ".trance").exists()   # workspaces hold no state
+    assert (tmp_path / "ws_one" / ".trance" / "agents.json").exists()
+    assert not (tmp_path / "system" / "agents.json").exists()
 
 
 def test_a_new_project_is_provisioned_from_the_system_defaults(tmp_path):

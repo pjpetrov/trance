@@ -79,19 +79,16 @@ def engine_alive(session) -> bool:
 
 
 def _adopt_runs_state(state_dir: Path, runs_dir: Path) -> None:
-    """Copy the legacy runs/ files into the system dir, once.
+    """Copy the legacy machine-wide runs/ files into the system dir, once.
 
-    Three layers now, each owning its own kind of state: the *system*
-    (models, settings, the Default scope, the ledger — one set per machine),
-    the *workspace* (nothing but its projects and their sessions), and the
-    *project* (its own agents, loops and allowlists, provisioned from the
-    system defaults). The per-workspace copies this replaces were how
-    workspace three greeted its user with the loop library of workspace one.
+    Only what is genuinely the machine's: models, settings, the ledger. The
+    agents, loops and allowlists live with the workspace whose projects they
+    provision — a fresh workspace starts from shipped, which is the only
+    arrangement under which no workspace can inherit another's library.
     """
     if not runs_dir.is_dir() or state_dir.resolve() == runs_dir.resolve():
         return
-    for name in ("providers.json", "agents.json", "loops.json",
-                 "commands.json", "settings.json", "usage.json"):
+    for name in ("providers.json", "settings.json", "usage.json"):
         source, target = runs_dir / name, state_dir / name
         if source.exists() and not target.exists():
             state_dir.mkdir(parents=True, exist_ok=True)
@@ -100,9 +97,14 @@ def _adopt_runs_state(state_dir: Path, runs_dir: Path) -> None:
 
 def create_app(config: Config | None = None, sessions_dir: Path | None = None) -> FastAPI:
     config = config or Config.load()
-    # The machine's own state — models, settings, the Default scope, the
-    # ledger — at its system home. A workspace holds only its projects.
+    # Three scopes of state. The machine's (system_root): models, settings,
+    # the ledger. The workspace's own .trance: the agents, loops and
+    # allowlists its projects are provisioned from — per workspace, so a
+    # fresh workspace starts from shipped, and tuning one never leaks into
+    # another. The project's .trance: its own copies of everything.
     state_dir = config.system_root
+    scope_dir = (config.workspace_root / STORE_DIR if config.workspace
+                 else state_dir)
     _adopt_runs_state(state_dir, Path(config.runs_dir))
     store = SessionStore(sessions_dir or Path(config.runs_dir) / "sessions",
                          workspace=config.workspace_root)
@@ -113,11 +115,11 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     # The workspace-wide files, addressable so they can be edited. Every new
     # project is a copy of these; they are not what a run reads — each project
     # keeps its own under .trance/.
-    defaults_stores = DefaultStores(state_dir)
+    defaults_stores = DefaultStores(scope_dir, settings_dir=state_dir)
     roles = defaults_stores.roles
     commands = defaults_stores.commands
     loops = defaults_stores.loops
-    workspace = Workspace(defaults=state_dir)
+    workspace = Workspace(defaults=scope_dir, settings_defaults=state_dir)
     set_command_policy(commands.policy)
     set_command_lists(commands.lists)
 
