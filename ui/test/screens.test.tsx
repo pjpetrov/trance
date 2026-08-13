@@ -212,7 +212,7 @@ describe("editing what new projects start from", () => {
 
     renderWithQuery(<AgentsEditor />);
     await user.type(await screen.findByDisplayValue("Frontend engineer"), "!");
-    await user.click(screen.getByRole("button", { name: "Apply as default" }));
+    await user.click(screen.getByRole("button", { name: "Save as default" }));
 
     await waitFor(() => expect(server.to("/api/agents/frontend")).toHaveLength(2));
     const sent = server.to("/api/agents/frontend");
@@ -231,7 +231,7 @@ describe("editing what new projects start from", () => {
 
     renderWithQuery(<AgentsEditor />);
     await user.click(await screen.findByRole("button", { name: "Default" }));
-    expect(screen.queryByRole("button", { name: "Apply as default" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save as default" })).toBeNull();
   });
 });
 

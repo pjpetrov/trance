@@ -150,7 +150,7 @@ export function LibraryFooter(
         <Button
           onClick={onApplyDefault} disabled={!dirty} busy={busy}
           title="Apply to this session and to what new sessions start from"
-        >Apply as default</Button>
+        >Save as default</Button>
       )}
       <Button variant="primary" onClick={onApply} disabled={!dirty} busy={busy}>
         Apply{dirty ? ` (${changeCount})` : ""}
