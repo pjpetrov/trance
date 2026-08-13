@@ -2563,8 +2563,9 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         bus.emit("flow_updated", session_id,
                  payload={"flow": session.flow.to_dict(), **outcome})
         touch(session)
-        if outcome["requeued"]:
-            ensure_running(session)
+        # Deliberately no engine start here, however many steps were
+        # re-queued: editing the plan is writing, and writing must never run
+        # anything. The Run button — and only it — starts work.
         return {**session.flow.to_dict(), **outcome, "missing": missing,
                 "team": [r.to_dict() for r in session.team]}
 

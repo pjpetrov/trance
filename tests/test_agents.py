@@ -11660,3 +11660,45 @@ def test_a_superseded_proposal_is_not_a_second_start(tmp_path):
     items = client.get(f"/api/sessions/{sid}/requests").json()["requests"]
     assert [i["request"] for i in items] == ["propose the plan now"]
     assert items[0]["commit_count"] == 1
+
+
+def test_editing_the_plan_never_starts_the_run(tmp_path, monkeypatch):
+    """Editing is writing, and writing must never run anything. Saving a flow
+    that re-queued a finished step used to kick the engine off on the spot —
+    an automatic run from a keystroke's save."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    started = []
+
+    class FakeEngine:
+        def __init__(self, session, *a, **k):
+            self.session = session
+
+        def start(self):
+            started.append(self.session.id)
+            self.session.status = "running"
+
+    monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+
+    client.put(f"/api/sessions/{sid}/flow",
+               json={"steps": [{"role": "developer", "task": "build it"}]})
+    session = app.state.store.get(sid)
+    step = session.flow.steps[0]
+    step.status = "done"                  # editing this one re-queues it
+
+    out = client.put(f"/api/sessions/{sid}/flow", json={"steps": [
+        {"id": step.id, "role": "developer", "task": "build it differently"}]})
+    assert out.json()["requeued"] == [step.id]
+    assert started == []                  # nothing ran from a save
+
+    client.post(f"/api/sessions/{sid}/start")
+    assert started == [sid]               # the Run button, and only it
