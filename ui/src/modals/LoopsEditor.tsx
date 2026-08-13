@@ -65,7 +65,7 @@ export function LoopsEditor() {
   const sessionId = idFor(scope, session);
   const loops = useLoops(sessionId);
   const agents = useAgents(sessionId);
-  const { save, remove } = useLoopMutations(sessionId);
+  const { save, remove, reset } = useLoopMutations(sessionId);
   const template = useLoopMutations(DEFAULTS);
   const [applying, setApplying] = useState(false);
 
@@ -324,6 +324,21 @@ export function LoopsEditor() {
               ))}
             </div>
 
+            <Button
+              size="sm" busy={reset.isPending}
+              title={scope === "project"
+                ? "Take the Default scope's current wiring for this loop"
+                : "Take trance's shipped wiring for this loop"}
+              onClick={() => reset.mutateAsync(draft.name)
+                .then(() => {
+                  // The server has already written it; anything staged here
+                  // would only put the old wiring back on Apply.
+                  library.forget(draft.name);
+                  toast.ok(`${draft.name} is back to its ${
+                    scope === "project" ? "default" : "shipped"} wiring.`);
+                })
+                .catch((error) => toast.err(String(error)))}
+            >{scope === "project" ? "Reset to default" : "Reset to shipped"}</Button>
             <Button size="sm" variant="danger" onClick={() => library.remove(draft.name)}>
               Delete this loop
             </Button>

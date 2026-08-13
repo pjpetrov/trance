@@ -204,6 +204,10 @@ export function useLoopMutations(sessionId: string) {
     remove: useMutation({ mutationFn: ({ name, force = false }: { name: string; force?: boolean }) =>
         api.deleteLoop(sessionId, name, force),
                           onSuccess: settle }),
+    reset: useMutation({
+      mutationFn: (name: string) => api.resetLoop(sessionId, name),
+      onSuccess: settle,
+    }),
   };
 }
 

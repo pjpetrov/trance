@@ -2032,6 +2032,18 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         bus.emit("loops_updated", "system", payload={"name": saved.name})
         return saved.to_dict()
 
+    @app.post("/api/loops/{name}/reset")
+    def reset_loop(name: str, session: str = ""):
+        """Restore a loop's definition to its default — the agents' chain,
+        for loops: a project resets to the Default scope's copy, the Default
+        scope resets to shipped."""
+        held = stores_q(session).loops
+        source = None if session == DEFAULTS else defaults_stores.loops.get(name)
+        loop = held.reset(name, source=source)
+        if loop is None:
+            raise HTTPException(404, f"{name!r} has no default to reset to")
+        return loop.to_dict()
+
     @app.delete("/api/loops/{name}")
     def delete_loop(name: str, session: str = "", force: bool = False):
         held = stores_q(session)

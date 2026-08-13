@@ -128,6 +128,9 @@ export const api = {
   loops: (sid: string) => request<{ loops: Loop[] }>(`/api/loops${forProject(sid)}`),
   saveLoop: (sid: string, name: string, body: Partial<Loop>) =>
     request<Loop>(`/api/loops/${id(name)}${forProject(sid)}`, { method: "PUT", body }),
+  resetLoop: (sid: string, name: string) =>
+    request<Loop>(`/api/loops/${id(name)}/reset${forProject(sid)}`,
+      { method: "POST" }),
   deleteLoop: (sid: string, name: string, force = false) =>
     request<void>(`/api/loops/${id(name)}${forProject(sid)}`
       + (force ? "&force=true" : ""), { method: "DELETE" }),

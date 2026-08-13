@@ -376,6 +376,25 @@ class LoopStore:
             self._save()
         return loop
 
+    def reset(self, name: str, source: "Loop | None" = None) -> "Loop | None":
+        """Restore a loop to its original — the same chain agents walk.
+
+        `source` is the Default scope's copy when a project resets; else the
+        shipped loop of that name. None when there is nothing to restore to —
+        a custom loop with no default has no original but its own.
+        """
+        import copy as _copy
+
+        original = source or next(
+            (loop for loop in default_loops() if loop.name == name), None)
+        if original is None:
+            return None
+        with self._lock:
+            fresh = _copy.deepcopy(original)
+            self._loops[name] = fresh
+            self._save()
+        return fresh
+
     def delete(self, name: str) -> bool:
         with self._lock:
             removed = self._loops.pop(name, None) is not None

@@ -11825,3 +11825,40 @@ def test_the_shipped_defaults_are_data_the_code_loads():
                                                 "visual-test-and-fix"]
     assert "pytest" in ALLOWED_COMMANDS and "timeout" in ALLOWED_COMMANDS
     assert _shipped_settings().git_commits is True
+
+
+def test_a_loop_resets_down_the_same_chain_agents_do(tmp_path):
+    """Loops had no way back: an edited visual loop stayed edited forever,
+    while the agent beside it had Reset. Same chain now — a project resets to
+    the Default scope's copy, the Default scope resets to shipped, and a
+    custom loop with no original says so."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+
+    # Break the project's copy of the visual loop.
+    loops = client.get(f"/api/loops?session={sid}").json()["loops"]
+    visual = next(l for l in loops if l["name"] == "visual-test-and-fix")
+    visual["max_steps"] = 3
+    client.put(f"/api/loops/visual-test-and-fix?session={sid}", json=visual)
+
+    out = client.post(f"/api/loops/visual-test-and-fix/reset?session={sid}")
+    assert out.status_code == 200
+    assert out.json()["max_steps"] == 14              # the default's copy again
+
+    # The Default scope resets to shipped the same way.
+    shipped = client.post("/api/loops/visual-test-and-fix/reset?session=defaults")
+    assert shipped.status_code == 200
+    assert shipped.json()["max_steps"] == 14
+
+    # A custom loop has no original but its own.
+    nothing = client.post(f"/api/loops/my-invention/reset?session={sid}")
+    assert nothing.status_code == 404
