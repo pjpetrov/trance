@@ -90,7 +90,8 @@ export function StatsScreen() {
         </Panel>
 
         <Effort agents={session.data?.agent_seconds ?? {}} activeAgent={active?.agent}
-                accruing={accruing} />
+                accruing={accruing}
+                runSeconds={session.data?.run_seconds ?? 0} />
 
         <Spend
           title="By model, this session"
@@ -121,8 +122,9 @@ export function StatsScreen() {
  *  run; this is the difference between "7h 53m" and knowing the visual tester
  *  ate five of them. */
 function Effort(
-  { agents, activeAgent, accruing = 0 }:
-  { agents: Record<string, number>; activeAgent?: string; accruing?: number },
+  { agents, activeAgent, accruing = 0, runSeconds = 0 }:
+  { agents: Record<string, number>; activeAgent?: string; accruing?: number;
+    runSeconds?: number },
 ) {
   // The active agent's row creeps with the clock: the engine will charge it
   // this time when the call ends, and a frozen row until then reads as stuck.
@@ -134,6 +136,13 @@ function Effort(
     .filter(([, seconds]) => seconds > 0)
     .sort(([, a], [, b]) => b - a);
   if (!rows.length) return null;
+  const charged = rows.reduce((sum, [, seconds]) => sum + seconds, 0);
+  // What the session clock counted that no agent was charged for: indexing,
+  // curation, orchestration — and, on sessions older than per-agent charging,
+  // everything that ran before the ledger existed. Shown, not hidden: a chart
+  // whose rows sum to a sixth of the headline number is a chart that lies.
+  const unattributed = Math.max(0, runSeconds - charged);
+  if (unattributed > 60) rows.push(["everything else", unattributed]);
   const most = Math.max(...rows.map(([, seconds]) => seconds));
   const total = rows.reduce((sum, [, seconds]) => sum + seconds, 0);
 
@@ -160,7 +169,15 @@ function Effort(
                         <Dot tone="accent" pulse />
                       </span>
                     )}
-                    {name}
+                    {name === "everything else" ? (
+                      <span
+                        className="text-muted"
+                        title={"Session time no agent was charged for: indexing, "
+                          + "context curation, orchestration between steps — and, "
+                          + "on sessions older than per-agent time tracking, all "
+                          + "the work from before it existed"}
+                      >everything else</span>
+                    ) : name}
                   </span>
                 </td>
                 <td className="px-2 py-1.5 text-right tabular-nums">{duration(seconds)}</td>
