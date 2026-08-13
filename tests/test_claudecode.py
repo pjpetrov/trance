@@ -608,3 +608,31 @@ def test_a_delegated_step_gets_a_whole_steps_worth_of_time(tmp_path, monkeypatch
     # It says what it managed, not only that it stopped.
     assert "file(s)" in said and "checkpoint" in said
     assert "re-run the step" in said
+
+
+def test_the_prompt_is_on_the_launch_event_not_only_the_landing(tmp_path, monkeypatch):
+    """A delegated run answers nothing for minutes to an hour, and the prompt
+    used to be recorded only when it came back — so for the whole of the run
+    there was nothing to inspect."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    fake_delegate(monkeypatch, "done\n\nOUTCOME: SUCCESS")
+
+    bus = EventBus()
+    seen = []
+    bus.subscribe_sync(seen.append)
+    run_agent(role=BUILTIN_ROLES["developer"], task="wire the seam", project=project,
+              config=ModelConfig(kind="claudecode"), bus=bus,
+              session_id="s", step_id="st")
+
+    launch = next(e for e in seen if e.type == "delegated")
+    prompt = launch.payload["messages"][0]["content"]
+    assert "wire the seam" in prompt
+    assert launch.payload["summary"]["message_count"] == 1
+    # The command is recorded without the prompt riding in it twice.
+    assert all("wire the seam" not in c for c in launch.payload["command"])

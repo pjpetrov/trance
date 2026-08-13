@@ -165,6 +165,19 @@ function describe(event: TranceEvent, sessionId: string, live: boolean): Rendere
     };
   }
 
+  if (event.type === "delegated") {
+    return {
+      show: true,
+      icon: "⇢",
+      iconTone: "text-purple",
+      label: <span className="text-fg/80">{String(payload.message ?? "")}</span>,
+      // The same inspector a model call gets: the run answers nothing for
+      // minutes to an hour, and the prompt it was launched with is the one
+      // thing there is to examine in the meantime.
+      body: <ModelCallBody event={event} sessionId={sessionId} />,
+    };
+  }
+
   // One per round, all the same sentence, so the finished ones are noise
   // between the lines that carry the content. The newest one is not: it is the
   // call that has not come back, and without it the console shows nothing at

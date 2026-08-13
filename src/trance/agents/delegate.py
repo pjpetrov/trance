@@ -41,6 +41,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from .. import vcs
+from ..events import summarize_messages
 from ..providers.base import BackendError, Cancelled, clear_inflight, register_inflight
 from ..providers.claudecode_client import _is_abort, _why
 
@@ -146,6 +147,12 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
         # emits nothing else until it finishes, so this event *is* the "in
         # flight" signal, and it has to name the preset the ledger keys by.
         "preset": config.preset,
+        # The prompt, up front. The run takes anywhere from minutes to an
+        # hour and used to record what was sent only when it came back —
+        # so for the whole of it there was nothing to inspect.
+        "messages": [{"role": "user", "content": prompt}],
+        "command": [c for c in command if c != prompt],
+        "summary": summarize_messages([{"role": "user", "content": prompt}]),
         "message": (
             f"{role.name} is running this step inside Claude Code: one call, its "
             + ("own tools — writes are judged against the remit from the diff when "
@@ -226,7 +233,7 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
         "messages": [{"role": "user", "content": prompt}],
         "response_text": text, "reasoning": "", "tool_calls": [],
         "finish_reason": body.get("stop_reason") or "stop", "usage": usage,
-        "summary": {"est_tokens": usage.get("prompt_tokens", 0)},
+        "summary": summarize_messages([{"role": "user", "content": prompt}]),
     })
     for path in touched:
         bus.emit("file_written", session_id, agent=role.name, step_id=step_id,
