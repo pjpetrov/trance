@@ -709,6 +709,19 @@ function AgentBlock(
             <EventLine key={event.id} event={event} sessionId={sessionId}
                        live={event.id === liveId || event.id === liveCommand} />
           ))}
+          {/* The same rerun the header offers, repeated where a read ends:
+              at the bottom of an expanded block — usually at its halt line —
+              the header's button is a screen away. */}
+          {attempt !== undefined && canRerun && !block.running && (
+            <div className="flex justify-end pt-1">
+              <Button
+                size="sm" variant="ghost"
+                title={`Rewind to this block and run ${block.agent} again with the same handoff — `
+                  + "change its model in Agents first if that is the point"}
+                onClick={() => setConfirming(true)}
+              >↻ rerun this block</Button>
+            </div>
+          )}
         </div>
       )}
     </div>
