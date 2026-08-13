@@ -77,13 +77,6 @@ export function useStepActions(sessionId: string) {
       mutationFn: (stepId: string) => api.rerunStep(sessionId, stepId),
       onSuccess: settle,
     }),
-    // The halt's evidence rides into the retry: the reviewer's last
-    // objection (or the failure reason) is put in front of the agent.
-    retryWithFeedback: useMutation({
-      mutationFn: (stepId: string) =>
-        api.rerunStep(sessionId, stepId, { with_feedback: true }),
-      onSuccess: settle,
-    }),
     skip: useMutation({
       mutationFn: (stepId: string) => api.skipStep(sessionId, stepId),
       onSuccess: settle,
@@ -91,8 +84,9 @@ export function useStepActions(sessionId: string) {
     // Rewinds commits as well as re-queuing the step, so files and the commit
     // log are stale the moment it lands.
     rerunBlock: useMutation({
-      mutationFn: ({ stepId, attempt }: { stepId: string; attempt: number }) =>
-        api.rerunBlock(sessionId, stepId, attempt),
+      mutationFn: ({ stepId, attempt, revert = true }:
+                   { stepId: string; attempt: number; revert?: boolean }) =>
+        api.rerunBlock(sessionId, stepId, attempt, revert),
       onSuccess: () => {
         void client.invalidateQueries({ queryKey: keys.session(sessionId) });
         void client.invalidateQueries({ queryKey: keys.files(sessionId) });

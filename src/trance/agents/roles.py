@@ -66,8 +66,10 @@ class AgentRole:
     #: The loop varies the prompt and what it was told; this varies the one
     #: thing a retry otherwise never changes.
     backup_preset: str | None = None
-    #: Tries on the usual model before the backup takes over.
-    tries: int = 2
+    #: Tries on the usual model before the backup takes over. Four, measured:
+    #: two was the commonest way a nearly-done step died — "never reported
+    #: success within 2 loop(s)" with the fix half a try away.
+    tries: int = 4
     #: Tries on the backup after that. Ignored without a backup model, so an
     #: agent with none simply gets `tries` and stops.
     backup_tries: int = 2

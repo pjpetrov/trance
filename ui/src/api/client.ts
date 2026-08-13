@@ -178,16 +178,15 @@ export const api = {
   splitStep: (sid: string, stepId: string) =>
     request<{ steps: Step[] }>(`/api/sessions/${id(sid)}/steps/${id(stepId)}/split`,
       { method: "POST" }),
-  rerunStep: (sid: string, stepId: string,
-              body?: { from?: string; on_backup?: boolean; with_feedback?: boolean }) =>
+  rerunStep: (sid: string, stepId: string, body?: { from?: string; on_backup?: boolean }) =>
     request<Session>(`/api/sessions/${id(sid)}/steps/${id(stepId)}/rerun`,
       { method: "POST", body: body ?? {} }),
   skipStep: (sid: string, stepId: string) =>
     request<Session>(`/api/sessions/${id(sid)}/steps/${id(stepId)}/skip`, { method: "POST" }),
-  rerunBlock: (sid: string, stepId: string, attempt: number) =>
+  rerunBlock: (sid: string, stepId: string, attempt: number, revert = true) =>
     request<{ restarted: boolean; rewound: string[] }>(
       `/api/sessions/${id(sid)}/steps/${id(stepId)}/blocks/${attempt}/rerun`,
-      { method: "POST" }),
+      { method: "POST", body: { revert } }),
 
   approvals: (sid: string) =>
     request<{ pending: Approval[]; enabled: boolean; timeout_s: number }>(

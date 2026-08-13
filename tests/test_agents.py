@@ -5202,17 +5202,20 @@ def test_a_step_can_override_the_agents_count(tmp_path, monkeypatch):
     assert used == ["small-model", "small-model", "big-model"]
 
 
-def test_the_default_agent_is_two_and_two(tmp_path):
+def test_the_default_agent_is_four_and_two(tmp_path):
+    """Four tries, measured: two was the commonest way a nearly-done step
+    died — "never reported success within 2 loop(s)", the fix half a try
+    away."""
     from trance.agents.roles import BUILTIN_ROLES
 
     backend = BUILTIN_ROLES["developer"]
-    assert backend.tries == 2 and backend.backup_tries == 2
-    assert backend.total_tries == 2                  # no backup set, so just its own
+    assert backend.tries == 4 and backend.backup_tries == 2
+    assert backend.total_tries == 4                  # no backup set, so just its own
 
     import copy
     with_backup = copy.deepcopy(backend)
     with_backup.backup_preset = "clever"
-    assert with_backup.total_tries == 4
+    assert with_backup.total_tries == 6
 
 
 def test_an_older_agent_keeps_the_switch_point_it_had():
@@ -11201,6 +11204,18 @@ def test_one_block_of_a_loop_can_be_rerun_from_where_it_stood(tmp_path, monkeypa
     assert again.json()["rewound"] == []
     assert (project / "game.js").read_text() == "v0\n"
 
+    # And the other way back: same handoff, current code left alone.
+    (project / "game.js").write_text("hand edit\n", encoding="utf8")
+    vcs.commit_all(project, "user: my own change")
+    step.status = "failed"
+    session.status = "idle"
+    kept = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/2/rerun",
+                       json={"revert": False})
+    assert kept.status_code == 200
+    assert kept.json()["rewound"] == []
+    assert (project / "game.js").read_text() == "hand edit\n"
+    assert step.resume_node == "n_fix"
+
 
 def test_rerunning_a_block_refuses_the_wrong_targets(tmp_path, monkeypatch):
     from trance.flow import Attempt, Flow, Step
@@ -11704,49 +11719,3 @@ def test_editing_the_plan_never_starts_the_run(tmp_path, monkeypatch):
     assert started == [sid]               # the Run button, and only it
 
 
-def test_retry_with_feedback_carries_the_reviewers_objection(tmp_path, monkeypatch):
-    """"Halted: it never reported success within 2 loop(s)" threw away the
-    most specific evidence in the whole run — the reviewer's rejection. The
-    retry carries it as a steering note the agent reads first."""
-    from fastapi.testclient import TestClient
-
-    from trance.config import Config
-    from trance.flow import Attempt, Flow, GateResult, Step
-    from trance.server import app as app_module
-
-    class FakeEngine:
-        def __init__(self, session, *a, **k):
-            self.session = session
-
-        def start(self):
-            self.session.status = "running"
-
-    monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
-    config = Config.load(tmp_path / "none.toml")
-    config.runs_dir = str(tmp_path / "runs")
-    config.workspace = str(tmp_path / "ws")
-    app = app_module.create_app(config, tmp_path / "sessions")
-    client = TestClient(app)
-    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
-
-    session = app.state.store.get(sid)
-    step = Step(role="developer", task="build the HUD", status="failed")
-    step.attempts = [Attempt(n=1, outcome="SUCCESS", gate_results=[
-        GateResult(gate="reviewer", verdict="FAIL",
-                   feedback="the HUD draws behind the canvas; z-order is wrong",
-                   event_id=None)])]
-    session.flow = Flow(steps=[step])
-
-    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/rerun",
-                      json={"with_feedback": True})
-    assert out.status_code == 200
-    assert any("rejected by reviewer" in note and "z-order is wrong" in note
-               for note in step.steering)
-
-    # And with nothing recorded, the button says so instead of lying.
-    bare = Step(role="developer", task="t", status="failed")
-    session.flow.steps.append(bare)
-    refused = client.post(f"/api/sessions/{sid}/steps/{bare.id}/rerun",
-                          json={"with_feedback": True})
-    assert refused.status_code == 400
-    assert "no recorded objection" in refused.json()["detail"]

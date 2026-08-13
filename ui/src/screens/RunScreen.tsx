@@ -23,6 +23,7 @@ import { Badge, Button, Dot, Empty, Input, Panel, PanelHeader, Spinner }
 import { stepTone, stepWord } from "@/components/Shell";
 import { toast } from "@/components/Toaster";
 import { Confirm } from "@/components/ui/Confirm";
+import { Modal } from "@/components/ui/Modal";
 import type { Step, TranceEvent } from "@/api/types";
 
 export function RunScreen() {
@@ -199,7 +200,7 @@ function StepRow(
   },
 ) {
   const sessionId = useUi((state) => state.sessionId);
-  const { rerun, retryWithFeedback } = useStepActions(sessionId ?? "");
+  const { rerun } = useStepActions(sessionId ?? "");
   const commits = useRevertStep(sessionId ?? "");
   // Which of the two commit operations is awaiting the user's yes.
   const [confirming, setConfirming] = useState<"revert" | "apply" | null>(null);
@@ -248,22 +249,6 @@ function StepRow(
                 .then(() => { onPickRun(null); toast.ok(`Started ${step.loop || step.role}.`); })
                 .catch((error) => toast.err(String(error)))}
             >start</Button>
-            {(step.status === "failed" || step.status === "blocked")
-              && step.attempts.some((attempt) =>
-                attempt.outcome_reason || attempt.feedback
-                || attempt.gate_results.some((gate) => gate.verdict === "FAIL"
-                                                       && gate.feedback)) && (
-              <Button
-                size="sm" variant="primary" busy={retryWithFeedback.isPending}
-                title={"Run this step again with the objection from the last "
-                  + "try in front of the agent — the reviewer's rejection, or "
-                  + "the failure reason, instead of starting blind"}
-                onClick={() => retryWithFeedback.mutateAsync(step.id)
-                  .then(() => { onPickRun(null);
-                                toast.ok("Retrying with the last objection in the prompt."); })
-                  .catch((error) => toast.err(String(error)))}
-              >retry with feedback</Button>
-            )}
             <Button size="sm" variant={showRuns ? "default" : "ghost"}
                     onClick={() => setShowRuns(!showRuns)}
                     title="Every run of this step">
@@ -679,29 +664,54 @@ function AgentBlock(
         )}
       </div>
 
-      <Confirm
+      <Modal
         open={confirming}
-        title={`Rerun ${block.agent} from this block?`}
-        confirmLabel="Rewind and rerun"
-        danger
-        busy={rerunBlock.isPending}
         onClose={() => setConfirming(false)}
-        onConfirm={() => {
-          setConfirming(false);
-          rerunBlock.mutateAsync({ stepId, attempt: attempt! })
-            .then(() => toast.ok(
-              `Rewound to ${block.agent}'s block — the loop continues from there.`))
-            .catch((error) => toast.err(String(error)));
-        }}
+        title={`Rerun ${block.agent} from this block?`}
+        footer={
+          <>
+            <Button onClick={() => setConfirming(false)}>Cancel</Button>
+            <Button
+              variant="primary" busy={rerunBlock.isPending}
+              title="Run the block again on the code as it stands now"
+              onClick={() => {
+                setConfirming(false);
+                rerunBlock.mutateAsync({ stepId, attempt: attempt!, revert: false })
+                  .then(() => toast.ok(
+                    `Rerunning ${block.agent}'s block on the current code.`))
+                  .catch((error) => toast.err(String(error)));
+              }}
+            >Rerun on current code</Button>
+            <Button
+              variant="danger" busy={rerunBlock.isPending}
+              title="Undo the commits from this block on, then run it again from what it originally saw"
+              onClick={() => {
+                setConfirming(false);
+                rerunBlock.mutateAsync({ stepId, attempt: attempt!, revert: true })
+                  .then(() => toast.ok(
+                    `Rewound to ${block.agent}'s block — the loop continues from there.`))
+                  .catch((error) => toast.err(String(error)));
+              }}
+            >Rewind commits, then rerun</Button>
+          </>
+        }
       >
-        <p>
-          Commits from this block on are undone as one inverse commit,{" "}
-          <b>{block.agent}</b> runs again with the same handoff it had, and the
-          loop routes on from its outcome — so the new result is still judged.
-          To try a different model, change {block.agent} in Agents before
-          confirming.
-        </p>
-      </Confirm>
+        <div className="space-y-2 p-5 text-sm leading-relaxed">
+          <p>
+            Either way, <b>{block.agent}</b> runs again with the same handoff it
+            had, and the loop routes on from its outcome — the new result is
+            still judged. To try a different model, change {block.agent} in
+            Agents first.
+          </p>
+          <p>
+            <b>Rerun on current code</b> keeps everything committed since —
+            for giving the same input another try on top of the latest fixes.{" "}
+            <b>Rewind commits, then rerun</b> first undoes the commits from
+            this block onward (as one inverse commit, so nothing is lost), and
+            the agent starts from exactly what this block originally saw.
+          </p>
+        </div>
+      </Modal>
 
       {open && (
         <div className="space-y-px px-1 pb-1">

@@ -391,13 +391,13 @@ def default_loops() -> list[Loop]:
         focus=("Write or run the tests for this task and report what actually happened. "
                "Do not implement the feature yourself."),
         on={SUCCESS: Edge(target=EXIT_LOOP),
-            FAILED: Edge(target="n_fix", max_visits=3)},
+            FAILED: Edge(target="n_fix", max_visits=6)},
     )
     fix = LoopNode(
         id="n_fix", role="developer",
         focus=("A test is failing. Fix the code under test — not the test. The tester "
                "runs again straight after you."),
-        on={SUCCESS: Edge(target="n_test", max_visits=3),
+        on={SUCCESS: Edge(target="n_test", max_visits=6),
             FAILED: Edge(target=FAIL_LOOP)},
     )
     # The visual pair. Same shape, different evidence: what settles this one is
@@ -432,7 +432,7 @@ def default_loops() -> list[Loop]:
             description="Tester runs; on a failure the developer fixes and the tester runs again.",
             prompt=("This block is finished when the tests pass. Nobody leaves it by "
                     "declaring success — the tester's run decides."),
-            nodes=[test, fix], start="n_test", max_steps=10,
+            nodes=[test, fix], start="n_test", max_steps=14,
         ),
         Loop(
             name="visual-test-and-fix",
