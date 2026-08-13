@@ -71,7 +71,9 @@ export function fakeServer(routes: Record<string, Route>): FakeServer {
   return { calls, to: (path) => calls.filter((call) => call.url.split("?")[0] === path) };
 }
 
-export function renderWithQuery(element: ReactElement): RenderResult {
+export function renderWithQuery(
+  element: ReactElement,
+): RenderResult & { client: QueryClient } {
   const client = new QueryClient({
     defaultOptions: {
       // Retries turn one deliberate failure into three and a slow test.
@@ -79,8 +81,9 @@ export function renderWithQuery(element: ReactElement): RenderResult {
       mutations: { retry: false },
     },
   });
-  return render(
-    <QueryClientProvider client={client}>{element}</QueryClientProvider>,
+  return Object.assign(
+    render(<QueryClientProvider client={client}>{element}</QueryClientProvider>),
+    { client },
   );
 }
 

@@ -8,7 +8,7 @@
  * is the easiest way to write the next one.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAgents, useLoops, useSession } from "@/api/queries";
 import { useChat, useSaveFlow, useStartRun, useStepActions } from "@/api/mutations";
 import { useUi } from "@/store/ui";
@@ -44,18 +44,88 @@ export function PlanScreen() {
   const [dropAt, setDropAt] = useState<number | null>(null);
   const [showDone, setShowDone] = useState(false);
 
-  // The server is the source of truth; local edits are a draft on top of it.
+  // Standard draft editing. The old shape — every incoming session update
+  // replacing the local steps wholesale, every keystroke's save echoing one
+  // back — is why an edit visibly reverted and then re-applied: the engine
+  // touches the session constantly during a run, and each touch stomped
+  // whatever was mid-type. The draft is the truth while it is dirty; the
+  // server's copy replaces it only when it is clean.
+  const stepsRef = useRef<Step[]>([]);
+  const editSeq = useRef(0);              // bumped on every local change
+  const savedSeq = useRef(0);             // the seq the last landed save carried
+  const removed = useRef(new Set<string>());
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const isDirty = () => editSeq.current !== savedSeq.current;
+
+  const body = (all: Step[]) => all.map((step) => ({
+    id: step.id, role: step.role, task: step.task, loop: step.loop,
+    check: step.check, checks: step.checks, max_loops: step.max_loops,
+  }));
+
+  /** Draft only — what a keystroke does. Saved on blur, or on unmount. */
+  const edit = (next: Step[]) => {
+    for (const step of stepsRef.current) {
+      if (!next.some((held) => held.id === step.id)) removed.current.add(step.id);
+    }
+    stepsRef.current = next;
+    editSeq.current += 1;
+    setSteps(next);
+  };
+
+  /** Draft plus a debounced save — what a structural change does. */
+  const persist = (next: Step[]) => {
+    edit(next);
+    const seq = editSeq.current;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      save.mutateAsync(body(next))
+        .then(() => {
+          if (seq >= savedSeq.current) savedSeq.current = seq;
+          if (!isDirty()) removed.current.clear();
+        })
+        .catch((error) => toast.err(`Could not save the plan — ${error}`));
+    }, 400);
+  };
+
   useEffect(() => {
-    if (session.data) setSteps(session.data.flow.steps);
+    const server = session.data?.flow.steps;
+    if (!server) return;
+    if (!isDirty() && !save.isPending) {
+      stepsRef.current = server;
+      removed.current.clear();
+      setSteps(server);
+      return;
+    }
+    // Mid-edit: statuses and newly proposed steps still flow in; the words
+    // being typed do not get stomped, and a local delete stays deleted.
+    setSteps((mine) => {
+      const local = new Map(mine.map((step) => [step.id, step]));
+      const merged: Step[] = [];
+      for (const step of server) {
+        if (removed.current.has(step.id)) continue;
+        const held = local.get(step.id);
+        merged.push(held
+          ? { ...held, status: step.status, runs: step.runs,
+              attempts: step.attempts, summary: step.summary,
+              seconds: step.seconds }
+          : step);
+      }
+      const known = new Set(server.map((step) => step.id));
+      for (const step of mine) {
+        if (!known.has(step.id) && !removed.current.has(step.id)) merged.push(step);
+      }
+      stepsRef.current = merged;
+      return merged;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.data]);
 
-  const persist = (next: Step[]) => {
-    setSteps(next);
-    save.mutateAsync(next.map((step) => ({
-      id: step.id, role: step.role, task: step.task, loop: step.loop,
-      check: step.check, checks: step.checks, max_loops: step.max_loops,
-    }))).catch((error) => toast.err(`Could not save the plan — ${error}`));
-  };
+  // Leaving the page saves what the blur never got to.
+  useEffect(() => () => {
+    clearTimeout(timer.current);
+    if (isDirty()) void save.mutateAsync(body(stepsRef.current)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const move = (from: number, to: number) => {
     const next = [...steps];
@@ -290,9 +360,9 @@ export function PlanScreen() {
                     onChange={(event) => {
                       const next = [...steps];
                       next[index] = { ...step, task: event.target.value };
-                      setSteps(next);
+                      edit(next);
                     }}
-                    onBlur={() => persist(steps)}
+                    onBlur={() => persist(stepsRef.current)}
                   />
                 </div>
               </div>

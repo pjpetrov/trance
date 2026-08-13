@@ -132,3 +132,39 @@ describe("generating a plan", () => {
     expect(server.to("/api/sessions/s1/flow")).toHaveLength(0);
   });
 });
+
+describe("editing survives the server's echo", () => {
+  it("does not stomp a task being typed when a session update arrives", async () => {
+    // The old shape: every incoming session update replaced the local steps
+    // wholesale, and the engine touches the session constantly during a run —
+    // so an edit visibly reverted, then re-applied when its save landed.
+    const user = userEvent.setup();
+    let clock = 0;
+    const server = fakeServer(routes({
+      // Always answers the stale copy, and never a deep-equal one: the run
+      // clock ticks on every touch in production, and react-query's
+      // structural sharing keeps the old identity for identical answers —
+      // which would leave the guard unexercised.
+      "/api/sessions/s1": () => session({
+        run_seconds: ++clock,
+        flow: { steps: [step({ id: "st1", task: "old words", status: "pending" })],
+                cursor: 0 },
+      }),
+    }));
+    const { client } = renderWithQuery(<PlanScreen />);
+
+    const area = await screen.findByDisplayValue("old words");
+    await user.clear(area);
+    await user.type(area, "the new task");
+
+    // A background refetch lands mid-edit — exactly what a run's touch does.
+    const asked = () =>
+      server.calls.filter((c) => c.url.startsWith("/api/sessions/s1")).length;
+    const before = asked();
+    await client.invalidateQueries();
+    await waitFor(() => expect(asked()).toBeGreaterThan(before));
+    // Give the would-be stomp its beat to land before asserting it did not.
+    await new Promise((settle) => setTimeout(settle, 60));
+    expect(screen.getByDisplayValue("the new task")).toBeInTheDocument();
+  });
+});
