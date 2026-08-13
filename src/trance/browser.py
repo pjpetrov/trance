@@ -69,6 +69,69 @@ class BrowserUnavailable(RuntimeError):
     """No browser on this machine. The visual toolset degrades; runs do not."""
 
 
+#: The marker every trance-launched Chrome carries in its command line. The
+#: reaper keys on it, so it must match the profile naming in start().
+_PROFILE_MARK = "--user-data-dir=" + str(
+    Path(os.environ.get("TMPDIR", "/tmp")) / "trance-chrome-")
+
+
+def orphan_browser_pids(cmdlines: dict[int, str],
+                        parents: dict[int, int]) -> list[int]:
+    """The *main* processes of trance-launched Chromes whose owner is dead.
+
+    Three tests, all required: trance's own profile marker, so nothing else
+    on the machine is ever touched; the main process, not a --type= child —
+    its group holds the zygotes and the GPU process; and a parent of pid 1,
+    because a browser whose launching trance died is reparented to init,
+    while one owned by a *live* trance (this server's own, another server's,
+    a test worker's) keeps its living parent and must not be touched. Pure,
+    so the answer is testable without spawning anything.
+    """
+    return [pid for pid, line in cmdlines.items()
+            if _PROFILE_MARK in line and "--type=" not in line
+            and parents.get(pid) == 1]
+
+
+def reap_orphan_browsers() -> int:
+    """Kill trance-launched Chromes that no live trance owns.
+
+    Called at server startup, when this trance owns none — so every one that
+    matches is a leak from a server that died hard. Found live: two of them,
+    each spinning a WebGL game on software rendering at twelve cores, one of
+    them for an entire day. A browser closed with its turn is the design;
+    this is the backstop for the deaths no close() runs after.
+    """
+    cmdlines: dict[int, str] = {}
+    parents: dict[int, int] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes().replace(b"\0", b" ")
+            stat = (entry / "stat").read_text(encoding="utf8", errors="replace")
+        except OSError:
+            continue
+        pid = int(entry.name)
+        cmdlines[pid] = raw.decode("utf8", "replace")
+        # Field 4 of /proc/pid/stat, counted after the parenthesised comm —
+        # which may itself contain spaces, hence the rpartition.
+        try:
+            parents[pid] = int(stat.rpartition(")")[2].split()[1])
+        except (ValueError, IndexError):
+            continue
+    reaped = 0
+    for pid in orphan_browser_pids(cmdlines, parents):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            reaped += 1
+        except (OSError, ProcessLookupError):
+            continue
+    if reaped:
+        for profile in Path(os.environ.get("TMPDIR", "/tmp")).glob("trance-chrome-*"):
+            shutil.rmtree(profile, ignore_errors=True)
+    return reaped
+
+
 def find_chrome() -> str | None:
     """A Chrome-family binary, or None. Never raises: absence is a normal state."""
     for name in CHROME_BINARIES:

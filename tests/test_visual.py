@@ -1518,3 +1518,24 @@ def test_the_tester_is_told_how_to_judge_movement():
     assert "Never conclude movement from diff percentages alone" in prompt
     assert "the frames win" in prompt
     assert "Pointer lock never engages in this browser" in prompt
+
+
+def test_only_trances_own_main_chrome_is_an_orphan_candidate():
+    """Found live: a leaked headless Chrome spun a WebGL game on software
+    rendering at twelve cores for a day. The reaper must catch exactly the
+    main process of trance-launched browsers — its group takes the zygotes
+    and the GPU process with it — and never anything else on the machine."""
+    from trance.browser import _PROFILE_MARK, orphan_browser_pids
+
+    lines = {
+        11: f"chrome --headless {_PROFILE_MARK}45517 about:blank",
+        12: f"chrome --type=gpu-process {_PROFILE_MARK}45517",
+        13: f"chrome --type=renderer {_PROFILE_MARK}45517",
+        14: "chrome --headless --user-data-dir=/home/petrovs/.config/chrome",
+        15: "firefox",
+        16: f"chrome --headless {_PROFILE_MARK}60909 about:blank",
+    }
+    # 11 lost its trance (reparented to init); 16's owner is alive — a live
+    # server's browser, or a parallel test worker's — and stays untouched.
+    parents = {11: 1, 12: 11, 13: 11, 14: 1, 15: 1, 16: 54321}
+    assert orphan_browser_pids(lines, parents) == [11]

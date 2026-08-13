@@ -106,6 +106,14 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     scope_dir = (config.workspace_root / STORE_DIR if config.workspace
                  else state_dir)
     _adopt_runs_state(state_dir, Path(config.runs_dir))
+    # A fresh server owns no browsers, so any trance-launched Chrome alive
+    # now is a leak from a server that died hard — found live spinning a
+    # WebGL game on software rendering at twelve cores, for a day.
+    try:
+        from ..browser import reap_orphan_browsers
+        reap_orphan_browsers()
+    except Exception:              # noqa: BLE001 — startup must not die for this
+        pass
     store = SessionStore(sessions_dir or Path(config.runs_dir) / "sessions",
                          workspace=config.workspace_root)
     # trance.toml seeds the registry once; after that the JSON store is the
