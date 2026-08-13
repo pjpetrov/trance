@@ -391,8 +391,15 @@ class FlowEngine:
                 self._emit("loop_exhausted", agent=role.name, step_id=step.id, payload={
                     "loop": loop.name, "edge": f"{node.role} {exit_name}",
                     "max_visits": allowed,
-                    "message": (f"{node.role}'s {exit_name} route has been taken "
-                                f"{allowed} time(s) — the loop is not converging."),
+                    # Two different truths: a spent budget, and an exit nobody
+                    # wired. "Taken 0 time(s), not converging" was the second
+                    # dressed as the first.
+                    "message": (
+                        f"{node.role}'s {exit_name} exit has no route in this "
+                        f"loop — the loop stops here. Add one in the Loops "
+                        f"editor." if allowed == 0 else
+                        f"{node.role}'s {exit_name} route has been taken "
+                        f"{allowed} time(s) — the loop is not converging."),
                 })
                 break
             if edge.target == EXIT_LOOP:
@@ -844,6 +851,17 @@ class FlowEngine:
             hint = ("Open the step to see what was claimed and what was found. It was "
                     "sent back with the check's findings and still did not make them "
                     "true, so look at the model and the prompt for that agent.")
+        elif step.runs_a_loop:
+            # A loop step's budget is its edges' visits, not the step's loop
+            # limit — "within 2 loop(s)" on a fourteen-block loop was a number
+            # from a different machine.
+            self.session.error = (
+                f"Halted at the {step.loop} loop: it ended without success. "
+                f"The last block's console says which exit stopped it."
+            )
+            hint = ("Rerun the failed block from its ↻ (with or without the "
+                    "rewind), widen that edge's visits in the Loops editor, or "
+                    "change the fixing agent.")
         else:
             self.session.error = (
                 f"Halted at the {step.role} step: it never reported success within "

@@ -256,9 +256,10 @@ def validate(loop: Loop, known_roles, verifiers) -> str | None:
                     return (f"{where} leaves the loop, so the {left} "
                             f"arrow{'' if left == 1 else 's'} after it can never "
                             f"be taken")
-        if node.check is None and CHECK_FAILED in node.on:
-            return (f"the {node.role} block routes CHECK_FAILED but has no check — "
-                    f"that outcome can never happen")
+        # A CHECK_FAILED route on a node with no chain of its own is not dead
+        # wiring any more: nodes are seeded with their agent's standing checks
+        # when the loop is read, so the outcome can very much happen — and the
+        # shipped loops route it deliberately.
 
     if loop.start and loop.start not in ids:
         return "the start block is not in this loop"

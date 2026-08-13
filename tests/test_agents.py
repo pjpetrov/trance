@@ -3838,10 +3838,13 @@ def test_a_loop_is_validated_before_it_can_be_saved():
                                                on={SUCCESS: Edge(EXIT_LOOP)})])
     assert "cannot check work" in validate(bad_check, roles, verifiers)
 
-    impossible = Loop(name="x", nodes=[LoopNode(id="a", role="tester",
-                                                on={SUCCESS: Edge(EXIT_LOOP),
-                                                    CHECK_FAILED: Edge(EXIT_LOOP)})])
-    assert "can never happen" in validate(impossible, roles, verifiers)
+    # A CHECK_FAILED route with no chain of the node's own is legal now:
+    # nodes are seeded with their agent's standing checks when the loop is
+    # read, so the outcome can happen — and the shipped loops route it.
+    routed = Loop(name="x", nodes=[LoopNode(id="a", role="tester",
+                                            on={SUCCESS: Edge(EXIT_LOOP),
+                                                CHECK_FAILED: Edge(EXIT_LOOP)})])
+    assert validate(routed, roles, verifiers) is None
 
 
 def test_the_seeded_loop_is_valid_and_describes_the_common_shape(tmp_path):
@@ -11719,3 +11722,77 @@ def test_editing_the_plan_never_starts_the_run(tmp_path, monkeypatch):
     assert started == [sid]               # the Run button, and only it
 
 
+
+
+def test_a_rejected_fix_goes_back_before_the_judge(tmp_path, monkeypatch):
+    """Seen live in gta2: the developer carries reviewer+regression by
+    default, loop nodes copy them, and a reviewer rejection produced a
+    CHECK_FAILED exit no shipped route knew — the loop died mid-stride with
+    "route taken 0 time(s)". The judge is the arbiter: a rejected fix routes
+    back before it."""
+    from trance.agents.store import default_loops
+    from trance.flow import Step
+
+    for loop in default_loops():
+        fixers = [n for n in loop.nodes if n.id in ("n_fix", "n_repair")]
+        for node in fixers:
+            assert "CHECK_FAILED" in node.on, (loop.name, node.id)
+
+    # And the walk survives it: tester fails, fixer claims success, the
+    # fixer's own check rejects — the tester still gets the next word.
+    engine = _loop_engine(tmp_path, ["tester", "developer", "reviewer"], _tf_loop())
+    loop = engine.loops.get("test-and-fix")
+    fix = loop.node("n_fix")
+    from trance.loops import CHECK_FAILED, Edge
+    fix.checks_chain, fix.checks_seeded = ["reviewer"], True
+    fix.on[CHECK_FAILED] = [Edge(target="n_test", max_visits=3)]
+    step = Step(role="", loop="test-and-fix", task="t")
+    order = []
+
+    def fake(**kw):
+        name = kw["role"].name
+        order.append(name)
+        if name == "reviewer":
+            return _Turn("FAIL", "the fix draws over the HUD")
+        if name == "tester":
+            return _Turn(None, "x", outcome=("FAILED", "broken")
+                         if order.count("tester") == 1 else ("SUCCESS", ""))
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._execute(step)
+
+    assert order == ["tester", "developer", "reviewer", "tester"]
+    assert step.status == "done"
+
+
+def test_an_unrouted_exit_is_named_not_dressed_as_exhaustion(tmp_path, monkeypatch):
+    from trance.flow import Step
+    from trance.loops import CHECK_FAILED
+
+    engine = _loop_engine(tmp_path, ["tester", "developer", "reviewer"], _tf_loop())
+    loop = engine.loops.get("test-and-fix")
+    fix = loop.node("n_fix")
+    fix.checks_chain, fix.checks_seeded = ["reviewer"], True
+    assert CHECK_FAILED not in fix.on               # deliberately unrouted
+    step = Step(role="", loop="test-and-fix", task="t")
+
+    def fake(**kw):
+        if kw["role"].name == "reviewer":
+            return _Turn("FAIL", "no")
+        if kw["role"].name == "tester":
+            return _Turn(None, "x", outcome=("FAILED", "broken"))
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
+    engine._execute(step)
+
+    spent = next(e for e in engine.bus.history(engine.session.id)
+                 if e.type == "loop_exhausted")
+    assert "has no route in this loop" in spent.payload["message"]
+    assert "0 time(s)" not in spent.payload["message"]
+    # And the halt speaks about the loop, not about "2 loop(s)".
+    assert "test-and-fix loop" in str(engine.session.error)
+    assert "2 loop(s)" not in str(engine.session.error)

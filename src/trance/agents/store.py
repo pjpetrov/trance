@@ -18,7 +18,7 @@ import json
 import threading
 from pathlib import Path
 
-from ..loops import SUCCESS, FAILED, EXIT_LOOP, FAIL_LOOP, Edge, Loop, LoopNode
+from ..loops import CHECK_FAILED, SUCCESS, FAILED, EXIT_LOOP, FAIL_LOOP, Edge, Loop, LoopNode
 from .roles import BUILTIN_ROLES, TOOLSETS, AgentRole, definition_differs
 from .tools import ALLOWED_COMMANDS, CommandPolicy
 
@@ -397,7 +397,12 @@ def default_loops() -> list[Loop]:
         id="n_fix", role="developer",
         focus=("A test is failing. Fix the code under test — not the test. The tester "
                "runs again straight after you."),
+        # CHECK_FAILED routes to the judge: the developer carries standing
+        # checks (reviewer, regression), and a rejection used to hit a route
+        # that did not exist — the loop died mid-stride. The loop's own judge
+        # is the arbiter; a rejected fix goes back before it.
         on={SUCCESS: Edge(target="n_test", max_visits=6),
+            CHECK_FAILED: Edge(target="n_test", max_visits=6),
             FAILED: Edge(target=FAIL_LOOP)},
     )
     # The visual pair. Same shape, different evidence: what settles this one is
@@ -424,6 +429,7 @@ def default_loops() -> list[Loop]:
                "drawing, the seam between them — so find where it actually is before "
                "fixing anything. Then it looks again."),
         on={SUCCESS: Edge(target="n_look", max_visits=6),
+            CHECK_FAILED: Edge(target="n_look", max_visits=6),
             FAILED: Edge(target=FAIL_LOOP)},
     )
     return [
