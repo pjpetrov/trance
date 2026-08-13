@@ -1,0 +1,9 @@
+{
+  "max_step_points": 5,
+  "escalation_preset": "",
+  "escalation_role": "",
+  "git_commits": true,
+  "git_auto_init": true,
+  "plan_open": "",
+  "plan_close": ""
+}

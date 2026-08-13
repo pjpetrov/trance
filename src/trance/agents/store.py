@@ -18,8 +18,8 @@ import json
 import threading
 from pathlib import Path
 
-from ..loops import CHECK_FAILED, SUCCESS, FAILED, EXIT_LOOP, FAIL_LOOP, Edge, Loop, LoopNode
-from .roles import BUILTIN_ROLES, TOOLSETS, AgentRole, definition_differs
+from ..loops import Loop
+from .roles import _DEFAULTS, BUILTIN_ROLES, TOOLSETS, AgentRole, definition_differs
 from .tools import ALLOWED_COMMANDS, CommandPolicy
 
 #: Types that ship with trance. They can be edited, but not deleted — deleting
@@ -385,70 +385,11 @@ class LoopStore:
 
 
 def default_loops() -> list[Loop]:
-    """The shape people build by hand: test, fix, test again."""
-    test = LoopNode(
-        id="n_test", role="tester", check=None,
-        focus=("Write or run the tests for this task and report what actually happened. "
-               "Do not implement the feature yourself."),
-        on={SUCCESS: Edge(target=EXIT_LOOP),
-            FAILED: Edge(target="n_fix", max_visits=6)},
-    )
-    fix = LoopNode(
-        id="n_fix", role="developer",
-        focus=("A test is failing. Fix the code under test — not the test. The tester "
-               "runs again straight after you."),
-        # CHECK_FAILED routes to the judge: the developer carries standing
-        # checks (reviewer, regression), and a rejection used to hit a route
-        # that did not exist — the loop died mid-stride. The loop's own judge
-        # is the arbiter; a rejected fix goes back before it.
-        on={SUCCESS: Edge(target="n_test", max_visits=6),
-            CHECK_FAILED: Edge(target="n_test", max_visits=6),
-            FAILED: Edge(target=FAIL_LOOP)},
-    )
-    # The visual pair. Same shape, different evidence: what settles this one is
-    # a picture of the running app rather than an exit code, which is the only
-    # thing that works for a canvas where the DOM says nothing.
-    look = LoopNode(
-        id="n_look", role="visual-tester", check=None,
-        focus=("Open the app in the browser, get past any title screen, and judge what "
-               "is actually on screen against the task. Do not change any code."),
-        # Six rounds, not three: measured on real games, a visual defect
-        # routinely takes more fix-look passes than a failing test does — the
-        # evidence is a picture, and pictures are argued with longer.
-        on={SUCCESS: Edge(target=EXIT_LOOP),
-            FAILED: Edge(target="n_repair", max_visits=6)},
-    )
-    repair = LoopNode(
-        id="n_repair", role="developer",
-        # The repairer must reach both sides — learned the hard way, when a
-        # repairer confined to the frontend answered a dead websocket by
-        # rewriting rendering, because the remit let it fix nothing else.
-        focus=("The app does not look right in the browser. The visual tester's "
-               "report says what was on screen and what was wrong with it. The cause "
-               "may be on either side — the server not sending, the client not "
-               "drawing, the seam between them — so find where it actually is before "
-               "fixing anything. Then it looks again."),
-        on={SUCCESS: Edge(target="n_look", max_visits=6),
-            CHECK_FAILED: Edge(target="n_look", max_visits=6),
-            FAILED: Edge(target=FAIL_LOOP)},
-    )
-    return [
-        Loop(
-            name="test-and-fix",
-            description="Tester runs; on a failure the developer fixes and the tester runs again.",
-            prompt=("This block is finished when the tests pass. Nobody leaves it by "
-                    "declaring success — the tester's run decides."),
-            nodes=[test, fix], start="n_test", max_steps=14,
-        ),
-        Loop(
-            name="visual-test-and-fix",
-            description=("Opens the app in a real browser and judges it by what is on "
-                         "screen; on a defect the developer fixes it and it looks again."),
-            prompt=("This block is finished when the running app looks right. The "
-                    "verdict comes from what was actually on screen — a screenshot and "
-                    "the measurements around it — not from anyone's description of "
-                    "what the code should do."),
-            # Room for the look/repair pairs the six visits allow.
-            nodes=[look, repair], start="n_look", max_steps=14,
-        ),
-    ]
+    """The shipped loops, from trance/defaults/loops.json.
+
+    Data, not code, for the same reason the roster is: the file is the same
+    shape the stores speak, so what a fresh install provisions is adjusted by
+    editing JSON — or by dropping the files straight into a .trance dir.
+    """
+    data = json.loads((_DEFAULTS / "loops.json").read_text(encoding="utf8"))
+    return [Loop.from_dict(raw) for raw in data["loops"]]

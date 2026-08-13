@@ -11796,3 +11796,32 @@ def test_an_unrouted_exit_is_named_not_dressed_as_exhaustion(tmp_path, monkeypat
     # And the halt speaks about the loop, not about "2 loop(s)".
     assert "test-and-fix loop" in str(engine.session.error)
     assert "2 loop(s)" not in str(engine.session.error)
+
+
+def test_the_shipped_defaults_are_data_the_code_loads():
+    """The roster, the loops, the allowlist and the settings live as JSON in
+    trance/defaults/ — the same shape every store speaks — so adjusting what
+    a fresh install provisions is editing a file, and the files can be
+    dropped straight into a .trance dir ready-made."""
+    import json
+    from pathlib import Path
+
+    from trance.agents.roles import BUILTIN_ROLES, _DEFAULTS
+    from trance.agents.store import default_loops
+    from trance.agents.tools import ALLOWED_COMMANDS
+    from trance.workspace import _shipped_settings
+
+    for name in ("agents.json", "loops.json", "commands.json", "settings.json"):
+        assert (_DEFAULTS / name).is_file(), name
+
+    agents = json.loads((_DEFAULTS / "agents.json").read_text())
+    assert {a["name"] for a in agents["agents"]} == set(BUILTIN_ROLES)
+    assert agents["default_team"] == ["planner", "developer", "tester"]
+    # The file and the loaded objects agree exactly — the file is the truth.
+    for raw in agents["agents"]:
+        assert BUILTIN_ROLES[raw["name"]].system_prompt == raw["system_prompt"]
+
+    assert [l.name for l in default_loops()] == ["test-and-fix",
+                                                "visual-test-and-fix"]
+    assert "pytest" in ALLOWED_COMMANDS and "timeout" in ALLOWED_COMMANDS
+    assert _shipped_settings().git_commits is True

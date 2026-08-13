@@ -67,13 +67,27 @@ class Settings:
         return cls(**{k: v for k, v in (data or {}).items() if k in known})
 
 
+SHIPPED_SETTINGS = (Path(__file__).resolve().parent / "defaults"
+                    / "settings.json")
+
+
+def _shipped_settings() -> "Settings":
+    """The defaults a fresh store starts from — data, like the roster and the
+    loops, so adjusting what a new install provisions is editing JSON."""
+    try:
+        return Settings.from_dict(
+            json.loads(SHIPPED_SETTINGS.read_text(encoding="utf8")))
+    except (OSError, ValueError):
+        return Settings()
+
+
 class SettingsStore:
     """The project's run settings, as JSON beside its other state."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings = Settings()
+        self.settings = _shipped_settings()
         if self.path.is_file():
             try:
                 self.settings = Settings.from_dict(

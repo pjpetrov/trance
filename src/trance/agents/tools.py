@@ -15,6 +15,7 @@ processes:
 
 from __future__ import annotations
 
+import json
 import difflib
 import os
 import re
@@ -144,20 +145,12 @@ def programs_in(command: str) -> list[str]:
     return found
 
 
-ALLOWED_COMMANDS = {
-    # test + build runners
-    "pytest", "python", "python3", "pip", "npm", "npx", "node", "yarn", "pnpm",
-    "tsc", "vitest", "jest", "eslint", "ruff", "mypy", "make", "go", "cargo",
-    # reading and navigating the project
-    "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "diff", "pwd",
-    "stat", "file", "tree", "sort", "uniq", "cut", "awk", "sed", "which", "env",
-    # small edits to scaffolding
-    "mkdir", "touch", "cp", "mv", "echo", "printf", "true", "false", "test",
-    # bounding a command in time is safety, not power
-    "timeout", "sleep",
-    # version control, read-mostly
-    "git",
-}
+#: The default allowlist, from trance/defaults/commands.json — the same file
+#: a fresh install's Default scope is provisioned from, so there is one place
+#: the shipped list lives.
+ALLOWED_COMMANDS = frozenset(json.loads(
+    (Path(__file__).resolve().parent.parent / "defaults" / "commands.json")
+    .read_text(encoding="utf8"))["lists"]["default"]["allowed"])
 
 
 @dataclass
