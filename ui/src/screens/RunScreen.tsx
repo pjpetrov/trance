@@ -199,7 +199,7 @@ function StepRow(
   },
 ) {
   const sessionId = useUi((state) => state.sessionId);
-  const { rerun } = useStepActions(sessionId ?? "");
+  const { rerun, retryWithFeedback } = useStepActions(sessionId ?? "");
   const commits = useRevertStep(sessionId ?? "");
   // Which of the two commit operations is awaiting the user's yes.
   const [confirming, setConfirming] = useState<"revert" | "apply" | null>(null);
@@ -248,6 +248,22 @@ function StepRow(
                 .then(() => { onPickRun(null); toast.ok(`Started ${step.loop || step.role}.`); })
                 .catch((error) => toast.err(String(error)))}
             >start</Button>
+            {(step.status === "failed" || step.status === "blocked")
+              && step.attempts.some((attempt) =>
+                attempt.outcome_reason || attempt.feedback
+                || attempt.gate_results.some((gate) => gate.verdict === "FAIL"
+                                                       && gate.feedback)) && (
+              <Button
+                size="sm" variant="primary" busy={retryWithFeedback.isPending}
+                title={"Run this step again with the objection from the last "
+                  + "try in front of the agent — the reviewer's rejection, or "
+                  + "the failure reason, instead of starting blind"}
+                onClick={() => retryWithFeedback.mutateAsync(step.id)
+                  .then(() => { onPickRun(null);
+                                toast.ok("Retrying with the last objection in the prompt."); })
+                  .catch((error) => toast.err(String(error)))}
+              >retry with feedback</Button>
+            )}
             <Button size="sm" variant={showRuns ? "default" : "ghost"}
                     onClick={() => setShowRuns(!showRuns)}
                     title="Every run of this step">

@@ -178,7 +178,8 @@ export const api = {
   splitStep: (sid: string, stepId: string) =>
     request<{ steps: Step[] }>(`/api/sessions/${id(sid)}/steps/${id(stepId)}/split`,
       { method: "POST" }),
-  rerunStep: (sid: string, stepId: string, body?: { from?: string }) =>
+  rerunStep: (sid: string, stepId: string,
+              body?: { from?: string; on_backup?: boolean; with_feedback?: boolean }) =>
     request<Session>(`/api/sessions/${id(sid)}/steps/${id(stepId)}/rerun`,
       { method: "POST", body: body ?? {} }),
   skipStep: (sid: string, stepId: string) =>

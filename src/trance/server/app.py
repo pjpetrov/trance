@@ -2901,12 +2901,44 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {"split": True, "into": [s.to_dict() for s in pieces],
                 "flow": session.flow.to_dict()}
 
+    def _last_objection(step) -> str:
+        """The most recent recorded reason this step did not pass.
+
+        The reviewer's rejection, first — it is the most specific evidence
+        there is — else the step's own failure reason. What a halt used to
+        throw away, and what "try again with the feedback" carries forward.
+        """
+        for attempt in reversed(step.attempts):
+            for gate in reversed(attempt.gate_results):
+                if gate.verdict == "FAIL" and gate.feedback:
+                    return (f"The previous run was rejected by {gate.gate}. Address "
+                            f"this objection specifically:\n{gate.feedback[:4000]}")
+            if attempt.feedback:
+                return (f"The previous run failed its check. Address this "
+                        f"objection specifically:\n{attempt.feedback[:4000]}")
+            if attempt.outcome_reason:
+                return (f"The previous run failed: {attempt.outcome_reason[:4000]}\n"
+                        f"Fix that specifically before anything else.")
+        return ""
+
+
     @app.post("/api/sessions/{session_id}/steps/{step_id}/rerun")
     def rerun(session_id: str, step_id: str, body: dict | None = None):
         session = _need(store, session_id)
         step = session.flow.find(step_id)
         if step is None:
             raise HTTPException(404, "no such step")
+
+        # "Try again with the feedback": the halt's evidence rides into the
+        # retry as a steering note, instead of dying with the halt. Collected
+        # before attempts are cleared — they are where the evidence lives.
+        if (body or {}).get("with_feedback"):
+            note = _last_objection(step)
+            if not note:
+                raise HTTPException(400, (
+                    "no recorded objection to carry — the step has no failed "
+                    "check or failure reason to try again with"))
+            step.steering.append(note)
 
         # "Rerun on the backup" is for when you have watched the usual model
         # fail and know it will again — working up to the backup would just

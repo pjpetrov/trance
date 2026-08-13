@@ -77,6 +77,13 @@ export function useStepActions(sessionId: string) {
       mutationFn: (stepId: string) => api.rerunStep(sessionId, stepId),
       onSuccess: settle,
     }),
+    // The halt's evidence rides into the retry: the reviewer's last
+    // objection (or the failure reason) is put in front of the agent.
+    retryWithFeedback: useMutation({
+      mutationFn: (stepId: string) =>
+        api.rerunStep(sessionId, stepId, { with_feedback: true }),
+      onSuccess: settle,
+    }),
     skip: useMutation({
       mutationFn: (stepId: string) => api.skipStep(sessionId, stepId),
       onSuccess: settle,

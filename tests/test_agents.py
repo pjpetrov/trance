@@ -11702,3 +11702,51 @@ def test_editing_the_plan_never_starts_the_run(tmp_path, monkeypatch):
 
     client.post(f"/api/sessions/{sid}/start")
     assert started == [sid]               # the Run button, and only it
+
+
+def test_retry_with_feedback_carries_the_reviewers_objection(tmp_path, monkeypatch):
+    """"Halted: it never reported success within 2 loop(s)" threw away the
+    most specific evidence in the whole run — the reviewer's rejection. The
+    retry carries it as a steering note the agent reads first."""
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.flow import Attempt, Flow, GateResult, Step
+    from trance.server import app as app_module
+
+    class FakeEngine:
+        def __init__(self, session, *a, **k):
+            self.session = session
+
+        def start(self):
+            self.session.status = "running"
+
+    monkeypatch.setattr(app_module, "FlowEngine", FakeEngine)
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    config.workspace = str(tmp_path / "ws")
+    app = app_module.create_app(config, tmp_path / "sessions")
+    client = TestClient(app)
+    sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
+
+    session = app.state.store.get(sid)
+    step = Step(role="developer", task="build the HUD", status="failed")
+    step.attempts = [Attempt(n=1, outcome="SUCCESS", gate_results=[
+        GateResult(gate="reviewer", verdict="FAIL",
+                   feedback="the HUD draws behind the canvas; z-order is wrong",
+                   event_id=None)])]
+    session.flow = Flow(steps=[step])
+
+    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/rerun",
+                      json={"with_feedback": True})
+    assert out.status_code == 200
+    assert any("rejected by reviewer" in note and "z-order is wrong" in note
+               for note in step.steering)
+
+    # And with nothing recorded, the button says so instead of lying.
+    bare = Step(role="developer", task="t", status="failed")
+    session.flow.steps.append(bare)
+    refused = client.post(f"/api/sessions/{sid}/steps/{bare.id}/rerun",
+                          json={"with_feedback": True})
+    assert refused.status_code == 400
+    assert "no recorded objection" in refused.json()["detail"]
