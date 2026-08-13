@@ -369,7 +369,8 @@ otherwise add an API key in ⚙ Models.
 trance serve -w ~/projects          # where new projects are created
 trance serve --host 0.0.0.0         # network-visible; read the warning it prints
                                     # (file previews are network-visible either way)
-trance serve --runs-dir ~/.trance   # where sessions and settings live
+trance serve --runs-dir ./runs      # legacy state dir; models and settings
+                                    # live at system_dir (see trance.toml)
 ```
 
 ## Sharing a preview (optional)
