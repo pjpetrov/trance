@@ -8750,7 +8750,7 @@ def test_a_model_that_answers_nothing_is_not_reported_as_disobedient(tmp_path, m
         session_id="s", step_id="st")
 
     assert turn.outcome[0] == "FAILED"
-    assert "8000-token reply budget" in turn.text
+    assert "-token reply budget" in turn.text
     assert "never stated" not in turn.text
 
 
@@ -9134,47 +9134,6 @@ def test_a_backend_that_cannot_be_told_to_stop_thinking_is_not_asked_twice(
     # Anthropic is a 400. Whatever else the runner does, it must never appear.
     assert all(sent is None for sent in tries)
     assert not any(e.type == "thinking_overran" for e in seen)
-
-
-def test_thinking_stays_off_for_the_rest_of_a_turn_once_it_has_overrun(
-        tmp_path, monkeypatch):
-    """A model that spiralled on one round spirals on the next. Measured on one
-    real session: thirty replies in a row each burned the whole 8,000-token
-    budget on reasoning and answered nothing. Paying that a second time per
-    round to learn the same thing again is the expensive way to be right."""
-    from trance.agents.roles import BUILTIN_ROLES
-    from trance.agents import runner
-    from trance.config import ModelConfig
-    from trance.events import EventBus
-    from trance.providers.base import ChatResponse, ToolCall
-
-    sent = []
-
-    class _Spiraller:
-        def __init__(self):
-            self.n = 0
-
-        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
-            self.n += 1
-            sent.append(extra_body)
-            if self.n == 1:                     # all budget spent thinking
-                return ChatResponse(text="", finish_reason="length",
-                                    reasoning="round and round")
-            if self.n == 2:                     # the retry answers, with a tool call
-                return ChatResponse(text="", tool_calls=[
-                    ToolCall(id="c1", name="remember", arguments={"note": "a decision"})])
-            return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
-
-    monkeypatch.setattr(runner, "client_for", lambda _config: _Spiraller())
-    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
-                     config=ModelConfig(kind="llamacpp", max_tokens=8000), bus=EventBus(),
-                     session_id="s", step_id="st")
-
-    off = {"chat_template_kwargs": {"enable_thinking": False}}
-    assert sent[0] is None            # the first try is normal
-    assert sent[1] == off             # the retry that recovers it
-    # And every round after it, without spending the budget to find out again.
-    assert all(later == off for later in sent[2:]), sent
 
 
 # ============================== a feature the devs build comes with its test
@@ -11894,3 +11853,82 @@ def test_the_ledger_measures_tokens_per_second_honestly(tmp_path):
     ledger.record("s1", "local-qwen", {"completion_tokens": 40}, duration_ms=2000)
     again = UsageLedger(tmp_path / "usage.json")
     assert again.lifetime()["local-qwen"]["tokens_per_second"] == 20.0
+
+
+def test_one_long_think_raises_the_room_instead_of_cutting_the_thinking(tmp_path, monkeypatch):
+    """Qwen 3.8 opens nearly every turn with a long, productive think — and
+    the old one-strike latch ran whole steps with thinking off, undergrading
+    the model. PI drives the same model well by giving it room (16k) and
+    never touching the toggle. First overrun: recover the round, raise the
+    budget, keep thinking. Only a second overrun at the raised budget — a
+    spiral — latches thinking off."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    calls, seen = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    config = ModelConfig(kind="llamacpp", max_tokens=600, context_window=64000)
+
+    class _LongThinker:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            calls.append((extra_body, config.max_tokens))
+            if len(calls) == 1:                    # the long opening think
+                return ChatResponse(text="", finish_reason="length",
+                                    reasoning="a long, productive think…")
+            return ChatResponse(text="Done.\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _LongThinker())
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
+                     config=config, bus=bus, session_id="s", step_id="st")
+
+    # The recovery retry ran without thinking; the budget then grew.
+    assert calls[1][0] == {"chat_template_kwargs": {"enable_thinking": False}}
+    raised = next(e for e in seen if e.type == "thinking_room_raised")
+    assert raised.payload["from"] == 600 and raised.payload["to"] == 8192
+    assert config.max_tokens == 8192
+    # The round that was recovered says so; the turn as a whole kept thinking.
+    assert [e for e in seen if e.type == "model_call"][-1].payload["thinking"] is False
+
+
+def test_a_second_overrun_at_the_raised_budget_is_a_spiral(tmp_path, monkeypatch):
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    calls, seen = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    config = ModelConfig(kind="llamacpp", max_tokens=600, context_window=64000)
+
+    from trance.providers.base import ToolCall
+
+    class _Spiraller:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            calls.append(extra_body)
+            # Thinking on: nothing but reasoning. The no-think recoveries keep
+            # the turn moving (a tool call) until the latch, then finish it.
+            if extra_body is None:
+                return ChatResponse(text="", finish_reason="length",
+                                    reasoning="round and round…")
+            if len(calls) == 2:
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id="c1", name="list_files", arguments={})])
+            return ChatResponse(text="ok\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _Spiraller())
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
+                     config=config, bus=bus, session_id="s", step_id="st")
+
+    # Overrun, recover, raise; overrun again, recover — and now it latches:
+    # every later request goes out with thinking off, no third overrun paid.
+    overruns = [e for e in seen if e.type == "thinking_overran"]
+    assert len(overruns) == 2
+    assert config.max_tokens == 8192                  # raised once, not twice
+    late = [e for e in seen if e.type == "model_waiting"][-1]
+    assert late.payload["thinking"] is False

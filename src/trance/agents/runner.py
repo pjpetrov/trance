@@ -643,6 +643,10 @@ def _run_agent(
     #: turn asks with thinking off, rather than paying the whole budget to
     #: rediscover the same thing every round.
     stopped_thinking = False
+    #: Reasoning-only overruns so far. The first one raises the reply budget
+    #: with thinking kept on; only a second — a spiral, not a long think —
+    #: turns thinking off for the rest of the turn.
+    think_overruns = 0
     stopped_reading = False
 
     for round_n in range(1, max_rounds + 1):
@@ -733,7 +737,33 @@ def _run_agent(
                 config=model_config, bus=bus, session_id=session_id,
                 role=role, step_id=step_id, round_n=round_n,
                 already_overran=stopped_thinking)
-            stopped_thinking = stopped_thinking or overran
+            # This round's answer, when recovered, came from a no-think retry —
+            # the model_call event says so — but the *turn* does not give up on
+            # thinking for one long think. Learned on Qwen 3.8, which opens
+            # nearly every turn with a long productive think: latching after
+            # one overrun ran whole steps with the model undergraded. First
+            # overrun: raise the reply budget so think plus answer fit, the
+            # way PI runs the same model (16k of room, thinking never off).
+            # Second overrun at the raised budget is a spiral, and spirals
+            # get the old treatment.
+            round_thinking_off = stopped_thinking or overran
+            if overran and not stopped_thinking:
+                think_overruns += 1
+                roomier = _more_thinking_room(model_config)
+                if think_overruns == 1 and roomier:
+                    bus.emit("thinking_room_raised", session_id, agent=role.name,
+                             step_id=step_id, payload={
+                                 "round": round_n,
+                                 "from": model_config.max_tokens, "to": roomier,
+                                 "message": (
+                                     f"Giving later rounds {roomier:,} tokens of "
+                                     f"reply room (was {model_config.max_tokens:,}) "
+                                     f"so it can think and answer — thinking "
+                                     f"stays on."),
+                             })
+                    model_config.max_tokens = roomier
+                else:
+                    stopped_thinking = True
         except Cancelled:
             # Stop, mid-generation. Not an error, and not the agent's doing.
             turn.stop_reason = "cancelled"
@@ -772,7 +802,7 @@ def _run_agent(
                 # The same gauge the waiting event carried, now with the count
                 # the model reported rather than an estimate of it.
                 "context": turn.context,
-                **_thinking_state(model_config, stopped_thinking),
+                **_thinking_state(model_config, round_thinking_off),
                 "summary": summarize_messages(messages),
             },
         )
@@ -1167,6 +1197,23 @@ def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_
     return response, stopped_thinking or overran
 
 
+def _more_thinking_room(config) -> int:
+    """A bigger reply budget for a model whose think outgrew the cap, or 0.
+
+    Doubled, at least 8,192, never past half the window — the same rule the
+    settings UI enforces, because output room is taken out of what the agent
+    can read. 0 when the backend has no thinking toggle to manage, or the cap
+    is unset, or there is no room left to give.
+    """
+    if (getattr(config, "kind", "") or "") not in THINKING_TOGGLE_KINDS:
+        return 0
+    current = int(config.max_tokens or 0)
+    if current <= 0:
+        return 0
+    roomier = min(max(current * 2, 8192), int(config.context_window or 0) // 2)
+    return roomier if roomier > current else 0
+
+
 def _answer_or_retry_without_thinking(response, *, client, messages, specs, config,
                                       bus, session_id, role, step_id, round_n,
                                       already_overran=False):
@@ -1184,12 +1231,14 @@ def _answer_or_retry_without_thinking(response, *, client, messages, specs, conf
     without thinking spends the same budget on an answer instead, and costs
     nothing on the rounds where this never happens.
 
-    Once it has happened in a turn it is assumed to keep happening, and the rest
-    of the turn goes out with thinking already off. A model that spiralled on
-    one round spirals on the next: measured on one real session, thirty replies
-    in a row each burned the whole 8,000-token budget on reasoning and answered
-    nothing. Paying that a second time per round, to learn the same thing again,
-    is the expensive way to be right.
+    What the caller does with `overran` is graduated: the first one raises
+    the turn's reply budget with thinking kept on — a model that thinks long
+    and productively (Qwen 3.8 opens nearly every turn that way) must not be
+    undergraded for it — and only a second overrun at the raised budget
+    latches thinking off for the rest of the turn. That one is the spiral
+    this recovery was built for: measured on one real session, thirty replies
+    in a row each burned the whole 8,000-token budget on reasoning and
+    answered nothing.
 
     Returns (response, overran) — the flag is what turns thinking off for the
     remainder of the turn.
