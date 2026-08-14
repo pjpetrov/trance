@@ -408,6 +408,12 @@ export interface EventPayload {
   command_id?: string;
   /** model_waiting: the gauge, sized before the answer exists */
   context?: ContextUsage;
+  /** model_progress: one live frame of a streaming generation. Transient —
+   *  on the socket only, never in fetched history. */
+  phase?: "thinking" | "answering";
+  tokens?: number;
+  elapsed_s?: number;
+  tail?: string;
   /** what /events drops to keep the payload small */
   _omitted?: Record<string, number>;
 }

@@ -33,6 +33,11 @@ class Event:
     agent: str | None = None
     step_id: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    #: Live-only: delivered to subscribers but kept out of history and off
+    #: disk. For per-second progress during one generation — hundreds of
+    #: frames that are each superseded by the next, where the final
+    #: model_call event is the durable record.
+    transient: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -63,7 +68,8 @@ class EventBus:
 
     def publish(self, event: Event) -> Event:
         with self._lock:
-            self._history.setdefault(event.session_id, []).append(event)
+            if not event.transient:
+                self._history.setdefault(event.session_id, []).append(event)
             sync = list(self._sync)
             queues = list(self._queues)
 

@@ -11896,3 +11896,77 @@ def test_thinking_stays_off_for_the_rest_of_a_turn_once_it_has_overrun(tmp_path,
     assert config.max_tokens == 600                # the budget is never touched
     late = [e for e in seen if e.type == "model_waiting"][-1]
     assert late.payload["thinking"] is False
+
+
+def test_a_streaming_generation_narrates_itself_transiently(tmp_path, monkeypatch):
+    """While the model generates, the runner emits `model_progress` frames —
+    one stable id per round so the console updates a single line in place —
+    marked transient: subscribers see them live, but they are kept out of the
+    bus history and off disk. The model_call event stays the durable record."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    config = ModelConfig(kind="llamacpp", max_tokens=600, context_window=64000)
+
+    class _Streamer:
+        supports_progress = True
+
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None,
+                     on_progress=None):
+            on_progress({"phase": "thinking", "tokens": 12, "elapsed_s": 1.0,
+                         "tail": "let me see"})
+            on_progress({"phase": "answering", "tokens": 40, "elapsed_s": 2.0,
+                         "tail": "Done"})
+            return ChatResponse(text="Done.\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _Streamer())
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
+                     config=config, bus=bus, session_id="s", step_id="st")
+
+    frames = [e for e in seen if e.type == "model_progress"]
+    assert len(frames) >= 2
+    assert all(f.transient for f in frames)
+    assert len({f.id for f in frames[:2]}) == 1          # one line, updated in place
+    assert frames[0].payload["message"] == "thinking · 12 tokens"
+    assert frames[1].payload["phase"] == "answering"
+    # Transient means gone: not in the bus history the API serves from.
+    assert not [e for e in bus.history("s") if e.type == "model_progress"]
+
+
+def test_a_time_cut_think_gets_the_same_recovery_as_a_size_cut_one(tmp_path, monkeypatch):
+    """`finish_reason: "time"` — the streaming client's wall-clock cut — lands
+    in the overrun machinery exactly like the server's `"length"`: the round is
+    recovered without thinking, and the message names the time budget."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    calls, seen = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    config = ModelConfig(kind="llamacpp", max_tokens=600, timeout_s=600,
+                         context_window=64000)
+
+    class _SlowThinker:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            calls.append(extra_body)
+            if len(calls) == 1:
+                return ChatResponse(text="", finish_reason="time",
+                                    reasoning="ten minutes of thought…")
+            return ChatResponse(text="ok\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _SlowThinker())
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
+                     config=config, bus=bus, session_id="s", step_id="st")
+
+    overrun = next(e for e in seen if e.type == "thinking_overran")
+    assert "600-second time budget" in overrun.payload["message"]
+    assert calls[1] == {"chat_template_kwargs": {"enable_thinking": False}}

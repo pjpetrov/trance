@@ -209,6 +209,36 @@ function describe(event: TranceEvent, sessionId: string, live: boolean): Rendere
     };
   }
 
+  // One frame of a streaming generation, replaced in place every second under
+  // a stable id. Live only: once anything lands after it, the model_call line
+  // is the record and this frame is stale by definition.
+  if (event.type === "model_progress") {
+    if (!live) return HIDDEN;
+    const rate = payload.tokens && payload.elapsed_s
+      ? (payload.tokens / payload.elapsed_s).toFixed(1) : null;
+    return {
+      show: true, icon: "◌", iconTone: "text-accent",
+      label: (
+        <span>
+          <span className={payload.phase === "answering" ? "text-ok" : "text-accent"}>
+            {payload.phase === "answering" ? "answering" : "thinking"}
+          </span>
+          <span className="ml-2 tabular-nums text-muted">
+            {tokens(payload.tokens ?? 0)} tokens · {Math.round(payload.elapsed_s ?? 0)}s
+            {rate && ` · ${rate} tok/s`}
+          </span>
+          {Boolean(payload.tail) && (
+            <span className="ml-2 italic text-muted">…{payload.tail!.slice(-140)}</span>
+          )}
+        </span>
+      ),
+      // The full window the frame carries — the last ~500 characters of the
+      // think as it is being thought. The stable id keeps this open across
+      // frame replacements.
+      body: payload.tail ? <Code>{payload.tail}</Code> : undefined,
+    };
+  }
+
   if (event.type !== "tool_call") {
     const message = String(payload.message ?? payload.reason ?? payload.summary ?? "");
     if (!message) return HIDDEN;

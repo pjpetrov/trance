@@ -201,6 +201,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             return existing
 
     def persist(event) -> None:
+        if event.transient:
+            return
         if event.session_id and event.session_id != "system":
             log_for(event.session_id).append(event)
 

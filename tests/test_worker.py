@@ -326,3 +326,116 @@ def test_model_discovery_identifies_itself_too(monkeypatch):
     list_models("openai", "https://example/v1", "sk-x")
     assert seen["headers"]["user-agent"] == USER_AGENT
     assert seen["headers"]["authorization"] == "Bearer sk-x"
+
+
+def _sse(lines):
+    """A fake streamed response: the header says event-stream, iteration
+    yields SSE frames, and close() is what urlopen's context manager calls."""
+    import email.message
+
+    headers = email.message.Message()
+    headers["Content-Type"] = "text/event-stream"
+
+    class _Stream:
+        def __init__(self):
+            self.headers = headers
+
+        def __iter__(self):
+            return iter([line.encode() for line in lines])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    return _Stream()
+
+
+def test_streamed_chunks_reassemble_into_one_response(monkeypatch):
+    """Streaming changes when we see the reply, not what anyone receives:
+    reasoning, text, tool calls and usage come out exactly as they would have
+    from a whole response, and the request asks for the stream explicitly."""
+    import json
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.worker.client import ChatClient
+
+    sent = {}
+
+    def capture(request, timeout=None):
+        sent["payload"] = json.loads(request.data)
+        return _sse([
+            'data: {"choices":[{"delta":{"reasoning_content":"hmm "}}]}\n',
+            'data: {"choices":[{"delta":{"reasoning_content":"okay"}}]}\n',
+            'data: {"choices":[{"delta":{"content":"Done"}}]}\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",'
+            '"function":{"name":"list_files","arguments":"{\\"path\\""}}]}}]}\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+            '"function":{"arguments":":\\".\\"}"}}]}}]}\n',
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n',
+            'data: {"usage":{"prompt_tokens":10,"completion_tokens":6}}\n',
+            "data: [DONE]\n",
+        ])
+
+    monkeypatch.setattr(urllib.request, "urlopen", capture)
+    got = ChatClient(ModelConfig()).complete([{"role": "user", "content": "hi"}])
+
+    assert sent["payload"]["stream"] is True
+    assert sent["payload"]["stream_options"] == {"include_usage": True}
+    assert got.reasoning == "hmm okay"
+    assert got.text == "Done"
+    assert got.finish_reason == "tool_calls"
+    assert [(c.name, c.arguments) for c in got.tool_calls] == [("list_files", {"path": "."})]
+    assert got.usage == {"prompt_tokens": 10, "completion_tokens": 6}
+
+
+def test_a_generation_that_outlives_its_time_budget_is_cut_not_errored(monkeypatch):
+    """The size limit was the wrong governor — a productive think is cut by
+    wall clock instead. Whatever was generated up to the cut comes back, marked
+    `finish_reason: "time"`, so the overrun machinery treats it exactly like a
+    reply the server cut at max_tokens. Progress was reported while it ran."""
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.worker.client import ChatClient
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda request, timeout=None: _sse([
+            'data: {"choices":[{"delta":{"reasoning_content":"thinking hard…"}}]}\n',
+            'data: {"choices":[{"delta":{"reasoning_content":"never sent"}}]}\n',
+        ]))
+
+    frames = []
+    got = ChatClient(ModelConfig(timeout_s=0)).complete(
+        [{"role": "user", "content": "hi"}], on_progress=frames.append)
+
+    assert got.finish_reason == "time"
+    assert got.reasoning == "thinking hard…"        # the cut kept what was paid for
+    assert got.text == ""
+    assert frames and frames[0]["phase"] == "thinking"
+    assert frames[0]["tokens"] == 1 and frames[0]["tail"].endswith("hard…")
+
+
+def test_a_mid_stream_truncation_error_is_recovered_like_the_http_one(monkeypatch):
+    """llama.cpp reports a tool call the model never finished as an in-stream
+    error frame when streaming, where the non-streaming path got an HTTP 500.
+    Same cause, same recovery: length-cut with `truncated_tool_call`."""
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.worker.client import ChatClient
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda request, timeout=None: _sse([
+            'data: {"choices":[{"delta":{"content":"writing…"}}]}\n',
+            'data: {"error":{"message":"Failed to parse tool call arguments: '
+            'unexpected end of input"}}\n',
+        ]))
+
+    got = ChatClient(ModelConfig()).complete([{"role": "user", "content": "hi"}])
+    assert got.finish_reason == "length"
+    assert got.provider_error == "truncated_tool_call"

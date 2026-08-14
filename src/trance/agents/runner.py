@@ -723,16 +723,20 @@ def _run_agent(
                         + ("" if thinking.get("thinking", True) else " · thinking off")),
             **thinking,
         })
+        progress = _progress_reporter(client, bus, session_id, role=role,
+                                      step_id=step_id, round_n=round_n,
+                                      config=model_config)
         try:
             response = client.complete(
                 messages, tools=specs or None, cancel_token=session_id,
                 **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
-                   if stopped_thinking else {}))
+                   if stopped_thinking else {}),
+                **({"on_progress": progress} if progress else {}))
             response, overran = _answer_or_retry_without_thinking(
                 response, client=client, messages=messages, specs=specs,
                 config=model_config, bus=bus, session_id=session_id,
                 role=role, step_id=step_id, round_n=round_n,
-                already_overran=stopped_thinking)
+                already_overran=stopped_thinking, on_progress=progress)
             stopped_thinking = stopped_thinking or overran
         except Cancelled:
             # Stop, mid-generation. Not an error, and not the agent's doing.
@@ -870,12 +874,14 @@ def _run_agent(
         # landed inside a tool call's arguments — but a reply cut anywhere is a
         # reply the model believes it finished, and it will write the same
         # oversized thing again next round unless told.
-        if response.finish_reason == "length" and not any(c.malformed for c in calls):
+        if response.finish_reason in ("length", "time") and not any(c.malformed for c in calls):
             turn.truncated_calls += 1
+            cut_at = (f"the {int(model_config.timeout_s)}-second time limit"
+                      if response.finish_reason == "time"
+                      else f"the {model_config.max_tokens}-token output limit")
             told = (
-                f"Your reply was cut off at the {model_config.max_tokens}-token output "
-                f"limit — everything after that point was lost, including anything you "
-                f"were part-way through writing.\n\n"
+                f"Your reply was cut off at {cut_at} — everything after that point "
+                f"was lost, including anything you were part-way through writing.\n\n"
                 f"Write in pieces from here on:\n"
                 f"- `edit_file` to change part of a file — it costs the size of the "
                 f"change, not the size of the file\n"
@@ -886,8 +892,7 @@ def _run_agent(
                 f"place.")
             bus.emit("truncated", session_id, agent=role.name, step_id=step_id, payload={
                 "limit": model_config.max_tokens, "attempt": turn.truncated_calls,
-                "message": (f"The reply hit the {model_config.max_tokens}-token output "
-                            f"limit and was cut. Told to write incrementally."),
+                "message": f"The reply hit {cut_at} and was cut. Told to write incrementally.",
             })
             messages.append({"role": "user", "content": told})
 
@@ -897,7 +902,7 @@ def _run_agent(
                 # Almost always the model ran out of output tokens partway
                 # through a large `content` argument. Say so — "missing
                 # required argument 'path'" sends it hunting for the wrong bug.
-                truncated = response.finish_reason == "length"
+                truncated = response.finish_reason in ("length", "time")
                 if truncated:
                     cut_short.append(call)
                     turn.truncated_calls += 1
@@ -1069,7 +1074,7 @@ def _run_agent(
             # returned nothing at all, having spent the reply budget. Say which
             # of the two happened, because the fixes are different — one is a
             # prompt, the other is the model's reply budget.
-            silent = (follow_up.finish_reason == "length"
+            silent = (follow_up.finish_reason in ("length", "time")
                       and not (follow_up.text or "").strip())
             turn.text += (
                 f"\n\nOUTCOME: FAILED — the model used its whole "
@@ -1142,6 +1147,36 @@ def _thinking_state(config, stopped_thinking: bool) -> dict:
     return {"thinking": not stopped_thinking}
 
 
+def _progress_reporter(client, bus, session_id, *, role, step_id, round_n, config):
+    """A callback the streaming client feeds about once a second.
+
+    Each report becomes a transient `model_progress` event — live on the
+    socket, never in history or on disk — under ONE stable id per round, so
+    the console holds a single line that updates in place while the model
+    generates, instead of a scrolling column of frames. The final model_call
+    event remains the durable record of the round.
+
+    Returns None for clients that don't stream (fakes, other providers), and
+    they are then called exactly as before.
+    """
+    if not getattr(client, "supports_progress", False):
+        return None
+    ident = f"ev_live_{step_id or 'turn'}_{round_n}"
+
+    def report(info: dict) -> None:
+        phase = str(info.get("phase") or "thinking")
+        bus.emit("model_progress", session_id, id=ident, agent=role.name,
+                 step_id=step_id, transient=True, payload={
+                     **info,
+                     "round": round_n,
+                     "model": config.model,
+                     "preset": config.preset,
+                     "message": f"{phase} · {info.get('tokens', 0)} tokens",
+                 })
+
+    return report
+
+
 def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_id,
                        round_n, stopped_thinking):
     """The two asks made with tools withheld — report now, and state your outcome.
@@ -1156,20 +1191,23 @@ def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_
 
     Returns (response, stopped_thinking).
     """
+    progress = _progress_reporter(client, bus, session_id, role=role,
+                                  step_id=step_id, round_n=round_n, config=config)
     response = client.complete(
         messages, tools=None, cancel_token=session_id,
         **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
-           if stopped_thinking else {}))
+           if stopped_thinking else {}),
+        **({"on_progress": progress} if progress else {}))
     response, overran = _answer_or_retry_without_thinking(
         response, client=client, messages=messages, specs=None, config=config,
         bus=bus, session_id=session_id, role=role, step_id=step_id,
-        round_n=round_n, already_overran=stopped_thinking)
+        round_n=round_n, already_overran=stopped_thinking, on_progress=progress)
     return response, stopped_thinking or overran
 
 
 def _answer_or_retry_without_thinking(response, *, client, messages, specs, config,
                                       bus, session_id, role, step_id, round_n,
-                                      already_overran=False):
+                                      already_overran=False, on_progress=None):
     """Recover a round the model spent entirely on thinking.
 
     `max_tokens` caps *generated* tokens, and reasoning is generated tokens — so
@@ -1196,6 +1234,11 @@ def _answer_or_retry_without_thinking(response, *, client, messages, specs, conf
     The original spiral is still real too: measured once, thirty replies in
     a row each burned the whole budget on reasoning and answered nothing.
 
+    Since the client started streaming, a generation can also be cut on wall
+    clock (`finish_reason: "time"`) — that cut lands here identically: a
+    think too long to wait for is the same failure as a think too big to fit,
+    and gets the same recovery and the same latch.
+
     Returns (response, overran) — the flag is what turns thinking off for the
     remainder of the turn.
     """
@@ -1203,23 +1246,30 @@ def _answer_or_retry_without_thinking(response, *, client, messages, specs, conf
         # Thinking is already off for this turn; nothing to recover.
         return response, True
     thought = (getattr(response, "reasoning", "") or "").strip()
-    if response.finish_reason != "length" or (response.text or "").strip() or not thought:
+    # "length" is the server's size cut; "time" is ours — the streaming client
+    # cuts a generation that outlives its wall-clock budget. Spent entirely on
+    # reasoning, both mean the same thing: the think ate the reply.
+    if response.finish_reason not in ("length", "time") or (response.text or "").strip() \
+            or not thought:
         return response, False
     if response.tool_calls:
         return response, False                 # it got far enough to act
     if (getattr(config, "kind", "") or "") not in THINKING_TOGGLE_KINDS:
         return response, False
 
+    budget = (f"{int(config.timeout_s)}-second time budget"
+              if response.finish_reason == "time"
+              else f"{config.max_tokens}-token reply budget")
     bus.emit("thinking_overran", session_id, agent=role.name, step_id=step_id, payload={
         "round": round_n, "limit": config.max_tokens,
         "reasoning_chars": len(thought),
-        "message": (f"The model used its whole {config.max_tokens}-token reply budget "
-                    f"thinking and never began an answer. Asking again without "
-                    f"thinking."),
+        "message": (f"The model used its whole {budget} thinking and never began "
+                    f"an answer. Asking again without thinking."),
     })
     retried = client.complete(
         messages, tools=specs or None, cancel_token=session_id,
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        **({"on_progress": on_progress} if on_progress else {}))
     # Keep the thinking that was paid for: it is the most useful record of why
     # the round went the way it did, and it is what the console shows.
     if not (retried.reasoning or "").strip():

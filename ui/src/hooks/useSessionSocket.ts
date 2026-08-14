@@ -80,7 +80,14 @@ export function useSessionSocket(sessionId: string | null): SocketState {
 
         const event = data as TranceEvent;
         client.setQueryData<TranceEvent[]>(keys.events(sessionId), (current) => {
-          const next = [...(current ?? []), event];
+          const held = current ?? [];
+          // A model_progress frame reuses one id for the whole generation, so
+          // each new frame replaces the last in place — one console line that
+          // updates while the model thinks, not a line per second of it.
+          const at = held.findIndex((h) => h.id === event.id);
+          const next = at >= 0
+            ? [...held.slice(0, at), ...held.slice(at + 1), event]
+            : [...held, event];
           return next.length > LIVE_TAIL ? next.slice(-LIVE_TAIL) : next;
         });
 
@@ -100,8 +107,15 @@ export function useSessionSocket(sessionId: string | null): SocketState {
               // live events alone would pass off a tail as the whole history.
               if (!current) return current;
               // A fetch that lands after the socket delivered the same event
-              // would otherwise show it twice, under one React key.
-              if (current.some((held) => held.id === event.id)) return current;
+              // would otherwise show it twice, under one React key — and a
+              // model_progress frame arrives repeatedly under one id, each
+              // frame superseding the last.
+              const at = current.findIndex((held) => held.id === event.id);
+              if (at >= 0) {
+                const copy = [...current];
+                copy[at] = event;
+                return copy;
+              }
               return [...current, event];
             });
         }
