@@ -171,6 +171,9 @@ class ModelPreset:
     #: "size" — max output tokens, the classic cap (right for a fast endpoint,
     #: where seconds of wall clock say nothing). Empty means "time".
     cap: str = ""
+    #: The wall-clock budget for one generation when `cap` is "time".
+    #: 0 means "inherit the agent defaults" (600s).
+    timeout_s: float = 0
     description: str = ""
 
     def __post_init__(self) -> None:

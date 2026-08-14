@@ -817,6 +817,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 f"choose the API this model speaks: {', '.join(KIND_DEFAULTS)}"))
         if (body.get("cap") or "") not in ("", "time", "size"):
             raise HTTPException(400, 'cap must be "time" or "size"')
+        if float(body.get("timeout_s") or 0) < 0:
+            raise HTTPException(400, "the time budget cannot be negative")
         candidate = ModelPreset.from_dict({**body, "kind": kind, "name": name})
         model = (candidate.model or "").strip()
         # Claude Code picks up whatever the CLI is signed in to when no id is

@@ -196,7 +196,7 @@ class Config:
             # An explicit setting on the preset or the role always wins; the
             # fallback scales with the window rather than sitting at 4096.
             max_tokens=max_tokens or default_output_tokens(window, defaults.max_tokens),
-            timeout_s=defaults.timeout_s,
+            timeout_s=(chosen_preset.timeout_s if chosen_preset else 0) or defaults.timeout_s,
             max_tool_rounds=defaults.max_tool_rounds,
             context_window=window,
             provider=chosen.name,

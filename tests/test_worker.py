@@ -460,6 +460,10 @@ def test_the_preset_chooses_what_cuts_a_long_reply(monkeypatch):
     config.presets["local"] = ModelPreset(name="local", kind="llamacpp", model="q")
     assert config.resolve(config.worker, preset="fast").cap == "size"
     assert config.resolve(config.worker, preset="local").cap == "time"
+    # The budget itself is the preset's to set; 0 inherits the default.
+    config.presets["local"].timeout_s = 1200
+    assert config.resolve(config.worker, preset="local").timeout_s == 1200
+    assert config.resolve(config.worker, preset="fast").timeout_s == 600.0
 
     # timeout_s of zero would cut instantly under "time"; under "size" the
     # stream runs to its natural end.

@@ -85,6 +85,9 @@ export interface ModelPreset {
   /** What cuts a reply that goes long: "time" (wall clock) or "size"
    *  (max output tokens only). Empty means time. */
   cap?: "" | "time" | "size";
+  /** Wall-clock budget in seconds for one generation when cap is time.
+   *  0 inherits the default (600). */
+  timeout_s?: number;
   description?: string;
   has_key: boolean;
   self_contained: boolean;

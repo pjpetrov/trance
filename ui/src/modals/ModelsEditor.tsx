@@ -156,19 +156,28 @@ export function ModelsEditor() {
               </Field>
             </div>
 
-            <Field
-              label="A long reply is cut by"
-              hint={(draft.cap || "time") === "time"
-                ? "Right for a slow local model: a huge think is minutes of generation."
-                : "Right for a fast endpoint: only the token cap above limits a reply."}
-            >
-              <Select value={draft.cap || "time"}
-                      onChange={(e) => library.edit({
-                        cap: e.target.value as "time" | "size" })}>
-                <option value="time">time — the wall clock (10 min of generation)</option>
-                <option value="size">size — max output tokens only</option>
-              </Select>
-            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field
+                label="A long reply is cut by"
+                hint={(draft.cap || "time") === "time"
+                  ? "Right for a slow local model: a huge think is minutes of generation."
+                  : "Right for a fast endpoint: only the token cap above limits a reply."}
+              >
+                <Select value={draft.cap || "time"}
+                        onChange={(e) => library.edit({
+                          cap: e.target.value as "time" | "size" })}>
+                  <option value="time">time — the wall clock</option>
+                  <option value="size">size — max output tokens only</option>
+                </Select>
+              </Field>
+              {(draft.cap || "time") === "time" && (
+                <Field label="Time budget (seconds)" hint="0 = the default, 600.">
+                  <Input type="number" value={draft.timeout_s || 0}
+                         onChange={(e) => library.edit({
+                           timeout_s: Number(e.target.value) || 0 })} />
+                </Field>
+              )}
+            </div>
 
             <label className="flex items-center gap-2 text-sm"
                    title="The model an agent falls back to when its own is deleted or missing — instead of whichever model happens to be first in the file">
