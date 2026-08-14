@@ -39,6 +39,9 @@ class ModelConfig:
     #: The model definition this came from, so usage can be counted against the
     #: name you gave it rather than a model id two definitions might share.
     preset: str = ""
+    #: What cuts a reply that goes long: "time" (wall clock, `timeout_s`) or
+    #: "size" (max_tokens only — the streaming client never cuts on time).
+    cap: str = "time"
 
     @property
     def input_budget(self) -> int:
@@ -199,6 +202,7 @@ class Config:
             provider=chosen.name,
             kind=chosen.kind,
             preset=chosen_preset.name if chosen_preset else "",
+            cap=(chosen_preset.cap if chosen_preset else "") or "time",
         )
 
     def for_role(self, role) -> ModelConfig:

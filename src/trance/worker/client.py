@@ -159,8 +159,7 @@ class ChatClient:
         """
         for attempt in range(1, RETRIES + 1):
             try:
-                idle = min(self.config.timeout_s, IDLE_TIMEOUT_S)
-                with urllib.request.urlopen(request, timeout=idle) as resp:
+                with urllib.request.urlopen(request, timeout=IDLE_TIMEOUT_S) as resp:
                     handle.response = resp
                     headers = getattr(resp, "headers", None)
                     kind = str(headers.get("Content-Type", "") if headers else "")
@@ -203,7 +202,11 @@ class ChatClient:
           connection is the cut: llama.cpp stops generating on disconnect.
         """
         started = time.monotonic()
-        deadline = started + self.config.timeout_s
+        # The preset chooses what cuts a long reply. Capped by size, the wall
+        # clock never cuts: the server's max_tokens is the only limit, and the
+        # idle timeout alone guards against a server gone silent.
+        by_time = (getattr(self.config, "cap", "time") or "time") != "size"
+        deadline = started + self.config.timeout_s if by_time else None
         reasoning: list[str] = []
         content: list[str] = []
         tool_calls: dict[int, dict] = {}
@@ -274,7 +277,7 @@ class ChatClient:
                     })
                 except Exception:
                     pass  # a broken progress line must not kill the call
-            if now >= deadline:
+            if deadline is not None and now >= deadline:
                 cut = True
                 break
 

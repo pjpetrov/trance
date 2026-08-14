@@ -442,3 +442,35 @@ def test_a_mid_stream_truncation_error_is_recovered_like_the_http_one(monkeypatc
     got = ChatClient(ModelConfig()).complete([{"role": "user", "content": "hi"}])
     assert got.finish_reason == "length"
     assert got.provider_error == "truncated_tool_call"
+
+
+def test_the_preset_chooses_what_cuts_a_long_reply(monkeypatch):
+    """cap="size" turns the wall-clock cut off: a generation may run as long
+    as it keeps producing tokens, and only max_tokens (the server's cut)
+    limits it — the right governor for a fast endpoint. The default stays
+    "time", which is what a slow local model needs."""
+    import urllib.request
+
+    from trance.config import Config, ModelConfig
+    from trance.providers.base import ModelPreset
+    from trance.worker.client import ChatClient
+
+    config = Config()
+    config.presets["fast"] = ModelPreset(name="fast", kind="openai", model="m", cap="size")
+    config.presets["local"] = ModelPreset(name="local", kind="llamacpp", model="q")
+    assert config.resolve(config.worker, preset="fast").cap == "size"
+    assert config.resolve(config.worker, preset="local").cap == "time"
+
+    # timeout_s of zero would cut instantly under "time"; under "size" the
+    # stream runs to its natural end.
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda request, timeout=None: _sse([
+            'data: {"choices":[{"delta":{"content":"all"}}]}\n',
+            'data: {"choices":[{"delta":{"content":" of it"},"finish_reason":"stop"}]}\n',
+            "data: [DONE]\n",
+        ]))
+    got = ChatClient(ModelConfig(timeout_s=0, cap="size")).complete(
+        [{"role": "user", "content": "hi"}])
+    assert got.text == "all of it"
+    assert got.finish_reason == "stop"

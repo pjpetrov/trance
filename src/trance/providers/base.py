@@ -166,6 +166,11 @@ class ModelPreset:
     context_window: int = 0
     #: 0 means "inherit the agent defaults".
     max_tokens: int = 0
+    #: What cuts a reply that goes long: "time" — the wall clock (right for a
+    #: slow local model, where a 30k-token generation is half an hour) — or
+    #: "size" — max output tokens, the classic cap (right for a fast endpoint,
+    #: where seconds of wall clock say nothing). Empty means "time".
+    cap: str = ""
     description: str = ""
 
     def __post_init__(self) -> None:

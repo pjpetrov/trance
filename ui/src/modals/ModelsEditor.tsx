@@ -156,6 +156,20 @@ export function ModelsEditor() {
               </Field>
             </div>
 
+            <Field
+              label="A long reply is cut by"
+              hint={(draft.cap || "time") === "time"
+                ? "Right for a slow local model: a huge think is minutes of generation."
+                : "Right for a fast endpoint: only the token cap above limits a reply."}
+            >
+              <Select value={draft.cap || "time"}
+                      onChange={(e) => library.edit({
+                        cap: e.target.value as "time" | "size" })}>
+                <option value="time">time — the wall clock (10 min of generation)</option>
+                <option value="size">size — max output tokens only</option>
+              </Select>
+            </Field>
+
             <label className="flex items-center gap-2 text-sm"
                    title="The model an agent falls back to when its own is deleted or missing — instead of whichever model happens to be first in the file">
               <input

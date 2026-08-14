@@ -82,6 +82,9 @@ export interface ModelPreset {
   api_key?: string | null;
   context_window: number;
   max_tokens: number;
+  /** What cuts a reply that goes long: "time" (wall clock) or "size"
+   *  (max output tokens only). Empty means time. */
+  cap?: "" | "time" | "size";
   description?: string;
   has_key: boolean;
   self_contained: boolean;
