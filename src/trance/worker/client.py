@@ -278,7 +278,10 @@ class ChatClient:
                 cut = True
                 break
 
-        message: dict[str, Any] = {"content": "".join(content)}
+        # The role is not optional: this message is replayed into the next
+        # request's conversation, and llama.cpp 500s the whole request over a
+        # message without one ("Failed to parse messages: Missing 'role'").
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
         if reasoning:
             message["reasoning_content"] = "".join(reasoning)
         if tool_calls:

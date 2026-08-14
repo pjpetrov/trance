@@ -389,6 +389,9 @@ def test_streamed_chunks_reassemble_into_one_response(monkeypatch):
     assert got.finish_reason == "tool_calls"
     assert [(c.name, c.arguments) for c in got.tool_calls] == [("list_files", {"path": "."})]
     assert got.usage == {"prompt_tokens": 10, "completion_tokens": 6}
+    # Replayed into the next request as-is — llama.cpp rejects the whole
+    # conversation over a message without a role.
+    assert got.raw_message["role"] == "assistant"
 
 
 def test_a_generation_that_outlives_its_time_budget_is_cut_not_errored(monkeypatch):
