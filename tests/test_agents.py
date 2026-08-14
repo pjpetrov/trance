@@ -9612,11 +9612,20 @@ def test_a_wandering_delegated_step_is_flagged_while_it_is_one_step(tmp_path, mo
                       "cache_read_input_tokens": 2_686_111, "output_tokens": 31_711},
             "is_error": False, "duration_api_ms": 90_000, "total_cost_usd": 4.1}
 
+    import io
+
     class _Proc:
         pid = 4242
         returncode = 0
-        def communicate(self, timeout=None):
-            return json.dumps(body), ""
+        def __init__(self):
+            self.stdout = io.StringIO(json.dumps(body) + "\n")
+            self.stderr = io.StringIO("")
+        def wait(self, timeout=None):
+            return 0
+        def poll(self):
+            return 0
+        def kill(self):
+            pass
 
     monkeypatch.setattr(delegate, "_binary", lambda: "/usr/bin/claude")
     monkeypatch.setattr(delegate.vcs, "head", lambda project: "abc123")

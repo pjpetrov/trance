@@ -35,8 +35,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import signal
 import subprocess
+import threading
+import time
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -107,6 +110,32 @@ class _Killable:
                 pass
 
 
+def _activity(item: dict) -> str:
+    """One console line for one streamed turn: what it said, what it ran.
+
+    The stream's assistant messages carry text blocks and tool_use blocks;
+    everything else (tool results, system frames) is noise at this altitude.
+    The argument shown is the one a person recognises — the file, the
+    command, the pattern — not the whole input object.
+    """
+    if item.get("type") != "assistant":
+        return ""
+    bits: list[str] = []
+    for part in (item.get("message") or {}).get("content") or []:
+        kind = part.get("type")
+        if kind == "text":
+            text = " ".join(str(part.get("text") or "").split())
+            if text:
+                bits.append(text[:200])
+        elif kind == "tool_use":
+            args = part.get("input") or {}
+            shown = str(args.get("file_path") or args.get("path")
+                        or args.get("command") or args.get("pattern") or "")
+            name = str(part.get("name") or "tool")
+            bits.append(f"{name}({shown[:90]})" if shown else name)
+    return " — ".join(bits)
+
+
 def run_delegated(*, role, task: str, project: Path, config, bus, session_id: str,
                   step_id: str, memory=None, goal: str = "", placement: str = "",
                   steering: list[str] | None = None) -> dict:
@@ -120,7 +149,10 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
 
     prompt = _prompt(role=role, task=task, goal=goal, placement=placement,
                      memory=memory, steering=steering or [])
-    command = [binary, "-p", prompt, "--output-format", "json"]
+    # stream-json: one JSON line per internal turn, as it happens — the
+    # difference between an hour of silence and a console that says what the
+    # delegated step is doing right now.
+    command = [binary, "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if role.paths:
         # A writer: its own edit tools, and Bash shaped from the same command
         # list every other agent answers to. The remit is checked from the
@@ -174,19 +206,74 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
     # An explicitly longer model timeout is respected; a shorter one is not
     # applied to something it was never measuring.
     limit = max(float(config.timeout_s or 0), DELEGATED_TIMEOUT_S)
+
+    # Both pipes drained by threads: an unread stderr fills and deadlocks the
+    # CLI, and reading stdout through a queue is what lets the deadline be
+    # enforced without select — which the tests' fake streams cannot do.
+    lines: "queue.Queue[str | None]" = queue.Queue()
+
+    def _pump(stream, sink: list | None = None) -> None:
+        try:
+            for raw in iter(stream.readline, ""):
+                if sink is not None:
+                    sink.append(raw)
+                else:
+                    lines.put(raw)
+        except (OSError, ValueError):
+            pass
+        finally:
+            if sink is None:
+                lines.put(None)
+
+    err_buf: list[str] = []
+    threading.Thread(target=_pump, args=(proc.stdout,), daemon=True).start()
+    threading.Thread(target=_pump, args=(proc.stderr, err_buf), daemon=True).start()
+
+    final: dict | None = None
+    all_out: list[str] = []
+    turn_no = 0
+    deadline = time.monotonic() + limit
     try:
-        out, err = proc.communicate(timeout=limit)
-    except subprocess.TimeoutExpired as exc:
-        handle.abort()
-        # It ran for an hour: say what it managed, rather than only that it
-        # stopped. The files are on disk behind the checkpoint.
-        touched = _touched(project, before)
-        raise BackendError(
-            f"Claude Code did not finish this step within {limit / 60:.0f} minutes. "
-            f"It changed {len(touched) or 'no'} file(s)"
-            + (f" ({', '.join(touched[:4])})" if touched else "")
-            + ". The work is on disk behind this step's checkpoint; re-run the step "
-            + "to carry on, or split it into smaller ones.") from exc
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                handle.abort()
+                # It ran for an hour: say what it managed, rather than only
+                # that it stopped. The files are behind the checkpoint.
+                touched = _touched(project, before)
+                raise BackendError(
+                    f"Claude Code did not finish this step within "
+                    f"{limit / 60:.0f} minutes. "
+                    f"It changed {len(touched) or 'no'} file(s)"
+                    + (f" ({', '.join(touched[:4])})" if touched else "")
+                    + ". The work is on disk behind this step's checkpoint; "
+                    + "re-run the step to carry on, or split it into smaller ones.")
+            try:
+                raw = lines.get(timeout=min(remaining, 5.0))
+            except queue.Empty:
+                continue
+            if raw is None:
+                break
+            all_out.append(raw)
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if item.get("type") == "result":
+                final = item
+                continue
+            said = _activity(item)
+            if said:
+                turn_no += 1
+                bus.emit("delegated_activity", session_id, agent=role.name,
+                         step_id=step_id, payload={
+                             "turn": turn_no,
+                             "message": said,
+                         })
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            handle.abort()
     finally:
         clear_inflight(session_id, handle)
 
@@ -194,17 +281,22 @@ def run_delegated(*, role, task: str, project: Path, config, bus, session_id: st
     if handle.aborted:
         raise Cancelled("the delegated step was stopped")
 
-    done = subprocess.CompletedProcess(command, proc.returncode, out or "", err or "")
-
-    if _is_abort(done.stdout) or done.returncode != 0:
-        raise BackendError(_why(done.stderr or done.stdout, done.returncode))
-    try:
-        body = json.loads(done.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        raise BackendError(f"claude -p returned something that is not JSON: "
-                           f"{(done.stdout or '')[:200]}") from exc
+    stdout_text = "".join(all_out)
+    err = "".join(err_buf)
+    if _is_abort(stdout_text) or proc.returncode != 0:
+        raise BackendError(_why(err or stdout_text, proc.returncode))
+    if final is not None:
+        body = final
+    else:
+        # An older CLI, or the single-blob json format — the tests' error
+        # fixtures speak it too. One document on stdout, parsed whole.
+        try:
+            body = json.loads(stdout_text or "{}")
+        except json.JSONDecodeError as exc:
+            raise BackendError(f"claude -p returned something that is not JSON: "
+                               f"{stdout_text[:200]}") from exc
     if body.get("is_error"):
-        raise BackendError(_why(body.get("result") or "", done.returncode))
+        raise BackendError(_why(body.get("result") or "", proc.returncode))
 
     text = body.get("result") or ""
     usage = _usage(body.get("usage") or {})

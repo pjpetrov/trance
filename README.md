@@ -113,9 +113,10 @@ a hard escalation after the local model failed twice.
 measured here:
 
 - The CLI throttles programmatic use, so trance cannot drive it round by
-  round — the whole step is handed over as **one opaque call**. No live
-  console, no context gauge, no steering mid-step; usage lands as one lump
-  when it exits.
+  round — the whole step is handed over as **one call**. Its internal turns
+  stream into the console as they happen (what it said, which tool on which
+  file), but there is no context gauge and no steering mid-step; usage lands
+  as one lump when it exits.
 - It codes with **its own tools**. Remits and command allowlists are judged
   from the git diff after the fact, not enforced as writes happen — the one
   backend where trance's guardrails are post-hoc.

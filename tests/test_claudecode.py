@@ -282,6 +282,7 @@ def fake_delegate(monkeypatch, result: str, *, num_turns: int = 3,
     Git has to keep working: this backend is judged by what the diff says it
     changed, so a fake that swallows `git` too would be testing nothing.
     """
+    import io
     import subprocess
 
     from trance.agents import delegate
@@ -289,12 +290,34 @@ def fake_delegate(monkeypatch, result: str, *, num_turns: int = 3,
     monkeypatch.setattr("trance.providers.claudecode_client.shutil.which",
                         lambda _: "/usr/bin/claude")
     real_popen = subprocess.Popen
-    body = json.dumps({"is_error": False, "result": result,
-                       "num_turns": num_turns, "duration_api_ms": 900,
-                       "total_cost_usd": 0.02,
-                       "usage": {"input_tokens": 6,
-                                 "cache_read_input_tokens": 40000,
-                                 "output_tokens": 465}})
+    # The stream the real CLI speaks: one JSON line per internal turn, then
+    # the result line the old single-blob format used to be.
+    stream = "".join(line + "\n" for line in [
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Looking at the input layer."},
+            {"type": "tool_use", "name": "Read",
+             "input": {"file_path": "src/core/Input.js"}}]}}),
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Edit",
+             "input": {"file_path": "src/Player.js"}}]}}),
+        json.dumps({"type": "result", "is_error": False, "result": result,
+                    "num_turns": num_turns, "duration_api_ms": 900,
+                    "total_cost_usd": 0.02,
+                    "usage": {"input_tokens": 6,
+                              "cache_read_input_tokens": 40000,
+                              "output_tokens": 465}}),
+    ])
+
+    class _Stdout(io.StringIO):
+        """Fires the side effect on first read, as the CLI would mid-run."""
+
+        fired = False
+
+        def readline(self, *args):
+            if not self.fired and side_effect is not None:
+                type(self).fired = True
+                side_effect()
+            return super().readline(*args)
 
     class FakeProc:
         """Enough of Popen for the delegate: it runs it, waits, and can kill it."""
@@ -302,10 +325,12 @@ def fake_delegate(monkeypatch, result: str, *, num_turns: int = 3,
         pid = 4242
         returncode = 0
 
-        def communicate(self, timeout=None):
-            if side_effect is not None:
-                side_effect()
-            return body, ""
+        def __init__(self):
+            self.stdout = _Stdout(stream)
+            self.stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return 0
 
         def poll(self):
             return 0
@@ -510,14 +535,27 @@ def test_stop_kills_a_delegated_step(tmp_path, monkeypatch):
     killed = threading.Event()
     started = threading.Event()
 
+    import io
+
+    class _Thinking:
+        """A stdout that hangs mid-turn until the kill, then EOFs."""
+
+        def readline(self, *args):
+            started.set()
+            killed.wait(5)                     # as if the CLI were thinking
+            return ""
+
     class SlowProc:
         pid = 4242
         returncode = 0
+        stdout = _Thinking()
+        stderr = io.StringIO("")
 
-        def communicate(self, timeout=None):
-            started.set()
-            killed.wait(5)                     # as if the CLI were thinking
-            return "", ""
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return None
 
         def kill(self):
             killed.set()
@@ -566,6 +604,8 @@ def test_a_delegated_step_gets_a_whole_steps_worth_of_time(tmp_path, monkeypatch
     the whole step, with its own loop of reads, edits and test runs inside it,
     which is how a tester running a suite ended with "did not finish within
     600s" and nothing to show for it."""
+    import io
+    import itertools
     import subprocess
 
     from trance.agents import delegate
@@ -576,15 +616,31 @@ def test_a_delegated_step_gets_a_whole_steps_worth_of_time(tmp_path, monkeypatch
 
     monkeypatch.setattr("trance.providers.claudecode_client.shutil.which",
                         lambda _: "/usr/bin/claude")
-    asked = {}
+    # The clock leaps an hour on its second reading: the deadline must fire
+    # from the loop's own arithmetic, not from a subprocess timeout that no
+    # longer exists.
+    ticks = itertools.chain([0.0], itertools.repeat(10_000.0))
+    monkeypatch.setattr(delegate.time, "monotonic", lambda: next(ticks))
+
+    class _Silent:
+        def readline(self, *args):
+            import time as _t
+            _t.sleep(0.05)                     # never says anything useful
+            return " \n"
 
     class Slow:
         pid = 1
         returncode = 0
+        stderr = io.StringIO("")
 
-        def communicate(self, timeout=None):
-            asked["timeout"] = timeout
-            raise subprocess.TimeoutExpired("claude", timeout)
+        def __init__(self):
+            self.stdout = _Silent()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return None
 
         def kill(self):
             pass
@@ -602,7 +658,7 @@ def test_a_delegated_step_gets_a_whole_steps_worth_of_time(tmp_path, monkeypatch
                                config=ModelConfig(kind="claudecode", timeout_s=600),
                                bus=EventBus(), session_id="s", step_id="st")
 
-    assert asked["timeout"] == delegate.DELEGATED_TIMEOUT_S == 3600
+    assert delegate.DELEGATED_TIMEOUT_S == 3600
     said = str(raised.value)
     assert "60 minutes" in said
     # It says what it managed, not only that it stopped.
@@ -636,3 +692,33 @@ def test_the_prompt_is_on_the_launch_event_not_only_the_landing(tmp_path, monkey
     assert launch.payload["summary"]["message_count"] == 1
     # The command is recorded without the prompt riding in it twice.
     assert all("wire the seam" not in c for c in launch.payload["command"])
+
+
+def test_the_stream_narrates_the_delegated_step_live(tmp_path, monkeypatch):
+    """The hour of silence ends: each internal turn the CLI streams becomes a
+    console line — what it said, which tool it ran on which file — emitted as
+    it happens, not recounted when the step lands."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.runner import run_agent
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    fake_delegate(monkeypatch, "done\n\nOUTCOME: SUCCESS")
+
+    bus = EventBus()
+    seen = []
+    bus.subscribe_sync(seen.append)
+    run_agent(role=BUILTIN_ROLES["developer"], task="fix the input",
+              project=project, config=ModelConfig(kind="claudecode"), bus=bus,
+              session_id="s", step_id="st")
+
+    turns = [e for e in seen if e.type == "delegated_activity"]
+    assert [e.payload["turn"] for e in turns] == [1, 2]
+    assert "Looking at the input layer. — Read(src/core/Input.js)" \
+        == turns[0].payload["message"]
+    assert turns[1].payload["message"] == "Edit(src/Player.js)"
+    # And the CLI was asked to stream, not to answer in one blob.
+    launch = next(e for e in seen if e.type == "delegated")
+    assert "stream-json" in launch.payload["command"]
