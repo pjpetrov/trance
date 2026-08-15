@@ -1250,6 +1250,9 @@ def _compact_conversation(messages, *, client, config, bus, session_id, role,
     bus.emit("model_call", session_id, agent=role.name, step_id=step_id, payload={
         "round": round_n, "model": config.model, "preset": config.preset,
         "base_url": config.base_url,
+        # Marked so "continue from here" never mistakes the summarization
+        # for a round of the agent's own conversation.
+        "purpose": "compaction",
         "duration_ms": round((time.time() - started) * 1000, 1),
         "messages": request, "response_text": response.text,
         "reasoning": response.reasoning,

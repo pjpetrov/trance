@@ -12125,15 +12125,16 @@ def test_continue_from_a_block_picks_the_conversation_back_up(tmp_path, monkeypa
              "function": {"name": "read_file", "arguments": '{"path": "a.ts"}'}}]},
         {"role": "tool", "tool_call_id": "c1", "content": "the source"},
     ]
-    anchor = app.state.bus.emit("model_call", sid, agent="developer", payload={
-        "messages": recorded, "response_text": "I read it; half done.",
-        "tool_calls": [],
-    })
-
     session = app.state.store.get(sid)
     step = Step(role="", loop="test-and-fix", task="t")
-    step.attempts = [Attempt(n=1, node="n_fix", worker_event_id=anchor.id)]
     session.flow = Flow(steps=[step])
+    anchor = app.state.bus.emit("model_call", sid, agent="developer",
+                                step_id=step.id, payload={
+                                    "messages": recorded,
+                                    "response_text": "I read it; half done.",
+                                    "tool_calls": [],
+                                })
+    step.attempts = [Attempt(n=1, node="n_fix", worker_event_id=anchor.id)]
 
     out = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/1/continue")
     assert out.status_code == 200
@@ -12221,3 +12222,47 @@ def test_a_continued_turn_resumes_its_own_conversation(tmp_path, monkeypatch):
     engine._execute(step)
     assert seeds[0] == recorded and all(s is None for s in seeds[1:])
     assert step.resume_messages == []                # spent, not sticky
+
+
+def test_continue_survives_the_disk_trace_dropping_fat_prompts(tmp_path, monkeypatch):
+    """After a restart the bus is empty and events come from disk, where any
+    prompt over the size cap was replaced by a marker — exactly the rounds
+    most worth continuing. The conversation is rebuilt from what the log
+    keeps durably: the last intact prompt as the base, then each round's
+    reply re-paired with the tool results that followed it."""
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _block_rerun_app(tmp_path, monkeypatch)
+    session = app.state.store.get(sid)
+    step = Step(role="", loop="test-and-fix", task="t")
+    session.flow = Flow(steps=[step])
+    bus = app.state.bus
+
+    base = [{"role": "system", "content": "dev"}, {"role": "user", "content": "build"}]
+    bus.emit("model_call", sid, agent="developer", step_id=step.id, payload={
+        "messages": base, "response_text": "",
+        "tool_calls": [{"name": "read_file", "arguments": {"path": "a.ts"}}]})
+    bus.emit("tool_call", sid, agent="developer", step_id=step.id,
+             payload={"name": "read_file", "result": "the source"})
+    bus.emit("model_call", sid, agent="developer", step_id=step.id, payload={
+        "messages": "[241,000 bytes not kept on disk]",   # the trace's marker
+        "response_text": "",
+        "tool_calls": [{"name": "write_file", "arguments": {"path": "b.ts"}}]})
+    bus.emit("tool_call", sid, agent="developer", step_id=step.id,
+             payload={"name": "write_file", "result": "wrote b.ts"})
+    bus.emit("model_call", sid, agent="developer", step_id=step.id, payload={
+        "messages": "[198,000 bytes not kept on disk]",
+        "response_text": "halfway there", "tool_calls": []})
+
+    step.attempts = [Attempt(n=1, node="n_fix")]          # crashed: no anchor id
+    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/1/continue")
+    assert out.status_code == 200
+    held = step.resume_messages
+    assert held[:2] == base
+    assert held[2]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert held[3] == {"role": "tool", "tool_call_id": held[2]["tool_calls"][0]["id"],
+                       "content": "the source"}
+    assert held[4]["tool_calls"][0]["function"]["name"] == "write_file"
+    assert held[5]["content"] == "wrote b.ts"
+    assert held[6] == {"role": "assistant", "content": "halfway there"}
+    assert len(held) == 7

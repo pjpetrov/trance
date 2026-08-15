@@ -95,6 +95,66 @@ def _adopt_runs_state(state_dir: Path, runs_dir: Path) -> None:
             shutil.copy2(source, target)
 
 
+def _continued_conversation(calls, events, *, step_id, system_prompt, task):
+    """The conversation a block's agent had, rebuilt from the event log.
+
+    The newest call whose full `messages` survived is the base. The disk
+    trace replaces oversized prompts with a marker to stay bounded, so after
+    a restart the fattest rounds — the ones most worth continuing — hold no
+    conversation of their own. What the log *does* keep durably is each
+    round's reply and each tool result, so everything after the base is
+    replayed from those: assistant replies with their tool calls re-paired to
+    the results that followed them (under synthetic ids — the originals were
+    never recorded). A reply whose tool calls have no recorded results is
+    dropped, so the model re-issues them against the real disk. When no call
+    kept its messages at all, the base is rebuilt from the role's system
+    prompt and the step's task — approximate, and said to the model by the
+    continuation note either way.
+    """
+    base_at = None
+    for index in range(len(calls) - 1, -1, -1):
+        held = calls[index].payload.get("messages")
+        if isinstance(held, list) and held:
+            base_at = index
+            break
+    if base_at is None:
+        conversation = [
+            {"role": "system", "content": system_prompt or "You are the agent."},
+            {"role": "user", "content": task}]
+        replay = calls
+    else:
+        conversation = [dict(m) for m in calls[base_at].payload["messages"]
+                        if isinstance(m, dict)]
+        replay = calls[base_at:]
+
+    position = {e.id: i for i, e in enumerate(events)}
+    for k, call in enumerate(replay):
+        start = position.get(call.id, len(events))
+        end = (position.get(replay[k + 1].id, len(events))
+               if k + 1 < len(replay) else len(events))
+        results = [e for e in events[start + 1:end]
+                   if e.type == "tool_call" and e.step_id == step_id
+                   and e.agent == call.agent]
+        asked = call.payload.get("tool_calls")
+        asked = asked if isinstance(asked, list) else []
+        paired = min(len(asked), len(results))
+        message: dict = {"role": "assistant",
+                         "content": str(call.payload.get("response_text") or "")}
+        if paired:
+            message["tool_calls"] = [
+                {"id": f"cont{k}_{j}", "type": "function",
+                 "function": {"name": str(one.get("name") or ""),
+                              "arguments": json.dumps(one.get("arguments") or {})}}
+                for j, one in enumerate(asked[:paired])]
+        if message["content"] or message.get("tool_calls"):
+            conversation.append(message)
+        for j, result in enumerate(results[:paired]):
+            conversation.append({
+                "role": "tool", "tool_call_id": f"cont{k}_{j}",
+                "content": str(result.payload.get("result") or "")})
+    return conversation
+
+
 def create_app(config: Config | None = None, sessions_dir: Path | None = None) -> FastAPI:
     config = config or Config.load()
     # Three scopes of state. The machine's (system_root): models, settings,
@@ -2765,37 +2825,31 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             raise HTTPException(404, "this block was not recorded with its place in the loop")
 
         events = history_for(session_id)
-        anchor = (next((e for e in events if e.id == attempt.worker_event_id), None)
-                  if attempt.worker_event_id else None)
-        if anchor is None:
-            # A block that *crashed* mid-turn never had its event id written —
-            # the engine records it only after the turn returns, and a crashed
-            # turn is the very case continue exists for. The calls themselves
-            # are on the record regardless; take the newest one this block's
-            # agent made in this step.
-            loop = stores_of(session).loops.get(step.loop)
-            node = loop.node(attempt.node) if loop else None
-            wanted = node.role if node else None
-            anchor = next(
-                (e for e in reversed(events)
+        loop = stores_of(session).loops.get(step.loop)
+        node = loop.node(attempt.node) if loop else None
+        wanted = node.role if node else None
+        calls = [e for e in events
                  if e.type == "model_call" and e.step_id == step.id
                  and (wanted is None or e.agent == wanted)
-                 and (e.payload.get("messages") or [])),
-                None)
-        if anchor is None:
+                 and e.payload.get("purpose") != "compaction"]
+        # Continue THIS block, not whatever the step did after it: cut the
+        # record at the block's own last call when the engine wrote one. A
+        # crashed block never got one — its calls are on the record anyway.
+        if attempt.worker_event_id:
+            at = next((i for i, e in enumerate(calls)
+                       if e.id == attempt.worker_event_id), None)
+            if at is not None:
+                calls = calls[:at + 1]
+        if not calls:
             raise HTTPException(409, (
                 "this block recorded no model call to continue from — "
                 "it stopped before its first round finished. Rerun it instead."))
-        recorded = anchor.payload.get("messages") or []
-        if not isinstance(recorded, list) or not recorded:
-            raise HTTPException(409, (
-                "the block's last model call no longer holds its conversation — "
-                "blocks run before this trance version cannot be continued"))
 
-        conversation = [dict(m) for m in recorded if isinstance(m, dict)]
-        reply = str(anchor.payload.get("response_text") or "")
-        if reply and not (anchor.payload.get("tool_calls") or []):
-            conversation.append({"role": "assistant", "content": reply})
+        role_held = stores_of(session).roles.get(wanted) if wanted else None
+        conversation = _continued_conversation(
+            calls, events, step_id=step.id,
+            system_prompt=getattr(role_held, "system_prompt", "") or "",
+            task=step.task or "")
 
         step.resume_node = attempt.node
         step.resume_messages = conversation
