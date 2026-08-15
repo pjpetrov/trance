@@ -453,7 +453,14 @@ class Browser:
         register_inflight(self.cancel_token, self._handle)
 
         endpoint = self._wait_for_devtools(port)
-        self._ws = connect(endpoint, max_size=None, open_timeout=LAUNCH_TIMEOUT_S)
+        # No keepalive pings. The library's default (ping every 20s, fail on a
+        # 20s silence) kills the connection with "1011 keepalive ping timeout"
+        # whenever software-rendered WebGL freezes Chrome's loop past 20s —
+        # which a heavy three.js scene on swiftshader does routinely. This is
+        # a local socket to a child process we own: if Chrome dies the socket
+        # closes by itself, so a ping proves nothing a read doesn't.
+        self._ws = connect(endpoint, max_size=None, open_timeout=LAUNCH_TIMEOUT_S,
+                           ping_interval=None)
         target = self._call("Target.createTarget", {"url": "about:blank"})
         self._session = self._call(
             "Target.attachToTarget", {"targetId": target["targetId"], "flatten": True})["sessionId"]
