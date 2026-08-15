@@ -12266,3 +12266,18 @@ def test_continue_survives_the_disk_trace_dropping_fat_prompts(tmp_path, monkeyp
     assert held[5]["content"] == "wrote b.ts"
     assert held[6] == {"role": "assistant", "content": "halfway there"}
     assert len(held) == 7
+
+
+def test_a_screenshot_is_not_counted_as_a_hundred_thousand_tokens(tmp_path):
+    """The estimator drives the compaction trigger, the trimmer and the gauge.
+    Counting a base64 image as text made one screenshot look like a full
+    window — and since screenshots ride the task message, which no fold may
+    touch, compaction fired every round while the real context was small."""
+    from trance.agents.runner import IMAGE_CHARS, _chars
+
+    screenshot = {"type": "image_url",
+                  "image_url": {"url": "data:image/png;base64," + "A" * 400_000}}
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": "look at these"}, screenshot, screenshot]}]
+
+    assert _chars(messages) == len("look at these") + 2 * IMAGE_CHARS

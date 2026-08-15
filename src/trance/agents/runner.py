@@ -105,10 +105,28 @@ DEFAULT_CHARS_PER_TOKEN = 3.5
 MIN_CHARS_PER_TOKEN = 2.0
 
 
+#: What one image weighs in the estimate, in characters — the same allowance
+#: compaction uses (PI's number). Counting the base64 itself made a single
+#: screenshot look like ~100k tokens of text: the trigger saw a full window,
+#: the gauge and the server saw a small one, and — the screenshots riding the
+#: task message, which no fold may touch — compaction fired every round
+#: without ever bringing the estimate down.
+IMAGE_CHARS = 4800
+
+
 def _chars(messages: list[dict]) -> int:
     total = 0
     for message in messages:
-        total += len(str(message.get("content") or ""))
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            for block in content:
+                kind = block.get("type") if isinstance(block, dict) else ""
+                if kind == "text":
+                    total += len(block.get("text") or "")
+                else:                     # image_url and anything else opaque
+                    total += IMAGE_CHARS
+        else:
+            total += len(str(content))
         if message.get("tool_calls"):
             total += len(str(message["tool_calls"]))
     return total
