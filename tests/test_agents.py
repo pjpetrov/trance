@@ -12059,3 +12059,48 @@ def test_a_conversation_nearing_the_window_is_compacted_not_trimmed(tmp_path, mo
     assert any(e.type == "model_call"
                and e.payload["messages"][0]["content"] == compaction.SYSTEM_PROMPT
                for e in seen)
+
+
+def test_a_bottom_heavy_conversation_still_compacts(tmp_path, monkeypatch):
+    """The live failure this pins: nearly all tokens sat in the newest rounds,
+    the flat verbatim tail reached back to the task, and compaction silently
+    gave up — five rounds of trimming later the step died with "all tool
+    outputs dropped". The tail must shrink until something old can fold."""
+    from trance.agents import compaction, runner
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    config = ModelConfig(kind="llamacpp", max_tokens=600, context_window=64000)
+
+    # system + task + one small old round, then fat new rounds holding ~20k
+    # tokens: the default 20k tail swallows them all, leaving body < 2.
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "small early answer"},
+    ] + [{"role": "assistant", "content": "x" * 17500} for _ in range(4)]
+
+    class _Summarizer:
+        supports_progress = False
+
+        def complete(self, ms, tools=None, cancel_token="", extra_body=None):
+            assert ms[0]["content"] == compaction.SYSTEM_PROMPT
+            return ChatResponse(text="## Goal\nkeep going")
+
+    compacted = runner._compact_conversation(
+        messages, client=_Summarizer(), config=config, bus=bus, session_id="s",
+        role=BUILTIN_ROLES["developer"], step_id="st", round_n=3,
+        chars_per_token=3.5)
+
+    assert compacted is not None
+    done = next(e for e in seen if e.type == "context_compacted")
+    assert done.payload["tokens_after"] < done.payload["tokens_before"]
+    assert not [e for e in seen if e.type == "compaction_failed"]
+    # The head survived and the checkpoint sits right behind it.
+    assert compacted[0]["content"] == "s" and compacted[1]["content"] == "task"
+    assert compacted[2]["content"].startswith(compaction.SUMMARY_PREFIX)

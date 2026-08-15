@@ -1170,12 +1170,26 @@ def _compact_conversation(messages, *, client, config, bus, session_id, role,
     summarizing or the summary call failed — the caller then falls back to
     fit_context's trimming, which was the only behavior before this existed.
     """
-    cut = compaction.find_cut(messages, chars_per_token,
-                              keep_recent=compaction.keep_recent_tokens(config))
-    body = [m for m in messages[compaction.HEAD:cut]
-            if not str(m.get("content") or "").startswith(compaction.SUMMARY_PREFIX)]
-    if len(body) < 2:
-        return None                     # the tail IS the conversation; trim instead
+    # A flat verbatim tail can reach nearly back to the task when the newest
+    # rounds hold most of the tokens — leaving nothing to summarize while the
+    # conversation still busts the budget. Measured live: five rounds of
+    # silent tool-result trimming ended a step with "all tool outputs
+    # dropped". So the tail shrinks by halves until something old enough to
+    # fold exists.
+    keep = compaction.keep_recent_tokens(config)
+    while True:
+        cut = compaction.find_cut(messages, chars_per_token, keep_recent=keep)
+        body = [m for m in messages[compaction.HEAD:cut]
+                if not str(m.get("content") or "").startswith(compaction.SUMMARY_PREFIX)]
+        if len(body) >= 2:
+            break
+        if keep <= 1000:
+            bus.emit("compaction_failed", session_id, agent=role.name, step_id=step_id,
+                     payload={"message": (
+                         "nothing old enough to fold — the newest rounds alone "
+                         "fill the budget; old tool results will be trimmed instead.")})
+            return None
+        keep //= 2
 
     before = _tokens(messages, chars_per_token)
     prior = compaction.previous_summary(messages[:cut])
@@ -1233,9 +1247,14 @@ def _compact_conversation(messages, *, client, config, bus, session_id, role,
         "round": round_n, "tokens_before": before, "tokens_after": after,
         "summarized": len(body), "kept": len(messages) - cut,
         "checkpoint": summary + files_xml,
-        "message": (f"compacted ~{before:,} → ~{after:,} tokens: {len(body)} old "
-                    f"messages became a checkpoint summary; the newest "
-                    f"{len(messages) - cut} stay verbatim"),
+        "message": (
+            f"compacted ~{before:,} → ~{after:,} tokens: {len(body)} old "
+            f"messages became a checkpoint summary; the newest "
+            f"{len(messages) - cut} stay verbatim"
+            if after < before else
+            f"folded {len(body)} old messages into the checkpoint "
+            f"(~{before:,} → ~{after:,} tokens — this fold freed less than the "
+            f"checkpoint holds; the next one builds on it)"),
     })
     return compacted
 
