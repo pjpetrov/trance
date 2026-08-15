@@ -12151,6 +12151,24 @@ def test_continue_from_a_block_picks_the_conversation_back_up(tmp_path, monkeypa
     refused = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/2/continue")
     assert refused.status_code == 409
 
+    # A *crashed* block never got its event id written — the engine records it
+    # only after the turn returns — but its calls are in the log regardless.
+    # Continue finds the newest one for this step instead of refusing.
+    crashed = app.state.bus.emit("model_call", sid, agent="developer",
+                                 step_id=step.id, payload={
+                                     "messages": recorded, "response_text": "",
+                                     "tool_calls": [{"name": "read_file",
+                                                     "arguments": {"path": "a.ts"}}]})
+    assert crashed.id
+    step.attempts.append(Attempt(n=3, node="n_fix"))     # no worker_event_id
+    step.status = "failed"
+    session.status = "idle"
+    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/3/continue")
+    assert out.status_code == 200
+    # The reply ended in tool calls, so it is dropped: re-issued against disk.
+    assert out.json()["messages_restored"] == 4
+    assert step.resume_messages == recorded
+
 
 def test_a_continued_turn_resumes_its_own_conversation(tmp_path, monkeypatch):
     """run_agent with resume_messages sends the recorded conversation plus one

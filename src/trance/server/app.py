@@ -2763,12 +2763,30 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         attempt = next((a for a in step.attempts if a.n == attempt_n), None)
         if attempt is None or not attempt.node:
             raise HTTPException(404, "this block was not recorded with its place in the loop")
-        if not attempt.worker_event_id:
-            raise HTTPException(409, "this block recorded no model call to continue from")
 
-        anchor = next((e for e in history_for(session_id)
-                       if e.id == attempt.worker_event_id), None)
-        recorded = (anchor.payload.get("messages") if anchor else None) or []
+        events = history_for(session_id)
+        anchor = (next((e for e in events if e.id == attempt.worker_event_id), None)
+                  if attempt.worker_event_id else None)
+        if anchor is None:
+            # A block that *crashed* mid-turn never had its event id written —
+            # the engine records it only after the turn returns, and a crashed
+            # turn is the very case continue exists for. The calls themselves
+            # are on the record regardless; take the newest one this block's
+            # agent made in this step.
+            loop = stores_of(session).loops.get(step.loop)
+            node = loop.node(attempt.node) if loop else None
+            wanted = node.role if node else None
+            anchor = next(
+                (e for e in reversed(events)
+                 if e.type == "model_call" and e.step_id == step.id
+                 and (wanted is None or e.agent == wanted)
+                 and (e.payload.get("messages") or [])),
+                None)
+        if anchor is None:
+            raise HTTPException(409, (
+                "this block recorded no model call to continue from — "
+                "it stopped before its first round finished. Rerun it instead."))
+        recorded = anchor.payload.get("messages") or []
         if not isinstance(recorded, list) or not recorded:
             raise HTTPException(409, (
                 "the block's last model call no longer holds its conversation — "
