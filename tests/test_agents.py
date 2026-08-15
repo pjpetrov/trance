@@ -11855,12 +11855,11 @@ def test_the_ledger_measures_tokens_per_second_honestly(tmp_path):
     assert again.lifetime()["local-qwen"]["tokens_per_second"] == 20.0
 
 
-def test_thinking_stays_off_for_the_rest_of_a_turn_once_it_has_overrun(tmp_path, monkeypatch):
-    """One reasoning-only overrun latches thinking off for the whole turn.
-    Raising the reply budget with thinking kept on was tried instead and was
-    worse: thinking expands to fill whatever room it is given, and a 30k-token
-    generation on local hardware outlives the call timeout — a hang, from the
-    user's chair. The latch bounds the waste to one overrun per turn."""
+def test_an_overrun_is_recovered_for_one_call_and_thinking_returns(tmp_path, monkeypatch):
+    """No latch: the reasoning-only overrun is retried without thinking, and
+    the very next round asks with thinking on again — the user's chosen
+    PI-parity trade, paying a wasted generation per monster think instead of
+    running the rest of the turn undergraded. Each overrun recovers alone."""
     from trance.agents.roles import BUILTIN_ROLES
     from trance.agents import runner
     from trance.config import ModelConfig
@@ -11872,30 +11871,34 @@ def test_thinking_stays_off_for_the_rest_of_a_turn_once_it_has_overrun(tmp_path,
     bus.subscribe_sync(lambda event: seen.append(event))
     config = ModelConfig(kind="llamacpp", max_tokens=600, context_window=64000)
 
-    class _Spiraller:
+    class _MonsterThinker:
         def complete(self, messages, tools=None, cancel_token="", extra_body=None):
             calls.append(extra_body)
-            if extra_body is None:                 # thinking on: reasoning only
+            if extra_body is None and len(calls) in (1, 3):   # both fresh rounds overrun
                 return ChatResponse(text="", finish_reason="length",
-                                    reasoning="round and round…")
-            if len(calls) == 2:                    # recovery keeps the turn going
+                                    reasoning="an enormous think…")
+            if len(calls) == 2:                    # first recovery keeps the turn going
                 return ChatResponse(text="", tool_calls=[ToolCall(
                     id="c1", name="list_files", arguments={})])
             return ChatResponse(text="ok\n\nOUTCOME: SUCCESS")
 
-    monkeypatch.setattr(runner, "client_for", lambda cfg: _Spiraller())
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _MonsterThinker())
     runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
                      config=config, bus=bus, session_id="s", step_id="st")
 
-    # One overrun, one no-think recovery — then every later request goes out
-    # with thinking off up front, and no second overrun is ever paid for.
-    overruns = [e for e in seen if e.type == "thinking_overran"]
-    assert len(overruns) == 1
+    # Round 1: thinking ask, overrun, no-think retry. Round 2: thinking ask
+    # again — no latch — overrun again, recovered again.
+    assert calls[0] is None
     assert calls[1] == {"chat_template_kwargs": {"enable_thinking": False}}
-    assert calls[2] == {"chat_template_kwargs": {"enable_thinking": False}}
-    assert config.max_tokens == 600                # the budget is never touched
-    late = [e for e in seen if e.type == "model_waiting"][-1]
-    assert late.payload["thinking"] is False
+    assert calls[2] is None                        # thinking came back
+    assert calls[3] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert len([e for e in seen if e.type == "thinking_overran"]) == 2
+    # Each recovered round reports itself honestly — and the round after the
+    # outcome (the memory nudge) went out thinking, which is the no-latch proof.
+    flags = [e.payload["thinking"] for e in seen
+             if e.type == "model_call" and "thinking" in e.payload]
+    assert flags[:2] == [False, False] and flags[-1] is True
+    assert all(e.payload["thinking"] for e in seen if e.type == "model_waiting")
 
 
 def test_a_streaming_generation_narrates_itself_transiently(tmp_path, monkeypatch):

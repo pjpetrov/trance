@@ -682,10 +682,6 @@ def _run_agent(
     # Trimming against a guess is how a "55k" prompt arrived as 61k and filled
     # the window it was supposed to stay inside.
     chars_per_token = DEFAULT_CHARS_PER_TOKEN
-    #: Set once a reply has come back as nothing but reasoning. From then on the
-    #: turn asks with thinking off, rather than paying the whole budget to
-    #: rediscover the same thing every round.
-    stopped_thinking = False
     stopped_reading = False
 
     for round_n in range(1, max_rounds + 1):
@@ -765,7 +761,7 @@ def _run_agent(
         # one generation and emits nothing while it does, so the console went
         # quiet and there was no way to tell working from stuck. The matching
         # model_call arrives when it answers.
-        thinking = _thinking_state(model_config, stopped_thinking)
+        thinking = _thinking_state(model_config, False)
         bus.emit("model_waiting", session_id, agent=role.name, step_id=step_id, payload={
             "round": round_n,
             "model": model_config.model,
@@ -781,15 +777,12 @@ def _run_agent(
         try:
             response = client.complete(
                 messages, tools=specs or None, cancel_token=session_id,
-                **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
-                   if stopped_thinking else {}),
                 **({"on_progress": progress} if progress else {}))
             response, overran = _answer_or_retry_without_thinking(
                 response, client=client, messages=messages, specs=specs,
                 config=model_config, bus=bus, session_id=session_id,
                 role=role, step_id=step_id, round_n=round_n,
-                already_overran=stopped_thinking, on_progress=progress)
-            stopped_thinking = stopped_thinking or overran
+                on_progress=progress)
         except Cancelled:
             # Stop, mid-generation. Not an error, and not the agent's doing.
             turn.stop_reason = "cancelled"
@@ -828,7 +821,7 @@ def _run_agent(
                 # The same gauge the waiting event carried, now with the count
                 # the model reported rather than an estimate of it.
                 "context": turn.context,
-                **_thinking_state(model_config, stopped_thinking),
+                **_thinking_state(model_config, overran),
                 "summary": summarize_messages(messages),
             },
         )
@@ -1040,10 +1033,9 @@ def _run_agent(
         })
         messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
         try:
-            response, stopped_thinking = _ask_without_tools(
+            response, recovered = _ask_without_tools(
                 client, messages, config=model_config, bus=bus, session_id=session_id,
-                role=role, step_id=step_id, round_n=max_rounds + 1,
-                stopped_thinking=stopped_thinking)
+                role=role, step_id=step_id, round_n=max_rounds + 1)
         except Cancelled:
             turn.stop_reason = "cancelled"
             return turn
@@ -1064,7 +1056,7 @@ def _run_agent(
                      "finish_reason": response.finish_reason or "max_rounds",
                      "usage": response.usage, "preset": model_config.preset,
                      "context": turn.context,
-                     **_thinking_state(model_config, stopped_thinking),
+                     **_thinking_state(model_config, recovered),
                      "summary": summarize_messages(messages)},
         )
         turn.model_event_ids.append(event.id)
@@ -1093,10 +1085,9 @@ def _run_agent(
         })
         messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
         try:
-            follow_up, stopped_thinking = _ask_without_tools(
+            follow_up, recovered = _ask_without_tools(
                 client, messages, config=model_config, bus=bus, session_id=session_id,
-                role=role, step_id=step_id, round_n=turn.rounds + 1,
-                stopped_thinking=stopped_thinking)
+                role=role, step_id=step_id, round_n=turn.rounds + 1)
         except Cancelled:
             turn.stop_reason = "cancelled"
             return turn
@@ -1110,7 +1101,7 @@ def _run_agent(
             "tool_calls": [], "finish_reason": follow_up.finish_reason,
             "usage": follow_up.usage, "preset": model_config.preset,
             "context": turn.context,
-            **_thinking_state(model_config, stopped_thinking),
+            **_thinking_state(model_config, recovered),
             "summary": summarize_messages(messages),
             "asked_for_outcome": True,
         })
@@ -1153,10 +1144,9 @@ def _run_agent(
         })
         messages, _ = fit_context(messages, model_config.input_budget, chars_per_token)
         try:
-            answer, stopped_thinking = _ask_without_tools(
+            answer, recovered = _ask_without_tools(
                 client, messages, config=model_config, bus=bus, session_id=session_id,
-                role=role, step_id=step_id, round_n=turn.rounds + 2,
-                stopped_thinking=stopped_thinking)
+                role=role, step_id=step_id, round_n=turn.rounds + 2)
         except Cancelled:
             turn.stop_reason = "cancelled"
             return turn
@@ -1170,7 +1160,7 @@ def _run_agent(
             "tool_calls": [], "finish_reason": answer.finish_reason,
             "usage": answer.usage, "preset": model_config.preset,
             "context": turn.context,
-            **_thinking_state(model_config, stopped_thinking),
+            **_thinking_state(model_config, recovered),
             "summary": summarize_messages(messages),
             "asked_for_verdict": True,
         })
@@ -1342,7 +1332,7 @@ def _progress_reporter(client, bus, session_id, *, role, step_id, round_n, confi
 
 
 def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_id,
-                       round_n, stopped_thinking):
+                       round_n):
     """The two asks made with tools withheld — report now, and state your outcome.
 
     They used to go out raw, and that is how a step could fail for no reason:
@@ -1353,25 +1343,24 @@ def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_
     the two calls whose answer decides the step, so they are the last place to
     skip the recovery every other round gets.
 
-    Returns (response, stopped_thinking).
+    Returns (response, overran) — whether this ask needed the no-think
+    recovery, which is what its model_call event reports as its state.
     """
     progress = _progress_reporter(client, bus, session_id, role=role,
                                   step_id=step_id, round_n=round_n, config=config)
     response = client.complete(
         messages, tools=None, cancel_token=session_id,
-        **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
-           if stopped_thinking else {}),
         **({"on_progress": progress} if progress else {}))
     response, overran = _answer_or_retry_without_thinking(
         response, client=client, messages=messages, specs=None, config=config,
         bus=bus, session_id=session_id, role=role, step_id=step_id,
-        round_n=round_n, already_overran=stopped_thinking, on_progress=progress)
-    return response, stopped_thinking or overran
+        round_n=round_n, on_progress=progress)
+    return response, overran
 
 
 def _answer_or_retry_without_thinking(response, *, client, messages, specs, config,
                                       bus, session_id, role, step_id, round_n,
-                                      already_overran=False, on_progress=None):
+                                      on_progress=None):
     """Recover a round the model spent entirely on thinking.
 
     `max_tokens` caps *generated* tokens, and reasoning is generated tokens — so
@@ -1386,17 +1375,17 @@ def _answer_or_retry_without_thinking(response, *, client, messages, specs, conf
     without thinking spends the same budget on an answer instead, and costs
     nothing on the rounds where this never happens.
 
-    Once it has happened in a turn, the rest of the turn goes out with
-    thinking off. Two policies were tried and this one won on evidence.
-    Latching after one overrun looked like undergrading a model that thinks
-    long productively — so raising the reply budget with thinking kept on
-    was tried instead, and it was worse: thinking expands to fill whatever
-    room it is given (the model drafts entire files inside the think), and a
-    30k-token generation on local hardware runs half an hour, past the call
-    timeout — which reads as a hang. A hard cap with this graceful recovery
-    IS the control; the latch bounds the waste to one overrun per turn.
-    The original spiral is still real too: measured once, thirty replies in
-    a row each burned the whole budget on reasoning and answered nothing.
+    The recovery is per round, and only per round: the retry goes out
+    without thinking, and the next round thinks again. Three policies have
+    held this spot. A one-strike latch (thinking off for the rest of the
+    turn) bounded waste best but undergraded a model whose thinking is
+    productive. Raising the reply budget with thinking kept on was worse:
+    thinking expands to fill whatever room it is given, and a 30k-token
+    generation on local hardware outlives the call timeout — a hang, from
+    the user's chair. Per-round recovery is the user's chosen trade, eyes
+    open: PI-parity (thinking never withheld from a fresh round) at the
+    price that a turn full of monster thinks pays a full wasted generation
+    for each one — where the latch capped that waste at one.
 
     Since the client started streaming, a generation can also be cut on wall
     clock (`finish_reason: "time"`) — that cut lands here identically: a
@@ -1406,9 +1395,6 @@ def _answer_or_retry_without_thinking(response, *, client, messages, specs, conf
     Returns (response, overran) — the flag is what turns thinking off for the
     remainder of the turn.
     """
-    if already_overran:
-        # Thinking is already off for this turn; nothing to recover.
-        return response, True
     thought = (getattr(response, "reasoning", "") or "").strip()
     # "length" is the server's size cut; "time" is ours — the streaming client
     # cuts a generation that outlives its wall-clock budget. Spent entirely on
