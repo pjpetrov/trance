@@ -239,6 +239,16 @@ function describe(event: TranceEvent, sessionId: string, live: boolean): Rendere
     };
   }
 
+  // The conversation was folded into a checkpoint summary. The summary is the
+  // one thing worth reading here — it is what the agent remembers from now on.
+  if (event.type === "context_compacted") {
+    return {
+      show: true, icon: "⇥", iconTone: "text-warn",
+      label: <span className="text-fg/80">{String(payload.message ?? "")}</span>,
+      body: payload.checkpoint ? <Code>{payload.checkpoint}</Code> : undefined,
+    };
+  }
+
   if (event.type !== "tool_call") {
     const message = String(payload.message ?? payload.reason ?? payload.summary ?? "");
     if (!message) return HIDDEN;

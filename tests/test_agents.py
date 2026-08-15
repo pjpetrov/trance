@@ -11970,3 +11970,92 @@ def test_a_time_cut_think_gets_the_same_recovery_as_a_size_cut_one(tmp_path, mon
     overrun = next(e for e in seen if e.type == "thinking_overran")
     assert "600-second time budget" in overrun.payload["message"]
     assert calls[1] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_compaction_cuts_at_round_boundaries_and_rolls_its_summary():
+    """The pure pieces of PI-style compaction: the cut never lands on a tool
+    result, the head (system + task) is untouchable, a prior checkpoint is
+    found for the rolling update, and the file lists ride along mechanically."""
+    from trance.agents import compaction
+
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "1", "type": "function",
+             "function": {"name": "read_file", "arguments": '{"path": "a.ts"}'}}]},
+        {"role": "tool", "content": "x" * 4000},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "2", "type": "function",
+             "function": {"name": "write_file", "arguments": '{"path": "b.ts", "content": "hi"}'}}]},
+        {"role": "tool", "content": "wrote b.ts"},
+        {"role": "assistant", "content": "done " * 2000},
+    ]
+    # A tiny keep-budget forces the cut near the end; it must step off a tool
+    # message onto the assistant that follows it, and never into the head.
+    cut = compaction.find_cut(messages, chars_per_token=4.0, keep_recent=10)
+    assert cut >= compaction.HEAD
+    assert messages[cut]["role"] != "tool"
+
+    read, modified = compaction.file_operations(messages)
+    assert read == {"a.ts"} and modified == {"b.ts"}
+    xml = compaction.format_file_operations(read, modified)
+    assert "<read-files>\na.ts" in xml and "<modified-files>\nb.ts" in xml
+
+    spliced = compaction.splice(messages, cut, "## Goal\nship it", xml)
+    assert spliced[0]["role"] == "system" and spliced[1]["content"] == "task"
+    assert spliced[2]["content"].startswith(compaction.SUMMARY_PREFIX)
+    # The next compaction finds the summary and its file lists again.
+    assert compaction.previous_summary(spliced) == "## Goal\nship it" + xml
+    carried_read, carried_modified = compaction.file_operations(spliced[:3])
+    assert carried_read == {"a.ts"} and carried_modified == {"b.ts"}
+    # And the request built from it asks for an update, not a fresh summary.
+    request = compaction.summarization_request("[User]: hi", "## Goal\nship it")
+    assert "previous-summary" in request[1]["content"]
+    assert "PRESERVE all existing information" in request[1]["content"]
+
+
+def test_a_conversation_nearing_the_window_is_compacted_not_trimmed(tmp_path, monkeypatch):
+    """PI's compaction, live in a turn: when the prompt nears the window the
+    model writes a structured checkpoint of the old rounds, the newest rounds
+    stay verbatim, and the next request goes out shorter — with the summary
+    in a user message and the whole thing on the record as events."""
+    from trance.agents import compaction, runner
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    seen, calls = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    # window - RESERVE = 3,616 tokens: two fat tool results cross it.
+    config = ModelConfig(kind="llamacpp", max_tokens=600, context_window=20000)
+
+    class _FatReader:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            calls.append([dict(m) for m in messages])
+            if messages[0]["content"] == compaction.SYSTEM_PROMPT:
+                return ChatResponse(text="## Goal\nkeep going")
+            if len([m for m in messages if m.get("role") == "tool"]) < 2:
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id=f"c{len(calls)}", name="read_file",
+                    arguments={"path": "big.ts"})])
+            return ChatResponse(text="ok\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _FatReader())
+    (tmp_path / "big.ts").write_text("line\n" * 4000)
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
+                     config=config, bus=bus, session_id="s", step_id="st")
+
+    compacted = next(e for e in seen if e.type == "context_compacted")
+    assert compacted.payload["tokens_after"] < compacted.payload["tokens_before"]
+    assert "## Goal" in compacted.payload["checkpoint"]
+    # The request after compaction carries the checkpoint, not the fat rounds.
+    final = calls[-1]
+    assert any(str(m.get("content") or "").startswith(compaction.SUMMARY_PREFIX)
+               for m in final)
+    # The summarization itself is on the record as a model call.
+    assert any(e.type == "model_call"
+               and e.payload["messages"][0]["content"] == compaction.SYSTEM_PROMPT
+               for e in seen)

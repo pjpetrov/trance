@@ -414,6 +414,8 @@ export interface EventPayload {
   command_id?: string;
   /** model_waiting: the gauge, sized before the answer exists */
   context?: ContextUsage;
+  /** context_compacted: the checkpoint summary that replaced old rounds. */
+  checkpoint?: string;
   /** model_progress: one live frame of a streaming generation. Transient —
    *  on the socket only, never in fetched history. */
   phase?: "thinking" | "answering";

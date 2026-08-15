@@ -17,7 +17,7 @@ from ..config import ModelConfig
 from ..events import EventBus, summarize_messages
 from ..providers import Cancelled, client_for
 from ..worker.client import salvage_tool_calls
-from . import delegate
+from . import compaction, delegate
 from .memory import ProjectMemory
 from .roles import AgentRole
 from .tools import AgentTools, permissions_brief
@@ -700,6 +700,15 @@ def _run_agent(
                                           f"without writing anything — lookup tools "
                                           f"withdrawn for the rest of this attempt.")})
 
+        if compaction.should_compact(_tokens(messages, chars_per_token), model_config):
+            try:
+                messages = _compact_conversation(
+                    messages, client=client, config=model_config, bus=bus,
+                    session_id=session_id, role=role, step_id=step_id,
+                    round_n=round_n, chars_per_token=chars_per_token) or messages
+            except Cancelled:
+                turn.stop_reason = "cancelled"
+                break
         messages, trimmed = fit_context(messages, model_config.input_budget, chars_per_token)
         if trimmed:
             bus.emit("context_trimmed", session_id, agent=role.name, step_id=step_id,
@@ -1145,6 +1154,90 @@ def _thinking_state(config, stopped_thinking: bool) -> dict:
     if (getattr(config, "kind", "") or "") not in THINKING_TOGGLE_KINDS:
         return {}
     return {"thinking": not stopped_thinking}
+
+
+def _compact_conversation(messages, *, client, config, bus, session_id, role,
+                          step_id, round_n, chars_per_token):
+    """PI-style compaction of a conversation nearing the window.
+
+    The newest ~20k tokens stay verbatim; everything older (never the system
+    prompt or the task) is summarized by the same model into a structured
+    checkpoint and spliced back in as one user message, with the files read
+    and modified listed mechanically. A later compaction updates the same
+    summary rather than restarting it.
+
+    Returns the compacted list, or None when there is nothing worth
+    summarizing or the summary call failed — the caller then falls back to
+    fit_context's trimming, which was the only behavior before this existed.
+    """
+    cut = compaction.find_cut(messages, chars_per_token,
+                              keep_recent=compaction.keep_recent_tokens(config))
+    body = [m for m in messages[compaction.HEAD:cut]
+            if not str(m.get("content") or "").startswith(compaction.SUMMARY_PREFIX)]
+    if len(body) < 2:
+        return None                     # the tail IS the conversation; trim instead
+
+    before = _tokens(messages, chars_per_token)
+    prior = compaction.previous_summary(messages[:cut])
+    request = compaction.summarization_request(
+        compaction.serialize_conversation(body), prior)
+    bus.emit("compaction_started", session_id, agent=role.name, step_id=step_id, payload={
+        "round": round_n, "tokens": before, "summarized": len(body),
+        "message": (f"the conversation is near the window (~{before:,} tokens) — "
+                    f"summarizing {len(body)} old messages; the newest rounds "
+                    f"stay verbatim"),
+    })
+    progress = _progress_reporter(client, bus, session_id, role=role,
+                                  step_id=step_id, round_n=round_n, config=config)
+    started = time.time()
+    try:
+        response = client.complete(
+            request, tools=None, cancel_token=session_id,
+            # The summary has a shape to follow, not a problem to solve — and
+            # a think here stalls the actual work it is meant to unblock.
+            extra_body={"max_tokens": compaction.summary_output_tokens(config),
+                        **({"chat_template_kwargs": {"enable_thinking": False}}
+                           if (config.kind or "") in THINKING_TOGGLE_KINDS else {})},
+            **({"on_progress": progress} if progress else {}))
+    except Exception as error:
+        if isinstance(error, Cancelled):
+            raise
+        bus.emit("compaction_failed", session_id, agent=role.name, step_id=step_id,
+                 payload={"message": f"the summary call failed ({error}); "
+                                     f"falling back to trimming old tool results."})
+        return None
+    summary = (response.text or "").strip()
+    if not summary:
+        bus.emit("compaction_failed", session_id, agent=role.name, step_id=step_id,
+                 payload={"message": "the model returned no summary; "
+                                     "falling back to trimming old tool results."})
+        return None
+
+    # The summarization is a model call like any other: full fidelity in the
+    # inspector, and its spend counted against the model that made it.
+    bus.emit("model_call", session_id, agent=role.name, step_id=step_id, payload={
+        "round": round_n, "model": config.model, "preset": config.preset,
+        "base_url": config.base_url,
+        "duration_ms": round((time.time() - started) * 1000, 1),
+        "messages": request, "response_text": response.text,
+        "reasoning": response.reasoning,
+        "tool_calls": [], "finish_reason": response.finish_reason,
+        "usage": response.usage, "summary": summarize_messages(request),
+    })
+
+    files_xml = compaction.format_file_operations(
+        *compaction.file_operations(messages[:cut]))
+    compacted = compaction.splice(messages, cut, summary, files_xml)
+    after = _tokens(compacted, chars_per_token)
+    bus.emit("context_compacted", session_id, agent=role.name, step_id=step_id, payload={
+        "round": round_n, "tokens_before": before, "tokens_after": after,
+        "summarized": len(body), "kept": len(messages) - cut,
+        "checkpoint": summary + files_xml,
+        "message": (f"compacted ~{before:,} → ~{after:,} tokens: {len(body)} old "
+                    f"messages became a checkpoint summary; the newest "
+                    f"{len(messages) - cut} stay verbatim"),
+    })
+    return compacted
 
 
 def _progress_reporter(client, bus, session_id, *, role, step_id, round_n, config):
