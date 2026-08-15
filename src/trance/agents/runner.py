@@ -1188,26 +1188,32 @@ def _compact_conversation(messages, *, client, config, bus, session_id, role,
     summarizing or the summary call failed — the caller then falls back to
     fit_context's trimming, which was the only behavior before this existed.
     """
-    # A flat verbatim tail can reach nearly back to the task when the newest
-    # rounds hold most of the tokens — leaving nothing to summarize while the
-    # conversation still busts the budget. Measured live: five rounds of
-    # silent tool-result trimming ended a step with "all tool outputs
-    # dropped". So the tail shrinks by halves until something old enough to
-    # fold exists.
+    # PI's flat 20k verbatim tail assumes PI's material: a human-paced session
+    # of many small turns, where the bulk is always old. An agent turn is
+    # bottom-heavy — a few huge tool results and writes near the end — and a
+    # flat tail then leaves only a sliver in front of it: measured live, one
+    # fold *grew* (53,448 → 53,845) and another freed 4.5k tokens, so the
+    # next fold came rounds later, three folds in one ten-minute turn. The
+    # tail shrinks by halves until the region being folded carries real
+    # weight — the reserve's worth of tokens — so each fold, like PI's,
+    # frees enough room that the next crossing is far away.
     keep = compaction.keep_recent_tokens(config)
+    worth = min(compaction.RESERVE_TOKENS, compaction.threshold(config) // 2)
     while True:
         cut = compaction.find_cut(messages, chars_per_token, keep_recent=keep)
         body = [m for m in messages[compaction.HEAD:cut]
                 if not str(m.get("content") or "").startswith(compaction.SUMMARY_PREFIX)]
-        if len(body) >= 2:
-            break
         if keep <= 1000:
-            bus.emit("compaction_failed", session_id, agent=role.name, step_id=step_id,
-                     payload={"message": (
-                         "nothing old enough to fold — the newest rounds alone "
-                         "fill the budget; old tool results will be trimmed instead.")})
-            return None
+            break
+        if len(body) >= 2 and _tokens(body, chars_per_token) >= worth:
+            break
         keep //= 2
+    if len(body) < 2:
+        bus.emit("compaction_failed", session_id, agent=role.name, step_id=step_id,
+                 payload={"message": (
+                     "nothing old enough to fold — the newest rounds alone "
+                     "fill the budget; old tool results will be trimmed instead.")})
+        return None
 
     before = _tokens(messages, chars_per_token)
     prior = compaction.previous_summary(messages[:cut])
