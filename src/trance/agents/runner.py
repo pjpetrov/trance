@@ -127,6 +127,13 @@ def _chars(messages: list[dict]) -> int:
                     total += IMAGE_CHARS
         else:
             total += len(str(content))
+        # Replayed thinking is prompt too: the Qwen template renders prior
+        # reasoning back in, and the server counts it. Skipping it here left
+        # the estimate tens of thousands of tokens blind on a model that
+        # thinks 20k characters a round — the trigger sat just under its
+        # threshold while the real prompt crossed the window and the server
+        # refused with "exceeds the available context size".
+        total += len(str(message.get("reasoning_content") or ""))
         if message.get("tool_calls"):
             total += len(str(message["tool_calls"]))
     return total

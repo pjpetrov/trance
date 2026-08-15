@@ -12281,3 +12281,16 @@ def test_a_screenshot_is_not_counted_as_a_hundred_thousand_tokens(tmp_path):
         {"type": "text", "text": "look at these"}, screenshot, screenshot]}]
 
     assert _chars(messages) == len("look at these") + 2 * IMAGE_CHARS
+
+
+def test_replayed_thinking_counts_toward_the_context_estimate():
+    """The Qwen template renders prior-turn reasoning back into the prompt and
+    the server counts it — measured live: a 17,871-char think grew the next
+    prompt by ~5k tokens while the estimate did not move, and the turn
+    crossed the window with the compaction trigger still asleep."""
+    from trance.agents.runner import _chars
+
+    bare = [{"role": "assistant", "content": "done"}]
+    thoughtful = [{"role": "assistant", "content": "done",
+                   "reasoning_content": "x" * 17_871}]
+    assert _chars(thoughtful) == _chars(bare) + 17_871
