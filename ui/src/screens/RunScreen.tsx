@@ -610,7 +610,7 @@ function AgentBlock(
   },
 ) {
   const [open, setOpen] = useState(openByDefault);
-  const { rerunBlock } = useStepActions(sessionId);
+  const { rerunBlock, continueBlock } = useStepActions(sessionId);
   const [confirming, setConfirming] = useState(false);
   // What it spent itself on. On the header rather than inside, because the
   // question it answers — "what is it doing so much?" — is asked about a block
@@ -723,7 +723,15 @@ function AgentBlock(
               at the bottom of an expanded block — usually at its halt line —
               the header's button is a screen away. */}
           {attempt !== undefined && canRerun && !block.running && (
-            <div className="flex justify-end pt-1">
+            <div className="flex justify-end gap-1 pt-1">
+              <Button
+                size="sm" variant="ghost" busy={continueBlock.isPending}
+                title={`Pick ${block.agent}'s conversation back up from where this block `
+                  + "stopped — nothing is reverted, and it gets a fresh round budget"}
+                onClick={() =>
+                  continueBlock.mutateAsync({ stepId, attempt: attempt! })
+                    .catch((error) => toast.err(String(error)))}
+              >⟳ continue from here</Button>
               <Button
                 size="sm" variant="ghost"
                 title={`Rewind to this block and run ${block.agent} again with the same handoff — `

@@ -2739,6 +2739,62 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {**step.to_dict(), "restarted": restarted, "rewound": shas,
                 "resumed": was_paused, "status_now": session.status}
 
+    @app.post("/api/sessions/{session_id}/steps/{step_id}/blocks/{attempt_n}/continue")
+    def continue_block(session_id: str, step_id: str, attempt_n: int):
+        """Pick a block's conversation back up from where it stopped.
+
+        Unlike rerun — which replays the same input into a fresh turn — this
+        reconstructs the conversation the agent actually had, from the last
+        model call it recorded, and the turn continues it with a fresh round
+        budget. Nothing is reverted: the disk is exactly what that
+        conversation believes it is, which is the whole point. The last
+        recorded reply is kept only if it was plain text; a reply that ended
+        in tool calls is dropped, so the model re-issues them against the
+        real state of the disk rather than trusting effects nobody recorded.
+        """
+        session = _need(store, session_id)
+        if session.status == "running":
+            raise HTTPException(409, "the run is writing right now — stop it first")
+        step = session.flow.find(step_id)
+        if step is None:
+            raise HTTPException(404, "no such step")
+        if not step.runs_a_loop:
+            raise HTTPException(400, "only loop steps have blocks")
+        attempt = next((a for a in step.attempts if a.n == attempt_n), None)
+        if attempt is None or not attempt.node:
+            raise HTTPException(404, "this block was not recorded with its place in the loop")
+        if not attempt.worker_event_id:
+            raise HTTPException(409, "this block recorded no model call to continue from")
+
+        anchor = next((e for e in history_for(session_id)
+                       if e.id == attempt.worker_event_id), None)
+        recorded = (anchor.payload.get("messages") if anchor else None) or []
+        if not isinstance(recorded, list) or not recorded:
+            raise HTTPException(409, (
+                "the block's last model call no longer holds its conversation — "
+                "blocks run before this trance version cannot be continued"))
+
+        conversation = [dict(m) for m in recorded if isinstance(m, dict)]
+        reply = str(anchor.payload.get("response_text") or "")
+        if reply and not (anchor.payload.get("tool_calls") or []):
+            conversation.append({"role": "assistant", "content": reply})
+
+        step.resume_node = attempt.node
+        step.resume_messages = conversation
+        step.status = "pending"
+        was_paused = session.paused
+        session.resume()
+        bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
+        touch(session)
+        restarted = ensure_running(session)
+        if restarted:
+            bus.emit("run_started", session_id, payload={
+                "reason": f"continuing a {step.loop} block", "steps": 1,
+                "message": f"Continuing a {step.loop} block from where it stopped: "
+                           f"{(step.task or '')[:60]}"})
+        return {**step.to_dict(), "restarted": restarted, "resumed": was_paused,
+                "messages_restored": len(conversation), "status_now": session.status}
+
     @app.post("/api/sessions/{session_id}/resume-pending")
     def resume_pending(session_id: str):
         """Kick the engine for any pending work (after rerun, or a flow edit)."""

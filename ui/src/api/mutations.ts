@@ -93,6 +93,14 @@ export function useStepActions(sessionId: string) {
         void client.invalidateQueries({ queryKey: ["commitLog", sessionId] });
       },
     }),
+    // Same conversation, fresh rounds — never touches commits or files.
+    continueBlock: useMutation({
+      mutationFn: ({ stepId, attempt }: { stepId: string; attempt: number }) =>
+        api.continueBlock(sessionId, stepId, attempt),
+      onSuccess: () => {
+        void client.invalidateQueries({ queryKey: keys.session(sessionId) });
+      },
+    }),
     split: useMutation({
       mutationFn: (stepId: string) => api.splitStep(sessionId, stepId),
       onSuccess: () => client.invalidateQueries({ queryKey: keys.session(sessionId) }),

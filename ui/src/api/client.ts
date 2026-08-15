@@ -190,6 +190,10 @@ export const api = {
     request<{ restarted: boolean; rewound: string[] }>(
       `/api/sessions/${id(sid)}/steps/${id(stepId)}/blocks/${attempt}/rerun`,
       { method: "POST", body: { revert } }),
+  continueBlock: (sid: string, stepId: string, attempt: number) =>
+    request<{ restarted: boolean; messages_restored: number }>(
+      `/api/sessions/${id(sid)}/steps/${id(stepId)}/blocks/${attempt}/continue`,
+      { method: "POST" }),
 
   approvals: (sid: string) =>
     request<{ pending: Approval[]; enabled: boolean; timeout_s: number }>(

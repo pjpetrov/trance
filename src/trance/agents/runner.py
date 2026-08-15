@@ -504,6 +504,10 @@ def _run_agent(
     #: none — and a reply without a verdict is worth one short question rather
     #: than an unverified step.
     verdict_required: bool = False,
+    #: A conversation to pick back up instead of starting one: the messages
+    #: recorded by this agent's last model call, reconstructed by "continue
+    #: from here". The task/context prompts are already inside it.
+    resume_messages: list[dict] | None = None,
     _opened: list | None = None,
 ) -> AgentTurn:
     model_config = config
@@ -622,10 +626,24 @@ def _run_agent(
     if images:
         first_user = _with_user_images(first_user, images, project, model_config)
 
-    messages = [
-        {"role": "system", "content": role.system_prompt},
-        {"role": "user", "content": first_user},
-    ]
+    if resume_messages:
+        # Continue, don't restart: the recorded conversation already holds the
+        # system prompt, the task and every round up to where it stopped. The
+        # note is the only new thing — the model must know this is a pickup,
+        # and that the disk is exactly as the conversation left it.
+        messages = [dict(m) for m in resume_messages]
+        messages.append({"role": "user", "content": (
+            "You are being continued: everything above is your own earlier "
+            "progress on this task, reconstructed after the run stopped. The "
+            "files you wrote are on disk exactly as the conversation left "
+            "them. Verify the last thing you did if you are unsure it "
+            "finished, then carry on from where it stands — do not start "
+            "over. End with OUTCOME: SUCCESS or OUTCOME: FAILED as usual.")})
+    else:
+        messages = [
+            {"role": "system", "content": role.system_prompt},
+            {"role": "user", "content": first_user},
+        ]
 
     turn = AgentTurn(text="")
     totals = {"input_tokens": 0, "output_tokens": 0}

@@ -255,6 +255,9 @@ class FlowEngine:
         asked, step.resume_node = step.resume_node, ""
         replay, step.resume_handoff = step.resume_handoff, ""
         replay_shots, step.resume_shots = list(step.resume_shots), []
+        #: "Continue from here": the block's own conversation, to pick back up.
+        #: Consumed by the first block this walk runs.
+        seed_conversation, step.resume_messages = list(step.resume_messages), []
         if asked:
             wanted = loop.node(asked)
             if wanted is not None:
@@ -264,10 +267,15 @@ class FlowEngine:
                     carry = Handoff(body=replay, chars=len(replay))
                 self._emit("loop_resumed", agent=wanted.role, step_id=step.id, payload={
                     "loop": loop.name, "node": wanted.id, "role": wanted.role,
-                    "message": (f"Back to {wanted.role}'s block, with the same "
-                                f"handoff it had — the loop continues from there."),
+                    "message": (
+                        f"Continuing {wanted.role}'s block from where it stopped — "
+                        f"same conversation, and the loop routes on from its outcome."
+                        if seed_conversation else
+                        f"Back to {wanted.role}'s block, with the same "
+                        f"handoff it had — the loop continues from there."),
                 })
             else:
+                seed_conversation = []
                 self._emit("warning", step_id=step.id, payload={
                     "message": (f"The block to rerun is no longer in the "
                                 f"{loop.name} loop — starting from the top "
@@ -337,7 +345,9 @@ class FlowEngine:
                 placement=self._placement(step),
                 approve=self.approve, reindex=self._reindex,
                 steering_inbox=step.take_steering,
+                resume_messages=seed_conversation or None,
             )
+            seed_conversation = []         # only the block it was made for
             self._charge(role.name, step, node_t0)
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written

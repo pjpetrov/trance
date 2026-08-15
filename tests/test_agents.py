@@ -12104,3 +12104,102 @@ def test_a_bottom_heavy_conversation_still_compacts(tmp_path, monkeypatch):
     # The head survived and the checkpoint sits right behind it.
     assert compacted[0]["content"] == "s" and compacted[1]["content"] == "task"
     assert compacted[2]["content"].startswith(compaction.SUMMARY_PREFIX)
+
+
+def test_continue_from_a_block_picks_the_conversation_back_up(tmp_path, monkeypatch):
+    """The other way back into a loop: not the same input into a fresh turn,
+    but the very conversation the block's agent had — rebuilt from its last
+    recorded model call — continued with a fresh round budget. A reply that
+    ended in tool calls is dropped so the model re-issues them against the
+    real disk; a plain-text reply is kept."""
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _block_rerun_app(tmp_path, monkeypatch)
+    project.mkdir(parents=True, exist_ok=True)
+
+    recorded = [
+        {"role": "system", "content": "you are the developer"},
+        {"role": "user", "content": "build the wanted level"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "read_file", "arguments": '{"path": "a.ts"}'}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "the source"},
+    ]
+    anchor = app.state.bus.emit("model_call", sid, agent="developer", payload={
+        "messages": recorded, "response_text": "I read it; half done.",
+        "tool_calls": [],
+    })
+
+    session = app.state.store.get(sid)
+    step = Step(role="", loop="test-and-fix", task="t")
+    step.attempts = [Attempt(n=1, node="n_fix", worker_event_id=anchor.id)]
+    session.flow = Flow(steps=[step])
+
+    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/1/continue")
+    assert out.status_code == 200
+    assert out.json()["messages_restored"] == 5
+    assert step.resume_node == "n_fix"
+    assert step.resume_messages[:4] == recorded
+    # The plain-text reply survived as the conversation's last word.
+    assert step.resume_messages[4] == {"role": "assistant",
+                                       "content": "I read it; half done."}
+
+    # A block with no recorded call is refused, not continued blind.
+    step.attempts.append(Attempt(n=2, node="n_test"))
+    step.status = "failed"
+    session.status = "idle"
+    refused = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/2/continue")
+    assert refused.status_code == 409
+
+
+def test_a_continued_turn_resumes_its_own_conversation(tmp_path, monkeypatch):
+    """run_agent with resume_messages sends the recorded conversation plus one
+    continuation note — not a rebuilt fresh prompt — and the engine hands the
+    seed only to the block it was made for."""
+    from trance.agents import runner
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    sent = []
+
+    class _Capture:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            sent.append(list(messages))
+            return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _Capture())
+    recorded = [
+        {"role": "system", "content": "you are the developer"},
+        {"role": "user", "content": "build it"},
+        {"role": "assistant", "content": "half done"},
+    ]
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="ignored", project=tmp_path,
+                     config=ModelConfig(kind="llamacpp", max_tokens=600,
+                                        context_window=64000),
+                     bus=EventBus(), session_id="s", step_id="st",
+                     resume_messages=recorded)
+
+    first = sent[0]
+    assert first[:3] == recorded                     # the conversation, verbatim
+    assert first[3]["role"] == "user"
+    assert "being continued" in first[3]["content"]
+    assert "do not start over" in first[3]["content"]
+
+    # Engine side: the seed reaches the resumed node once, then never again.
+    from trance.flow import Step
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
+    step = Step(role="", loop="test-and-fix", task="t")
+    step.resume_node = "n_fix"
+    step.resume_messages = recorded
+    seeds = []
+
+    def fake(**kw):
+        seeds.append(kw.get("resume_messages"))
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert seeds[0] == recorded and all(s is None for s in seeds[1:])
+    assert step.resume_messages == []                # spent, not sticky

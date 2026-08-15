@@ -165,6 +165,10 @@ class Step:
     resume_node: str = ""
     resume_handoff: str = ""
     resume_shots: list[str] = field(default_factory=list)
+    #: Set by "continue from here": the conversation the block's agent had,
+    #: reconstructed from its last recorded model call — the turn picks it
+    #: back up instead of starting over. Consumed on entry.
+    resume_messages: list = field(default_factory=list)
 
     def take_steering(self) -> list[str]:
         """Hand over every waiting note, exactly once."""
