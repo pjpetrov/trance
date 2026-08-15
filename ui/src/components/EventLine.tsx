@@ -535,6 +535,20 @@ function renderDetail(
  *  its weight — so opening a line fetches the event in full. Which is the only
  *  time anyone wants them, and why they were dropped rather than kept.
  */
+/** A message's content as text. Usually a string, but a message that carried
+ *  images (the visual tester's screenshots) is a list of typed blocks — and a
+ *  block object handed to React as a child takes the whole console down. */
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block: { type?: string; text?: string }) =>
+      block?.type === "text" ? (block.text ?? "")
+        : block?.type === "image_url" ? "[screenshot]" : "")
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function ModelCallBody({ event, sessionId }: { event: TranceEvent; sessionId: string }) {
   const payload = event.payload ?? {};
   const omitted = payload._omitted ?? {};
@@ -596,7 +610,7 @@ function ModelCallBody({ event, sessionId }: { event: TranceEvent; sessionId: st
                 <div className="text-[11px] uppercase tracking-wide text-muted">
                   {message.role}
                 </div>
-                <Code>{message.content || "(no text — a tool call)"}</Code>
+                <Code>{contentText(message.content) || "(no text — a tool call)"}</Code>
               </div>
             ))}
           </div>
