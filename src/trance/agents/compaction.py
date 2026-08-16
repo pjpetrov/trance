@@ -140,13 +140,15 @@ def should_compact(tokens: int, config) -> bool:
 def keep_recent_tokens(config) -> int:
     """How much of the newest conversation survives verbatim.
 
-    PI's flat 20,000 assumes the 200k windows it usually runs against. On a
-    window small enough that 20k IS the conversation, keeping that much
-    would leave nothing to summarize — so the tail never outgrows half the
-    trigger point. On a 64k local window this still comes out at PI's
-    20,000 exactly.
+    PI's flat 20,000 assumes the 200k windows it usually runs against, where
+    it is a sliver. On a 64k window it left only ~17k of headroom per cycle,
+    and an agent generating 2-8k tokens a round folded every five minutes —
+    85 folds in one measured day, an hour of GPU spent summarizing. The tail
+    scales instead: a quarter of the trigger point, capped at PI's 20k — so
+    a 200k window behaves exactly like PI, and a 64k one keeps ~11.7k
+    verbatim and folds half as often, twice as deep.
     """
-    return min(KEEP_RECENT_TOKENS, threshold(config) // 2)
+    return min(KEEP_RECENT_TOKENS, threshold(config) // 4)
 
 
 def find_cut(messages: list[dict], chars_per_token: float,
