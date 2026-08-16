@@ -200,7 +200,7 @@ function StepRow(
   },
 ) {
   const sessionId = useUi((state) => state.sessionId);
-  const { rerun } = useStepActions(sessionId ?? "");
+  const { rerun, continueStep } = useStepActions(sessionId ?? "");
   const commits = useRevertStep(sessionId ?? "");
   // Which of the two commit operations is awaiting the user's yes.
   const [confirming, setConfirming] = useState<"revert" | "apply" | null>(null);
@@ -249,6 +249,15 @@ function StepRow(
                 .then(() => { onPickRun(null); toast.ok(`Started ${step.loop || step.role}.`); })
                 .catch((error) => toast.err(String(error)))}
             >start</Button>
+            {step.attempts.length > 0 && step.status !== "running" && (
+              <Button
+                size="sm" variant="ghost" busy={continueStep.isPending}
+                title="Pick the conversation back up from where the last run stopped — same context, a fresh round budget. Start begins over instead."
+                onClick={() => continueStep.mutateAsync(step.id)
+                  .then(() => { onPickRun(null); toast.ok("Continuing from where it stopped."); })
+                  .catch((error) => toast.err(String(error)))}
+              >⟳ continue</Button>
+            )}
             <Button size="sm" variant={showRuns ? "default" : "ghost"}
                     onClick={() => setShowRuns(!showRuns)}
                     title="Every run of this step">

@@ -101,6 +101,12 @@ export function useStepActions(sessionId: string) {
         void client.invalidateQueries({ queryKey: keys.session(sessionId) });
       },
     }),
+    continueStep: useMutation({
+      mutationFn: (stepId: string) => api.continueStep(sessionId, stepId),
+      onSuccess: () => {
+        void client.invalidateQueries({ queryKey: keys.session(sessionId) });
+      },
+    }),
     split: useMutation({
       mutationFn: (stepId: string) => api.splitStep(sessionId, stepId),
       onSuccess: () => client.invalidateQueries({ queryKey: keys.session(sessionId) }),

@@ -194,6 +194,9 @@ export const api = {
     request<{ restarted: boolean; messages_restored: number }>(
       `/api/sessions/${id(sid)}/steps/${id(stepId)}/blocks/${attempt}/continue`,
       { method: "POST" }),
+  continueStep: (sid: string, stepId: string) =>
+    request<{ restarted: boolean; messages_restored: number }>(
+      `/api/sessions/${id(sid)}/steps/${id(stepId)}/continue`, { method: "POST" }),
 
   approvals: (sid: string) =>
     request<{ pending: Approval[]; enabled: boolean; timeout_s: number }>(

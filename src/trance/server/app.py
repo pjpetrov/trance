@@ -2867,6 +2867,59 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return {**step.to_dict(), "restarted": restarted, "resumed": was_paused,
                 "messages_restored": len(conversation), "status_now": session.status}
 
+    @app.post("/api/sessions/{session_id}/steps/{step_id}/continue")
+    def continue_step(session_id: str, step_id: str):
+        """Pick a plain step's conversation back up from where it stopped.
+
+        The step-level twin of continuing a block: the same reconstruction
+        from the step's recorded model calls, seeded into the next try —
+        which gets a fresh round budget on the same conversation. For a step
+        that ran out of rounds while genuinely progressing, this is the move
+        that does not pay for the progress twice. A loop step is routed to
+        its last block's continue.
+        """
+        session = _need(store, session_id)
+        if session.status == "running":
+            raise HTTPException(409, "the run is writing right now — stop it first")
+        step = session.flow.find(step_id)
+        if step is None:
+            raise HTTPException(404, "no such step")
+        if step.runs_a_loop:
+            last = next((a for a in reversed(step.attempts) if a.node), None)
+            if last is None:
+                raise HTTPException(409, "this loop has no block to continue yet")
+            return continue_block(session_id, step_id, last.n)
+
+        events = history_for(session_id)
+        calls = [e for e in events
+                 if e.type == "model_call" and e.step_id == step.id
+                 and e.agent == step.role
+                 and e.payload.get("purpose") != "compaction"]
+        if not calls:
+            raise HTTPException(409, (
+                "this step recorded no model call to continue from — "
+                "it stopped before its first round finished. Rerun it instead."))
+
+        role_held = stores_of(session).roles.get(step.role)
+        step.resume_messages = _continued_conversation(
+            calls, events, step_id=step.id,
+            system_prompt=getattr(role_held, "system_prompt", "") or "",
+            task=step.task or "")
+        step.status = "pending"
+        was_paused = session.paused
+        session.resume()
+        bus.emit("flow_updated", session_id, payload={"flow": session.flow.to_dict()})
+        touch(session)
+        restarted = ensure_running(session)
+        if restarted:
+            bus.emit("run_started", session_id, payload={
+                "reason": "continuing a step", "steps": 1,
+                "message": f"Continuing {step.role}'s step from where it stopped: "
+                           f"{(step.task or '')[:60]}"})
+        return {**step.to_dict(), "restarted": restarted, "resumed": was_paused,
+                "messages_restored": len(step.resume_messages),
+                "status_now": session.status}
+
     @app.post("/api/sessions/{session_id}/resume-pending")
     def resume_pending(session_id: str):
         """Kick the engine for any pending work (after rerun, or a flow edit)."""

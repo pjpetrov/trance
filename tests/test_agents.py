@@ -12297,3 +12297,48 @@ def test_replayed_thinking_counts_toward_the_context_estimate():
     thoughtful = [{"role": "assistant", "content": "done",
                    "reasoning_content": "x" * 17_871}]
     assert _chars(thoughtful) == _chars(bare) + 17_871
+
+
+def test_a_plain_step_can_continue_its_conversation_too(tmp_path, monkeypatch):
+    """Continue is not only for loop blocks: a role step that ran out of
+    rounds mid-progress picks its conversation back up the same way, and the
+    engine's plain path seeds the next try with it."""
+    from trance.flow import Attempt, Flow, Step
+
+    client, app, sid, project = _block_rerun_app(tmp_path, monkeypatch)
+    session = app.state.store.get(sid)
+    step = Step(role="developer", task="fix the roads")
+    session.flow = Flow(steps=[step])
+
+    recorded = [{"role": "system", "content": "dev"},
+                {"role": "user", "content": "fix the roads"}]
+    app.state.bus.emit("model_call", sid, agent="developer", step_id=step.id,
+                       payload={"messages": recorded,
+                                "response_text": "the z-fighting is in city.ts",
+                                "tool_calls": []})
+    step.attempts = [Attempt(n=1)]
+    step.status = "failed"
+    session.status = "idle"
+
+    out = client.post(f"/api/sessions/{sid}/steps/{step.id}/continue")
+    assert out.status_code == 200
+    assert out.json()["messages_restored"] == 3
+    assert step.resume_messages[:2] == recorded
+    assert step.resume_messages[2]["content"] == "the z-fighting is in city.ts"
+    assert step.status == "pending"
+
+    # The engine's plain path hands the seed to the first try only.
+    from trance.agents import runner as runner_module
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
+    plain = Step(role="developer", task="t")
+    plain.resume_messages = recorded
+    seeds = []
+
+    def fake(**kw):
+        seeds.append(kw.get("resume_messages"))
+        return _Turn(None, "x", outcome=("SUCCESS", ""))
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(plain)
+    assert seeds[0] == recorded
+    assert plain.resume_messages == []

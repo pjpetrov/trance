@@ -500,6 +500,9 @@ class FlowEngine:
         endpoint_down = False
         #: What the previous pass did, carried into the next one.
         carry: Handoff | None = None
+        #: "Continue from here": the step's own conversation, picked back up by
+        #: the first try this run makes. Consumed on entry.
+        seed_conversation, step.resume_messages = list(step.resume_messages), []
 
         for loop in range(1, limit + 1):
             session.wait_if_paused()
@@ -548,7 +551,9 @@ class FlowEngine:
                     goal=session.goal, placement=self._placement(step),
                     approve=self.approve, reindex=self._reindex,
                     steering_inbox=step.take_steering,
+                    resume_messages=seed_conversation or None,
                 )
+                seed_conversation = []       # only the try it was made for
             except BackendError as exc:
                 self._charge(role.name, step, worker_t0)
                 # The endpoint failed, not the agent. That is a failed try, not
