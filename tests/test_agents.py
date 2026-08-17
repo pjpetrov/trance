@@ -12398,6 +12398,19 @@ def test_the_orchestrator_is_told_to_interview_before_a_new_project():
     assert "not a questionnaire" not in prompt
 
 
+def test_the_reviewer_is_told_its_check_is_reading_not_running():
+    """Measured the day UNVERIFIED shipped: a reviewer statically reviewed
+    every file, wrote "verification complete, no defects found" — and then
+    said UNVERIFIED because it "could not execute" the tests. Execution was
+    never its job; its only honest gap is reading it could not finish."""
+    from trance.agents.roles import BUILTIN_ROLES
+
+    prompt = BUILTIN_ROLES["reviewer"].system_prompt
+    assert "Your check is READING" in prompt
+    assert "'could not execute' is never your gap" in prompt
+    assert "what you could not read" in prompt
+
+
 def test_unverified_is_a_verdict_of_its_own():
     """Measured live: a visual tester that ran out of rounds mid-game, saw
     zero defects, and had to call a working app FAIL because the format
