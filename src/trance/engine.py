@@ -982,10 +982,51 @@ class FlowEngine:
                 verdict_required=True,
             )
             self._charge(gate.name, step, gate_t0)
+
+            # UNVERIFIED is the checker's problem, not the fixer's: no defect
+            # was seen, the checking just did not finish. The check continues
+            # from where it left off — same conversation, fresh rounds — so a
+            # tester that ran out of rounds at wave 4 resumes at wave 4. Only
+            # after two continuations does fail-closed take over.
+            for _ in range(2):
+                if turn.verdict != "UNVERIFIED":
+                    break
+                seed = self._checker_resume(turn)
+                if not seed:
+                    break
+                self._emit("check_unverified", agent=gate.name, step_id=step.id, payload={
+                    "gate": name,
+                    "message": (f"{gate.title} saw no defect but could not finish "
+                                f"verifying — continuing the check from where it "
+                                f"left off, with fresh rounds."),
+                })
+                gate_t0 = time.monotonic()
+                turn = run_agent(
+                    role=gate, images=step.images,
+                    task=self._gate_task(step, attempt, gate, index, checks),
+                    project=self.project, config=self.config.for_role(gate),
+                    bus=self.bus, session_id=self.session.id, step_id=step.id,
+                    history=self.session.history, graph_tools=self._graph_tools(gate),
+                    should_stop=lambda: self.session.stopping,
+                    memory=self.memory, project_map=self._project_map(gate, step.task),
+                    goal=self.session.goal, requirements=self.session.requirements,
+                    approve=self.approve, reindex=self._reindex,
+                    steering_inbox=step.take_steering,
+                    verdict_required=True, resume_messages=seed,
+                )
+                self._charge(gate.name, step, gate_t0)
+
             verdict = turn.verdict or "UNKNOWN"
+            feedback = turn.text if verdict != "PASS" else ""
+            if verdict == "UNVERIFIED":
+                # Fail closed, but say what this is: an unfinished check, not
+                # a defect. The fixer reading this must not "fix" working code.
+                verdict = "FAIL"
+                feedback = ("NO DEFECT WAS FOUND — the check itself could not be "
+                            "completed, twice. What remains unchecked:\n" + turn.text)
             result = GateResult(
                 gate=name, verdict=verdict,
-                feedback=turn.text if verdict != "PASS" else "",
+                feedback=feedback,
                 event_id=turn.model_event_ids[-1] if turn.model_event_ids else None,
             )
             attempt.gate_results.append(result)
@@ -997,7 +1038,7 @@ class FlowEngine:
             })
 
             if verdict == "FAIL":
-                attempt.verdict, attempt.feedback = "FAIL", turn.text
+                attempt.verdict, attempt.feedback = "FAIL", feedback or turn.text
                 self._emit("gate_failed", agent=gate.name, step_id=step.id, payload={
                     "gate": name,
                     # No routing promise: this code cannot see the try budget,
@@ -1025,6 +1066,27 @@ class FlowEngine:
     #: ordinary step; a diff past this is clipped and says so, with the file
     #: list still there to go look at.
     GATE_DIFF_CHARS = 16_000
+
+    def _checker_resume(self, turn) -> list | None:
+        """The checker's own conversation, from the bus, to continue it.
+
+        The last model call of a verdict turn is the verdict answer itself,
+        so the continued conversation ends with the checker's UNVERIFIED line
+        — it resumes knowing exactly what it already covered and what is
+        left. In-process, so the bus still holds the full messages."""
+        if not getattr(turn, "model_event_ids", None):
+            return None
+        wanted = turn.model_event_ids[-1]
+        event = next((e for e in self.bus.history(self.session.id)
+                      if e.id == wanted), None)
+        held = (event.payload.get("messages") if event else None) or []
+        if not isinstance(held, list) or not held:
+            return None
+        seed = [dict(m) for m in held if isinstance(m, dict)]
+        reply = str(event.payload.get("response_text") or "")
+        if reply and not (event.payload.get("tool_calls") or []):
+            seed.append({"role": "assistant", "content": reply})
+        return seed
 
     def _gate_task(self, step: Step, attempt: Attempt, gate, index: int, checks: list) -> str:
         earlier = [g for g in attempt.gate_results if g.verdict == "PASS"]

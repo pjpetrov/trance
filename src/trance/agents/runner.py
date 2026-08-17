@@ -24,6 +24,11 @@ from .tools import AgentTools, permissions_brief
 
 VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
+#: The honest third answer: no defect seen, verification not finished. Never
+#: counts as a pass; routes the check back to the checker, not to a fixer —
+#: measured live, a visual tester that ran out of rounds mid-game reported a
+#: working app as FAIL because the format offered nothing truthful to say.
+VERDICT_UNVERIFIED = "UNVERIFIED"
 
 #: Tool rounds an agent gets in one attempt, when neither it nor its model says
 #: otherwise. Enough to read a few things and write a file in pieces — which
@@ -391,7 +396,9 @@ class AgentTurn:
         first = re.split(r"[^A-Za-z]+", body.upper(), maxsplit=1)[0] if body else ""
         if first == VERDICT_PASS:
             return VERDICT_PASS
-        return VERDICT_FAIL          # FAIL, INCOMPLETE, or anything that is not a pass
+        if first in (VERDICT_UNVERIFIED, "INCOMPLETE"):
+            return VERDICT_UNVERIFIED
+        return VERDICT_FAIL          # anything else that is not a pass
 
     @property
     def verdict_reason(self) -> str:
@@ -1138,7 +1145,10 @@ def _run_agent(
                 "work, so that line is the whole answer. Reply with exactly one line "
                 "and nothing else:\n"
                 "  VERDICT: PASS\n"
-                "  VERDICT: FAIL — <what is wrong>\n"
+                "  VERDICT: FAIL — <the defect you saw, and where>\n"
+                "  VERDICT: UNVERIFIED — <what you could not check, and why>\n"
+                "FAIL means you SAW a defect. If everything you observed worked but "
+                "you could not finish checking, that is UNVERIFIED, not FAIL. "
                 "OUTCOME is not it: that is for the agent doing the work. If what you "
                 "found was fine, that is PASS."),
         })

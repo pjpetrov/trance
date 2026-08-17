@@ -8066,8 +8066,9 @@ def test_a_failing_verdict_is_read_from_the_word_not_the_line():
     # Markdown around it, which models add unprompted.
     assert AgentTurn(text="**VERDICT: FAIL** — broken").verdict == "FAIL"
     assert AgentTurn(text="### VERDICT: PASS").verdict == "PASS"
-    # Anything that is not a pass is not a pass.
-    assert AgentTurn(text="**VERDICT: INCOMPLETE** — not verified").verdict == "FAIL"
+    # Not-a-pass has two honest shades now: a defect, or unfinished checking.
+    assert AgentTurn(text="**VERDICT: INCOMPLETE** — not verified").verdict == "UNVERIFIED"
+    assert AgentTurn(text="VERDICT: BROKEN somehow").verdict == "FAIL"
     assert AgentTurn(text="no verdict here").verdict is None
 
     turn = AgentTurn(text="VERDICT: FAIL — 2 tests still failing in game-e2e")
@@ -12393,3 +12394,62 @@ def test_the_orchestrator_is_told_to_interview_before_a_new_project():
     assert "A FOLLOW-UP on an existing project" in prompt
     assert "one or two questions at most" in prompt
     assert "not a questionnaire" not in prompt
+
+
+def test_unverified_is_a_verdict_of_its_own():
+    """Measured live: a visual tester that ran out of rounds mid-game, saw
+    zero defects, and had to call a working app FAIL because the format
+    offered nothing truthful. UNVERIFIED (and INCOMPLETE) parse as their own
+    state now — never a pass, never a defect."""
+    from trance.agents.runner import AgentTurn
+
+    def turn(text):
+        t = AgentTurn(text="")
+        t.text = text
+        return t
+
+    assert turn("VERDICT: UNVERIFIED — overlays unseen").verdict == "UNVERIFIED"
+    assert turn("VERDICT: INCOMPLETE — ran out of rounds").verdict == "UNVERIFIED"
+    assert turn("VERDICT: FAIL — enemies walk through towers").verdict == "FAIL"
+    assert turn("VERDICT: PASS").verdict == "PASS"
+
+
+def test_an_unverified_check_continues_itself_and_never_bills_the_fixer(tmp_path, monkeypatch):
+    """The routing the verdict exists for: UNVERIFIED re-arms the checker —
+    same conversation, fresh rounds — instead of sending a non-defect to the
+    fixer. If it still cannot finish after two continuations, fail-closed
+    takes over with wording that forbids 'fixing' working code."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["tester", "developer"])
+    step = Step(role="developer", task="build the game", check="tester")
+    calls = []
+
+    def fake(**kw):
+        role = kw["role"].name
+        if role == "developer":
+            return _Turn(None, "built\n\nOUTCOME: SUCCESS")
+        calls.append(kw.get("resume_messages"))
+        if len(calls) == 1:
+            # The checker's verdict answer must be on the bus for the resume.
+            event = engine.bus.emit("model_call", engine.session.id, agent="tester",
+                                    step_id=step.id, payload={
+                                        "messages": [{"role": "user", "content": "verify"}],
+                                        "response_text": "VERDICT: UNVERIFIED — wave 5+ unseen",
+                                        "tool_calls": []})
+            turn = _Turn("UNVERIFIED", "VERDICT: UNVERIFIED — wave 5+ unseen")
+            turn.model_event_ids = [event.id]
+            return turn
+        return _Turn("PASS", "VERDICT: PASS")
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+
+    # First check fresh; the second was continued with its own conversation,
+    # ending on its own UNVERIFIED line; and the step passed.
+    assert calls[0] is None
+    assert calls[1][-1]["content"].startswith("VERDICT: UNVERIFIED")
+    assert step.status == "done"
+    said = [e for e in engine.bus.history(engine.session.id)
+            if e.type == "check_unverified"]
+    assert said and "from where it left off" in said[0].payload["message"]
