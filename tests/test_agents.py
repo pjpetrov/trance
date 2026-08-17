@@ -12388,8 +12388,10 @@ def test_the_orchestrator_is_told_to_interview_before_a_new_project():
 
     prompt = BUILTIN_ROLES["orchestrator"].system_prompt
     assert "do NOT propose on the first message" in prompt
-    assert "4-6 sharp questions" in prompt
+    assert "at least TWO rounds of questions" in prompt
+    assert "6-8 sharp questions" in prompt
     assert "explicitly OUT" in prompt
+    assert "what gets cut first" in prompt
     assert "what 'done' looks like" in prompt
     assert "A FOLLOW-UP on an existing project" in prompt
     assert "one or two questions at most" in prompt
