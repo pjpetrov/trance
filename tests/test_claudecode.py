@@ -398,7 +398,7 @@ def test_a_delegated_writer_runs_with_its_own_tools_and_a_shaped_bash(tmp_path, 
     prompt = command[command.index("-p") + 1]
     assert "add stop()" in prompt and "a web app" in prompt
     assert "OUTCOME: SUCCESS" in prompt              # it is told how to report
-    assert "src/**" in prompt                        # ...and what it may change
+    assert '"**"' in prompt or "**" in prompt        # ...and what it may change
     assert "checked from the git diff" in prompt     # ...and how that is enforced
 
 
@@ -478,7 +478,8 @@ def test_writing_outside_the_remit_fails_the_step(tmp_path, monkeypatch):
                   side_effect=lambda: (project / "docs" / "notes.md").write_text(
                       "touched by the wrong agent\n"))
 
-    turn = run_agent(role=BUILTIN_ROLES["developer"], task="t", project=project,
+    # The tester's remit is test files only; docs are outside it.
+    turn = run_agent(role=BUILTIN_ROLES["tester"], task="t", project=project,
                      config=ModelConfig(kind="claudecode"), bus=EventBus(),
                      session_id="s", step_id="st")
 

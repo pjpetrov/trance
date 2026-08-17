@@ -38,21 +38,25 @@ def _inspector():
 # ------------------------------------------------------------------ remits
 
 def test_role_remit_allows_and_denies(project):
+    # The developer builds the whole project, so its remit is the whole
+    # project — the whitelist it used to have turned every extension it
+    # lacked (simulate.mjs was the one measured) into an approval prompt.
     developer = BUILTIN_ROLES["developer"]
     assert developer.may_write("backend/main.py")
-    assert developer.may_write("frontend/src/app.tsx")
-    # Not everything: docs are the planner's, and the CI/container files have
-    # no owner until someone makes an agent for them.
-    assert not developer.may_write("docs/plan.md")
-    assert not developer.may_write("Dockerfile")
+    assert developer.may_write("simulate.mjs")
+    assert developer.may_write("Dockerfile")
+    # The verifiers stay scoped: a checker that can edit the code can make
+    # its own claim true.
+    tester = BUILTIN_ROLES["tester"]
+    assert not tester.may_write("backend/main.py")
 
 
 def test_write_outside_remit_is_refused_and_reported(project):
-    result = _tools(project).write_file("docs/notes.md", "# notes")
+    result = _tools(project, "tester").write_file("backend/api.py", "X = 1")
     assert not result.ok
-    assert result.remit_violation == "docs/notes.md"
-    assert not (project / "docs").exists()  # nothing was created
-    assert "Developer" in result.text and "remit" in result.text
+    assert result.remit_violation == "backend/api.py"
+    assert not (project / "backend" / "api.py").exists()  # nothing was created
+    assert "remit" in result.text
 
 
 def test_write_inside_remit_succeeds(project):
@@ -62,9 +66,12 @@ def test_write_inside_remit_succeeds(project):
 
 
 def test_paths_cannot_escape_the_project(project):
-    for path in ("../../etc/passwd", "/etc/passwd"):
-        assert not _tools(project).write_file(path, "pwned").ok
-        assert not _tools(project).read_file(path).ok
+    assert not _tools(project).write_file("../../etc/passwd", "pwned").ok
+    assert not _tools(project).read_file("../../etc/passwd").ok
+    # An absolute path is not an escape: it is read as the model usually
+    # means it — rooted at the project — and lands inside it.
+    result = _tools(project).write_file("/etc/passwd", "pwned")
+    assert result.ok and (project / "etc" / "passwd").read_text() == "pwned"
 
 
 def test_command_allowlist(project):
@@ -428,7 +435,7 @@ def test_the_brief_is_in_every_agent_prompt(monkeypatch, tmp_path):
     )
     user_message = captured["messages"][1]["content"]
     assert "## Your permissions (enforced by the system)" in user_message
-    assert "backend/**" in user_message
+    assert "**" in user_message                     # the whole-project remit
     # It runs commands now — the brief has to say which, since an agent that
     # tries a program it was never granted burns a round finding out.
     assert "You may run commands" in user_message
@@ -522,7 +529,7 @@ def test_command_detail_carries_exit_code_and_output(project):
 
 
 def test_refused_write_carries_no_diff(project):
-    result = _tools(project).write_file("docs/x.md", "nope")
+    result = _tools(project, "tester").write_file("backend/x.py", "nope")
     assert result.remit_violation and result.detail == {}
 
 
@@ -2792,8 +2799,9 @@ def test_the_orchestrator_is_told_what_each_agent_may_write(tmp_path, monkeypatc
                       project_dir=tmp_path, config=ModelConfig(), bus=EventBus(),
                       session_id="s")
 
-    assert "package.json" in captured["system"]
     assert "REFUSED by the system" in captured["system"]
+    # The scoped roles' remits are what planning has to route around.
+    assert "test" in captured["system"]
 
 
 def test_a_step_refused_by_the_remit_says_who_owns_the_files(tmp_path, monkeypatch):
@@ -2828,7 +2836,8 @@ def test_the_owner_is_found_even_when_it_is_not_on_the_team(tmp_path, monkeypatc
     engine = _engine(tmp_path, ["tester"])           # no coder on this team
     assert engine._owner_of("src/App.tsx") == "developer"
     assert engine._owner_of("server/app.js") == "developer"
-    assert engine._owner_of("nothing/owns/this.weird") is None
+    # With a whole-project remit the developer owns even the odd ones.
+    assert engine._owner_of("nothing/owns/this.weird") == "developer"
 
 
 def test_the_manifests_belong_to_the_coders_and_nobody_else():
@@ -11372,7 +11381,7 @@ def test_the_developer_may_write_the_documents_its_rules_demand():
     developer = BUILTIN_ROLES["developer"]
     assert developer.may_write("PLAYBOOK.md")
     assert developer.may_write("README.md")
-    assert not developer.may_write("docs/plan.md")     # docs stay the planner's
+    assert developer.may_write("docs/plan.md")     # the whole project is its remit
 
 
 def test_the_tester_owns_tests_wherever_the_project_keeps_them():
@@ -12342,3 +12351,27 @@ def test_a_plain_step_can_continue_its_conversation_too(tmp_path, monkeypatch):
     engine._execute(plain)
     assert seeds[0] == recorded
     assert plain.resume_messages == []
+
+
+def test_the_developer_writes_anywhere_but_never_into_the_records(tmp_path):
+    """simulate.mjs at the project root raised an approval prompt: the remit
+    whitelist had *.js but not *.mjs, and every new extension became another
+    prompt. The developer's remit is the whole project now — with .trance/
+    and .git/ hard-refused for everyone, because a role broad enough to build
+    the project must still not write the project's history."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.tools import AgentTools
+
+    developer = BUILTIN_ROLES["developer"]
+    assert developer.may_write("simulate.mjs")
+    assert developer.may_write("scripts/fetch-pravets.mjs")
+    assert developer.may_write("docs/notes.md")
+
+    tools = AgentTools(tmp_path, developer)
+    ok = tools.write_file("simulate.mjs", "console.log(1)\n")
+    assert ok.ok and (tmp_path / "simulate.mjs").exists()
+
+    for records in (".trance/sessions/s1/events.jsonl", ".git/HEAD"):
+        refused = tools.write_file(records, "overwritten")
+        assert not refused.ok and "records" in refused.text
+        assert not (tmp_path / records).exists()

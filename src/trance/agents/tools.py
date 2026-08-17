@@ -954,6 +954,14 @@ class AgentTools:
         if target is None:
             return ToolOutcome(f"Refused: {path!r} is outside the project directory.", ok=False)
         rel = target.relative_to(self.project).as_posix()
+        # The harness's own records and git's plumbing are nobody's remit —
+        # guarded here, not by role patterns, because a role broad enough to
+        # build the whole project ("**") must still not write the project's
+        # history. No approval prompt either: this is never a judgment call.
+        if rel.split("/", 1)[0] in (".trance", ".git"):
+            return ToolOutcome(
+                f"Refused: {rel} is inside {rel.split('/', 1)[0]}/ — the "
+                f"project's own records. Nothing there is yours to write.", ok=False)
         if not self.role.may_write(rel) and not self._ask_user(
                 "write", rel,
                 {"remit": list(self.role.paths), "agent_title": self.role.title,
