@@ -12375,3 +12375,21 @@ def test_the_developer_writes_anywhere_but_never_into_the_records(tmp_path):
         refused = tools.write_file(records, "overwritten")
         assert not refused.ok and "records" in refused.text
         assert not (tmp_path / records).exists()
+
+
+def test_the_orchestrator_is_told_to_interview_before_a_new_project():
+    """The user's ask, verbatim: "I want it to grill me with questions so the
+    result will be closer to what I want" — a new project gets an interview
+    of several questions across scope/look/platform/done, while a follow-up
+    on built work stays at one or two. The old prompt capped everything at
+    "one or two at a time" and the first plan shipped after a single question."""
+    from trance.agents.roles import BUILTIN_ROLES
+
+    prompt = BUILTIN_ROLES["orchestrator"].system_prompt
+    assert "do NOT propose on the first message" in prompt
+    assert "4-6 sharp questions" in prompt
+    assert "explicitly OUT" in prompt
+    assert "what 'done' looks like" in prompt
+    assert "A FOLLOW-UP on an existing project" in prompt
+    assert "one or two questions at most" in prompt
+    assert "not a questionnaire" not in prompt
