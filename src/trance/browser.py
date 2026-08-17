@@ -807,9 +807,17 @@ class Browser:
 
     def _safe_shot(self, probe: dict) -> bytes:
         """A screenshot for the record. Never raises: evidence is a nice-to-have
-        and must not be the thing that ends a step."""
+        and must not be the thing that ends a step.
+
+        The whole page, not the canvas crop: interaction evidence exists to
+        answer "did that click do anything", and the answer is often outside
+        the canvas — measured on a tower-defense shop, clicking a DOM button
+        highlighted the button and changed not one canvas pixel, so the
+        before/after pair came out byte-identical and the click was reported
+        as doing nothing. The canvas crop stays right for `look`, where the
+        question is about the game image itself."""
         try:
-            return self.screenshot(self.canvas_clip(probe))
+            return self.screenshot(None)
         except Exception:                           # noqa: BLE001
             return b""
 
