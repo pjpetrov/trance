@@ -12455,3 +12455,40 @@ def test_an_unverified_check_continues_itself_and_never_bills_the_fixer(tmp_path
     said = [e for e in engine.bus.history(engine.session.id)
             if e.type == "check_unverified"]
     assert said and "from where it left off" in said[0].payload["message"]
+
+
+def test_the_user_can_switch_thinking_off_for_a_run(tmp_path, monkeypatch):
+    """The per-run latch, now the user's hand on it: with the switch off,
+    every call goes out with the no-think toggle and the events say so; on
+    again mid-turn, the next round thinks — the callable is read live."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    calls, seen = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    switch = {"off": True}
+
+    class _Watcher:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            calls.append(extra_body)
+            if len(calls) == 1:
+                switch["off"] = False       # the user flips it back mid-turn
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id="c1", name="list_files", arguments={})])
+            return ChatResponse(text="ok\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _Watcher())
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
+                     config=ModelConfig(kind="llamacpp", max_tokens=600,
+                                        context_window=64000),
+                     bus=bus, session_id="s", step_id="st",
+                     thinking_off=lambda: switch["off"])
+
+    assert calls[0] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert calls[1] is None                 # flipped back: the next round thinks
+    waits = [e.payload["thinking"] for e in seen if e.type == "model_waiting"]
+    assert waits[:2] == [False, True]     # (a memory-nudge round may follow)

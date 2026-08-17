@@ -540,6 +540,11 @@ def _run_agent(
     #: recorded by this agent's last model call, reconstructed by "continue
     #: from here". The task/context prompts are already inside it.
     resume_messages: list[dict] | None = None,
+    #: Callable checked each round: True = the user has switched thinking off
+    #: for this run, so every call goes out with the no-think toggle (on the
+    #: backends that take one). Live, like should_stop — flipping it mid-turn
+    #: applies from the next round.
+    thinking_off=None,
     _opened: list | None = None,
 ) -> AgentTurn:
     model_config = config
@@ -768,7 +773,9 @@ def _run_agent(
         # one generation and emits nothing while it does, so the console went
         # quiet and there was no way to tell working from stuck. The matching
         # model_call arrives when it answers.
-        thinking = _thinking_state(model_config, False)
+        forced_off = bool(thinking_off and thinking_off()) \
+            and (model_config.kind or "") in THINKING_TOGGLE_KINDS
+        thinking = _thinking_state(model_config, forced_off)
         bus.emit("model_waiting", session_id, agent=role.name, step_id=step_id, payload={
             "round": round_n,
             "model": model_config.model,
@@ -784,6 +791,8 @@ def _run_agent(
         try:
             response = client.complete(
                 messages, tools=specs or None, cancel_token=session_id,
+                **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+                   if forced_off else {}),
                 **({"on_progress": progress} if progress else {}))
             response, overran = _answer_or_retry_without_thinking(
                 response, client=client, messages=messages, specs=specs,
@@ -828,7 +837,7 @@ def _run_agent(
                 # The same gauge the waiting event carried, now with the count
                 # the model reported rather than an estimate of it.
                 "context": turn.context,
-                **_thinking_state(model_config, overran),
+                **_thinking_state(model_config, forced_off or overran),
                 "summary": summarize_messages(messages),
             },
         )
@@ -1042,7 +1051,7 @@ def _run_agent(
         try:
             response, recovered = _ask_without_tools(
                 client, messages, config=model_config, bus=bus, session_id=session_id,
-                role=role, step_id=step_id, round_n=max_rounds + 1)
+                role=role, step_id=step_id, round_n=max_rounds + 1, thinking_off=thinking_off)
         except Cancelled:
             turn.stop_reason = "cancelled"
             return turn
@@ -1094,7 +1103,7 @@ def _run_agent(
         try:
             follow_up, recovered = _ask_without_tools(
                 client, messages, config=model_config, bus=bus, session_id=session_id,
-                role=role, step_id=step_id, round_n=turn.rounds + 1)
+                role=role, step_id=step_id, round_n=turn.rounds + 1, thinking_off=thinking_off)
         except Cancelled:
             turn.stop_reason = "cancelled"
             return turn
@@ -1156,7 +1165,7 @@ def _run_agent(
         try:
             answer, recovered = _ask_without_tools(
                 client, messages, config=model_config, bus=bus, session_id=session_id,
-                role=role, step_id=step_id, round_n=turn.rounds + 2)
+                role=role, step_id=step_id, round_n=turn.rounds + 2, thinking_off=thinking_off)
         except Cancelled:
             turn.stop_reason = "cancelled"
             return turn
@@ -1342,7 +1351,7 @@ def _progress_reporter(client, bus, session_id, *, role, step_id, round_n, confi
 
 
 def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_id,
-                       round_n):
+                       round_n, thinking_off=None):
     """The two asks made with tools withheld — report now, and state your outcome.
 
     They used to go out raw, and that is how a step could fail for no reason:
@@ -1358,14 +1367,18 @@ def _ask_without_tools(client, messages, *, config, bus, session_id, role, step_
     """
     progress = _progress_reporter(client, bus, session_id, role=role,
                                   step_id=step_id, round_n=round_n, config=config)
+    forced_off = bool(thinking_off and thinking_off()) \
+        and (config.kind or "") in THINKING_TOGGLE_KINDS
     response = client.complete(
         messages, tools=None, cancel_token=session_id,
+        **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+           if forced_off else {}),
         **({"on_progress": progress} if progress else {}))
     response, overran = _answer_or_retry_without_thinking(
         response, client=client, messages=messages, specs=None, config=config,
         bus=bus, session_id=session_id, role=role, step_id=step_id,
         round_n=round_n, on_progress=progress)
-    return response, overran
+    return response, forced_off or overran
 
 
 def _answer_or_retry_without_thinking(response, *, client, messages, specs, config,

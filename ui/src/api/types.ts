@@ -233,6 +233,8 @@ export interface Session {
   agent_seconds?: Record<string, number>;
   created_at: string;
   error: string | null;
+  /** The per-run thinking switch: true = later calls go out without it. */
+  thinking_disabled?: boolean;
   chat: ChatMessage[];
   team: AgentRole[];
   history: unknown[];

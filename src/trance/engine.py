@@ -327,6 +327,7 @@ class FlowEngine:
                 role, step, runs[role.name], force_backup=forced)
             node_t0 = time.monotonic()
             turn = run_agent(
+                thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
                 # The step's own screenshots plus what the previous block just
                 # photographed — newest last, and the last three win, because
                 # the tester's picture of the failure outranks a chat shot
@@ -540,6 +541,7 @@ class FlowEngine:
             worker_t0 = time.monotonic()
             try:
                 turn = run_agent(
+                thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
                     role=role, task=step.task, project=self.project,
                     images=step.images,
                     config=model_config, bus=self.bus,
@@ -746,6 +748,7 @@ class FlowEngine:
             for a in step.attempts[:-1])
         escalation_t0 = time.monotonic()
         turn = run_agent(
+                thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
             role=role, images=step.images,
             task=(
                 f"{step.task}\n\n"
@@ -823,6 +826,7 @@ class FlowEngine:
                   if handoff and handoff.body else "")
         fixer_t0 = time.monotonic()
         turn = run_agent(
+                thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
             role=fixer, images=step.images,
             task=(
                 f"Another agent's work failed its check. Fix it.\n\n"
@@ -969,6 +973,7 @@ class FlowEngine:
 
             gate_t0 = time.monotonic()
             turn = run_agent(
+                thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
                 role=gate, images=step.images,
                 task=self._gate_task(step, attempt, gate, index, checks),
                 project=self.project, config=self.config.for_role(gate), bus=self.bus,
@@ -1002,6 +1007,7 @@ class FlowEngine:
                 })
                 gate_t0 = time.monotonic()
                 turn = run_agent(
+                thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
                     role=gate, images=step.images,
                     task=self._gate_task(step, attempt, gate, index, checks),
                     project=self.project, config=self.config.for_role(gate),

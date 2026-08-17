@@ -164,6 +164,9 @@ class Session:
             "agent_seconds": {name: round(spent, 1)
                               for name, spent in self.agent_seconds.items()},
             "working": self.working,
+            # The user's per-run switch: every later model call in this run
+            # goes out with thinking off. Runtime state, like paused.
+            "thinking_disabled": getattr(self, "thinking_disabled", False),
             "review": self.review,
             "reviews": self.reviews,
             "error": self.error,

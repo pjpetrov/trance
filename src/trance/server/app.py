@@ -2920,6 +2920,28 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 "messages_restored": len(step.resume_messages),
                 "status_now": session.status}
 
+    @app.post("/api/sessions/{session_id}/thinking")
+    def set_thinking(session_id: str, body: dict):
+        """The user's per-run thinking switch.
+
+        Off: every later model call in this run goes out with the no-think
+        toggle (on backends that take one) — for watching a step that does
+        not need deep thought crawl, and cutting the wait live. Applies from
+        the next round; flipping it back restores the default (thinking
+        untouched)."""
+        session = _need(store, session_id)
+        enabled = bool((body or {}).get("enabled", True))
+        session.thinking_disabled = not enabled
+        bus.emit("thinking_toggled", session_id, agent="you", payload={
+            "enabled": enabled,
+            "message": ("Thinking is back on for this run."
+                        if enabled else
+                        "Thinking switched off for this run — every later call "
+                        "goes out without it."),
+        })
+        touch(session)
+        return {"thinking_disabled": session.thinking_disabled}
+
     @app.post("/api/sessions/{session_id}/resume-pending")
     def resume_pending(session_id: str):
         """Kick the engine for any pending work (after rerun, or a flow edit)."""

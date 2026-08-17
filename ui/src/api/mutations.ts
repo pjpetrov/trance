@@ -39,6 +39,13 @@ export function useRunControl(sessionId: string) {
     pause: useMutation({ mutationFn: () => api.pause(sessionId), onSuccess: settle }),
     resume: useMutation({ mutationFn: () => api.resume(sessionId), onSuccess: settle }),
     stop: useMutation({ mutationFn: () => api.stop(sessionId), onSuccess: settle }),
+    // The per-run thinking switch: applies from the model's next round.
+    setThinking: useMutation({
+      mutationFn: (enabled: boolean) => api.setThinking(sessionId, enabled),
+      onSuccess: () => {
+        void client.invalidateQueries({ queryKey: keys.session(sessionId) });
+      },
+    }),
   };
 }
 

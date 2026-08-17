@@ -379,6 +379,8 @@ function Console(
 ) {
   const { sessionId, showReads, toggleReads, follow, setFollow, setOpenStep } = useUi();
   const session = useSession(sessionId);
+  const { setThinking } = useRunControl(sessionId ?? "");
+  const noThink = Boolean(session.data?.thinking_disabled);
   const steps = session.data?.flow.steps ?? [];
   const tail = useEventTail(sessionId);
   const stepEvents = useStepEvents(sessionId, stepId);
@@ -477,6 +479,15 @@ function Console(
         actions={
           <>
             <ModelState events={events} going={going} />
+            <Button
+              size="sm" variant={noThink ? "danger" : "ghost"}
+              busy={setThinking.isPending}
+              title={noThink
+                ? "Thinking is switched off for this run — click to let the model think again (applies from its next round)"
+                : "Switch thinking off for this run — every later call goes out without it, until you turn it back on"}
+              onClick={() => setThinking.mutateAsync(noThink)
+                .catch((error) => toast.err(String(error)))}
+            >{noThink ? "◑ thinking off" : "◑ thinking"}</Button>
             {(tail.isFetching || stepEvents.isFetching) && <Spinner className="text-muted" />}
             {stepId && pinnedRun !== null && (
               <Button size="sm" onClick={() => onPickRun(null)}>latest run</Button>

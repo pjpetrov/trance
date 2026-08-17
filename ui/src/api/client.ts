@@ -172,6 +172,9 @@ export const api = {
 
   start: (sid: string) => request<Session>(`/api/sessions/${id(sid)}/start`, { method: "POST" }),
   pause: (sid: string) => request<Session>(`/api/sessions/${id(sid)}/pause`, { method: "POST" }),
+  setThinking: (sid: string, enabled: boolean) =>
+    request<{ thinking_disabled: boolean }>(
+      `/api/sessions/${id(sid)}/thinking`, { method: "POST", body: { enabled } }),
   resume: (sid: string) => request<Session>(`/api/sessions/${id(sid)}/resume`, { method: "POST" }),
   stop: (sid: string) => request<Session>(`/api/sessions/${id(sid)}/stop`, { method: "POST" }),
   steer: (sid: string, body: { note: string; step_id?: string }) =>
