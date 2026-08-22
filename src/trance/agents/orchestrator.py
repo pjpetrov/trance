@@ -356,6 +356,26 @@ def chat(
     text = response.text.strip()
     cut_off = response.finish_reason == "length"
 
+    # Thousands of tokens generated, almost none returned, no call, no
+    # reasoning: the *server* discarded the output — a vLLM tool-call parser
+    # that could not read the model's dialect does exactly this. Measured
+    # live: 9,743 tokens paid for a plan, 53 characters delivered, twice,
+    # with nothing anywhere saying why.
+    swallowed = (
+        proposal is None and not response.tool_calls and not cut_off
+        and int((response.usage or {}).get("completion_tokens") or 0) > 2000
+        and len(text) + len(response.reasoning or "") < 400
+    )
+    if swallowed:
+        made = int((response.usage or {}).get("completion_tokens") or 0)
+        text += (
+            f"\n\n⚠️ The model generated {made:,} tokens but the server returned "
+            f"almost none of them — its tool-call parser most likely failed to "
+            f"parse the plan and discarded it. On vLLM, check the server log for "
+            f"a tool parse error and match --tool-call-parser to the model "
+            f"(hermes for Qwen3 JSON-style calls, qwen3_xml / qwen3_coder for "
+            f"the XML-style ones).")
+
     # A reply cut off mid-sentence — or worse, mid-reasoning — should say so.
     # Showing the fragment reads as an answer the orchestrator meant to give.
     if cut_off or truncated_call:

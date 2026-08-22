@@ -12529,3 +12529,29 @@ def test_a_thinking_model_is_taught_to_spend_its_thinking_on_decisions(tmp_path,
                          bus=EventBus(), session_id="s", step_id="st")
         assert ("## Using your thinking" in captured["prompt"]) is expected
         assert ("produce code once, in the tool call" in captured["prompt"]) is expected
+
+
+def test_a_server_that_swallows_the_plan_is_called_out(tmp_path, monkeypatch):
+    """Measured on vLLM with the wrong tool-call parser: 9,743 tokens
+    generated, 53 characters returned, no call, no reasoning, no error —
+    "Here it is:" and nothing. The chat now says what the server did instead
+    of leaving an orchestrator that looks like it forgot."""
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    class _Swallowing:
+        def complete(self, messages, tools=None, **kwargs):
+            return ChatResponse(
+                text="My mistake — I said it but never sent it. Here it is:",
+                finish_reason="stop",
+                usage={"prompt_tokens": 4403, "completion_tokens": 9743})
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda cfg: _Swallowing())
+    out = orchestrator.chat(messages=[{"role": "user", "content": "plan it"}],
+                            project_dir=tmp_path, config=ModelConfig(),
+                            bus=EventBus(), session_id="s")
+    assert out["proposal"] is None
+    assert "generated 9,743 tokens" in out["text"]
+    assert "--tool-call-parser" in out["text"]
