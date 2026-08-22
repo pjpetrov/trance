@@ -509,3 +509,30 @@ def test_a_vllm_server_without_tool_calling_gets_told_the_fix(monkeypatch):
     assert "--enable-auto-tool-choice" in said
     assert "--tool-call-parser hermes" in said
     assert "--reasoning-parser qwen3" in said
+
+
+def test_vllms_reasoning_dialect_streams_like_llamacpps(monkeypatch):
+    """Probed on the live server: vLLM's reasoning parser streams the think
+    as `delta.reasoning`, where llama.cpp says `delta.reasoning_content`.
+    Reading only one dialect made vLLM thinks invisible live and absent from
+    the assembled reply — and the context estimator blind to them again."""
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.worker.client import ChatClient
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda request, timeout=None: _sse([
+            'data: {"choices":[{"delta":{"reasoning":"We need"}}]}\n',
+            'data: {"choices":[{"delta":{"reasoning":" to respond"}}]}\n',
+            'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n',
+            "data: [DONE]\n",
+        ]))
+
+    frames = []
+    got = ChatClient(ModelConfig(kind="vllm")).complete(
+        [{"role": "user", "content": "hi"}], on_progress=frames.append)
+    assert got.reasoning == "We need to respond"
+    assert got.text == "hi"
+    assert frames and frames[0]["phase"] == "thinking"

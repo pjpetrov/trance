@@ -254,8 +254,11 @@ class ChatClient:
                 if choice.get("finish_reason"):
                     finish = choice["finish_reason"]
                 delta = choice.get("delta") or {}
-                if delta.get("reasoning_content"):
-                    reasoning.append(delta["reasoning_content"])
+                # llama.cpp streams the think as `reasoning_content`; vLLM's
+                # reasoning parser streams the same thing as `reasoning`.
+                thought = delta.get("reasoning_content") or delta.get("reasoning")
+                if thought:
+                    reasoning.append(thought)
                 if delta.get("content"):
                     content.append(delta["content"])
                 for part in delta.get("tool_calls") or []:
@@ -470,7 +473,8 @@ def _parse(body: dict) -> ChatResponse:
 
     visible, inline_reasoning = split_reasoning(message.get("content") or "")
     reasoning = "\n\n".join(
-        part for part in (message.get("reasoning_content") or "", inline_reasoning) if part
+        part for part in (message.get("reasoning_content") or message.get("reasoning") or "",
+                          inline_reasoning) if part
     )
 
     # A turn the model spent no thought on comes back as `"reasoning_content":
