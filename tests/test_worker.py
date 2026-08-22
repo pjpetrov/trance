@@ -478,3 +478,34 @@ def test_the_preset_chooses_what_cuts_a_long_reply(monkeypatch):
         [{"role": "user", "content": "hi"}])
     assert got.text == "all of it"
     assert got.finish_reason == "stop"
+
+
+def test_a_vllm_server_without_tool_calling_gets_told_the_fix(monkeypatch):
+    """The raw 400 ('"auto" tool choice requires --enable-auto-tool-choice…')
+    reads like a bug in trance's request. It is a server launch flag, and the
+    error now says exactly which ones — retrying was never going to help."""
+    import urllib.error
+    import urllib.request
+
+    import pytest
+
+    from trance.config import ModelConfig
+    from trance.providers.base import BackendError
+    from trance.worker.client import ChatClient
+
+    def refuse(request, timeout=None):
+        raise urllib.error.HTTPError(
+            "http://x", 400, "Bad Request", {},
+            __import__("io").BytesIO(
+                b'{"error":{"message":"\\"auto\\" tool choice requires '
+                b'--enable-auto-tool-choice and --tool-call-parser to be set"}}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    with pytest.raises(BackendError) as caught:
+        ChatClient(ModelConfig(kind="vllm")).complete(
+            [{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}])
+    said = str(caught.value)
+    assert "--enable-auto-tool-choice" in said
+    assert "--tool-call-parser hermes" in said
+    assert "--reasoning-parser qwen3" in said

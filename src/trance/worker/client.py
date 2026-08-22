@@ -129,6 +129,17 @@ class ChatClient:
                 # partial JSON reaches us — recoverable, not fatal to the step.
                 return ChatResponse(text="", finish_reason="length",
                                     provider_error="truncated_tool_call")
+            if "enable-auto-tool-choice" in (body or ""):
+                # vLLM without tool calling switched on. Retrying cannot help
+                # and the raw 400 sends people reading trance's request instead
+                # of their server command line — say the actual fix.
+                raise BackendError(
+                    f"{self.endpoint} is a vLLM server started without tool "
+                    f"calling. Restart it with --enable-auto-tool-choice and "
+                    f"--tool-call-parser hermes (qwen3_coder for Qwen3-Coder "
+                    f"models); add --reasoning-parser qwen3 for structured "
+                    f"thinking. Agents cannot run tools against it until then."
+                ) from exc
             raise BackendError(f"{self.endpoint} returned {exc.code}: {body[:400]}") from exc
         except urllib.error.URLError as exc:
             if handle.aborted:
