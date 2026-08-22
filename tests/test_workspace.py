@@ -83,7 +83,7 @@ def test_a_project_that_has_diverged_is_never_overwritten(tmp_path):
 def test_a_project_with_no_workspace_files_still_gets_the_builtins(tmp_path):
     stores = ProjectStores(tmp_path / "fresh", defaults=None)
     assert stores.roles.get("developer") is not None
-    assert stores.loops.get("test-and-fix") is not None
+    assert stores.loops.get("visual-test-and-fix") is not None
     assert "default" in stores.commands.lists
     assert stores.migrated is False
 
@@ -437,7 +437,7 @@ def test_a_new_project_is_provisioned_from_the_system_defaults(tmp_path):
     sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
 
     loops = client.get("/api/loops", params={"session": sid}).json()["loops"]
-    assert {l["name"] for l in loops} == {"test-and-fix", "visual-test-and-fix"}
+    assert {l["name"] for l in loops} == {"visual-test-and-fix"}
     agents = client.get("/api/agents", params={"session": sid}).json()["agents"]
     assert {a["name"] for a in agents} == {"developer", "orchestrator", "planner",
                                            "regression", "reviewer", "tester",

@@ -465,7 +465,8 @@ def test_a_new_default_loop_reaches_a_setup_that_already_exists(tmp_path):
     # A store written before visual-test-and-fix existed, with an edit of their
     # own in it.
     first = LoopStore(path)
-    mine = first.get("test-and-fix")
+    mine = first.get("visual-test-and-fix")
+    mine.name = "my-own-loop"
     mine.description = "my own wording"
     first.upsert(mine)
     data = json.loads(path.read_text(encoding="utf8"))
@@ -474,7 +475,7 @@ def test_a_new_default_loop_reaches_a_setup_that_already_exists(tmp_path):
 
     after = LoopStore(path)
     assert after.get("visual-test-and-fix") is not None      # the upgrade lands
-    assert after.get("test-and-fix").description == "my own wording"   # theirs survives
+    assert after.get("my-own-loop").description == "my own wording"   # theirs survives
 
 
 @needs_chrome
