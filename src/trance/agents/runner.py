@@ -634,6 +634,20 @@ def _run_agent(
     # Derived from the tool layer, so what the agent is told always matches what
     # the tool layer will actually allow.
     user_parts.append("## Your permissions (enforced by the system)\n" + permissions_brief(role))
+    if (model_config.kind or "") in THINKING_TOGGLE_KINDS:
+        # Not "think less" — the thinking is where this model's quality comes
+        # from. The waste worth steering away from is specific and measured:
+        # 50k-character thinks containing complete files, every line of which
+        # was then generated a second time in the tool call.
+        user_parts.append(
+            "## Using your thinking\n"
+            "You think before answering — use that for decisions: what to "
+            "change, where, what could break, what to verify. Do NOT draft "
+            "whole files or long code inside your thinking — writing the code "
+            "twice (once as thought, once in the tool call) doubles its cost "
+            "and risks hitting your reply limit before the real write. Decide "
+            "in thought; produce code once, in the tool call. When the plan "
+            "is clear, stop thinking and act.")
     if project_map:
         # An agent that cannot see what is indexed has no reason to guess a
         # symbol name, so it falls back to reading whole files. Showing the map

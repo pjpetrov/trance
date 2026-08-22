@@ -3862,14 +3862,14 @@ def test_the_seeded_loop_is_valid_and_describes_the_common_shape(tmp_path):
     from trance.loops import validate
 
     loops = LoopStore(tmp_path / "loops.json").all()
-    assert [l.name for l in loops] == ["test-and-fix", "visual-test-and-fix"]
+    assert [l.name for l in loops] == ["visual-test-and-fix"]
     # Every seeded loop has to validate against the builtin roles, or it is a
     # loop that only fails once someone puts it on a step.
     verifiers = {n for n, r in R.items() if r.verifier}
     for loop in loops:
         assert validate(loop, set(R), verifiers) is None, loop.name
-    assert loops[0].roles() == ["tester", "developer"]
-    assert loops[1].roles() == ["visual-tester", "developer"]
+    assert loops[0].roles() == ["visual-tester", "developer"]
+
 
 
 def test_a_flow_step_can_name_a_loop_and_pulls_in_its_agents(tmp_path):
@@ -3888,7 +3888,7 @@ def test_a_flow_step_can_name_a_loop_and_pulls_in_its_agents(tmp_path):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     body = client.put(f"/api/sessions/{sid}/flow", json={"steps": [
-        {"role": "", "loop": "test-and-fix", "task": "make it bounce"}]}).json()
+        {"role": "", "loop": "visual-test-and-fix", "task": "make it bounce"}]}).json()
 
     assert body["steps"][0]["runs_a_loop"] is True
     team = {r["name"] for r in body["team"]}
@@ -3915,9 +3915,9 @@ def test_a_loop_in_use_cannot_be_deleted(tmp_path):
     sid = client.post("/api/sessions",
                       json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow",
-               json={"steps": [{"role": "", "loop": "test-and-fix", "task": "t"}]})
+               json={"steps": [{"role": "", "loop": "visual-test-and-fix", "task": "t"}]})
 
-    blocked = client.delete("/api/loops/test-and-fix", params={"session": sid})
+    blocked = client.delete("/api/loops/visual-test-and-fix", params={"session": sid})
     assert blocked.status_code == 409 and "used by" in blocked.json()["detail"]
 
 
@@ -3995,10 +3995,10 @@ def test_a_plan_that_forgets_to_test_gets_a_final_loop(tmp_path):
     out = ensure_final_check(proposal, loops=loops, roles=list(R.values()))
 
     assert len(out["steps"]) == 2
-    assert out["steps"][-1]["loop"] == "test-and-fix"
-    assert out["added_final_check"] == "test-and-fix"
+    assert out["steps"][-1]["loop"] == "visual-test-and-fix"
+    assert out["added_final_check"] == "visual-test-and-fix"
     assert "run the tests" in out["steps"][-1]["task"]
-    assert {"tester", "developer"} <= set(out["team"])      # the loop's agents come too
+    assert {"visual-tester", "developer"} <= set(out["team"])  # the loop's agents come too
 
 
 def test_a_plan_that_already_ends_in_verification_is_left_alone(tmp_path):
@@ -4011,7 +4011,7 @@ def test_a_plan_that_already_ends_in_verification_is_left_alone(tmp_path):
 
     ends_with_loop = {"summary": "s", "team": [], "steps": [
         {"role": "developer", "loop": "", "task": "build"},
-        {"role": "", "loop": "test-and-fix", "task": "test"}]}
+        {"role": "", "loop": "visual-test-and-fix", "task": "test"}]}
     assert "added_final_check" not in ensure_final_check(
         ends_with_loop, loops=loops, roles=roles)
 
@@ -4027,7 +4027,7 @@ def test_a_plan_that_already_ends_in_verification_is_left_alone(tmp_path):
     fact_checked = {"summary": "s", "team": [], "steps": [
         {"role": "developer", "loop": "", "task": "build", "check": "reviewer"}]}
     assert ensure_final_check(fact_checked, loops=loops,
-                              roles=roles)["added_final_check"] == "test-and-fix"
+                              roles=roles)["added_final_check"] == "visual-test-and-fix"
 
     really_checked = {"summary": "s", "team": [], "steps": [
         {"role": "developer", "loop": "", "task": "build", "check": "tester"}]}
@@ -4048,7 +4048,7 @@ def test_a_loop_is_preferred_over_a_bare_tester_step(tmp_path):
         {"role": "developer", "loop": "", "task": "build"}]}
 
     assert ensure_final_check(proposal(), loops=with_loops,
-                              roles=list(R.values()))["steps"][-1]["loop"] == "test-and-fix"
+                              roles=list(R.values()))["steps"][-1]["loop"] == "visual-test-and-fix"
     fallback = ensure_final_check(proposal(), loops=without, roles=list(R.values()))
     assert fallback["steps"][-1]["role"] == "tester" and not fallback["steps"][-1]["loop"]
 
@@ -4084,7 +4084,7 @@ def test_the_orchestrator_can_put_a_loop_on_a_step(tmp_path, monkeypatch):
                 id="c", name="propose_flow", arguments={
                     "summary": "s", "team": ["developer"], "steps": [
                         {"role": "developer", "task": "build it", "points": 3},
-                        {"loop": "test-and-fix", "task": "make it pass", "points": 3}]})])
+                        {"loop": "visual-test-and-fix", "task": "make it pass", "points": 3}]})])
 
     monkeypatch.setattr(orchestrator, "client_for", lambda config: FakeClient())
     result = orchestrator.chat(messages=[{"role": "user", "content": "build a thing"}],
@@ -4092,12 +4092,12 @@ def test_the_orchestrator_can_put_a_loop_on_a_step(tmp_path, monkeypatch):
                                session_id="s", loops=loops)
 
     step_props = captured["schema"]["properties"]["steps"]["items"]["properties"]
-    assert step_props["loop"]["enum"] == ["test-and-fix", "visual-test-and-fix"]
+    assert step_props["loop"]["enum"] == ["visual-test-and-fix"]
     assert "END THE PLAN BY VERIFYING IT" in captured["system"]
-    assert "test-and-fix" in captured["system"]
+    assert "visual-test-and-fix" in captured["system"]
 
     steps = result["proposal"]["steps"]
-    assert steps[-1]["loop"] == "test-and-fix" and steps[-1]["role"] == ""
+    assert steps[-1]["loop"] == "visual-test-and-fix" and steps[-1]["role"] == ""
     assert "added_final_check" not in result["proposal"]   # it did not forget
 
 
@@ -4125,7 +4125,7 @@ def test_nothing_is_checked_where_nothing_is_written(tmp_path):
     from trance.agents.roles import BUILTIN_ROLES as R
 
     proposal = {"summary": "s", "team": [], "steps": [
-        {"role": "", "loop": "test-and-fix", "task": "test it", "check": None},
+        {"role": "", "loop": "visual-test-and-fix", "task": "test it", "check": None},
         {"role": "visual-tester", "loop": "", "task": "look at it", "check": None}]}
     out = ensure_checks(proposal, roles=list(R.values()))
 
@@ -4180,8 +4180,8 @@ def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
 
     steps = result["proposal"]["steps"]
     assert [s["check"] for s in steps[:2]] == ["reviewer", "reviewer"]
-    assert steps[-1]["loop"] == "test-and-fix"
-    assert {"developer", "developer", "reviewer", "tester"} <= set(result["proposal"]["team"])
+    assert steps[-1]["loop"] == "visual-test-and-fix"
+    assert {"developer", "reviewer", "visual-tester"} <= set(result["proposal"]["team"])
 
 
 def test_a_step_keeps_the_window_reading_it_ended_on(tmp_path, monkeypatch):
@@ -4981,7 +4981,7 @@ def test_review_comments_become_a_step_the_flow_runs(tmp_path, monkeypatch):
     step = session.flow.steps[-1]
 
     assert body["notes"] and len(body["notes"]) == 2
-    assert step.loop == "test-and-fix"                 # a loop, so a fix gets tested
+    assert step.loop == "visual-test-and-fix"                 # a loop, so a fix gets tested
     assert "line 1" in step.task and "read the port from the environment" in step.task
     assert "line 2" in step.task
     assert "`const PORT = 3000;`" in step.task         # the line it was written on
@@ -10814,10 +10814,8 @@ def test_the_developer_owns_both_sides_of_the_seam():
     repair = next(n for n in visual.nodes if n.id == "n_repair")
     assert repair.role == "developer"
     assert "either side" in repair.focus
-    # Both loops route their fixes to the same developer now — the loop's own
-    # judge (tester or the browser) is what differs, not the fixer.
-    plain = next(l for l in default_loops() if l.name == "test-and-fix")
-    assert next(n for n in plain.nodes if n.id == "n_fix").role == "developer"
+    # The plain test loop retired from the shipped roster; the visual loop's
+    # repairer is the one shipped fixer, and it is the developer.
 
 
 # ==================== deleting is scoped, warned, approved — never walled
@@ -10899,13 +10897,13 @@ def test_a_loop_delete_warns_on_this_projects_steps_and_force_wins(tmp_path):
 
     sid = client.post("/api/sessions", json={"name": "game"}).json()["id"]
     client.put(f"/api/sessions/{sid}/flow",
-               json={"steps": [{"role": "", "loop": "test-and-fix", "task": "t"}]})
+               json={"steps": [{"role": "", "loop": "visual-test-and-fix", "task": "t"}]})
 
-    warned = client.delete(f"/api/loops/test-and-fix?session={sid}")
+    warned = client.delete(f"/api/loops/visual-test-and-fix?session={sid}")
     assert warned.status_code == 409
     assert "step 1 of game" in warned.json()["detail"]
     assert client.delete(
-        f"/api/loops/test-and-fix?session={sid}&force=true").status_code == 200
+        f"/api/loops/visual-test-and-fix?session={sid}&force=true").status_code == 200
 
 
 def test_a_preset_delete_warns_and_says_what_the_fallback_is(tmp_path):
@@ -11337,8 +11335,8 @@ def test_a_fresh_install_ships_exactly_this_roster():
                                      "visual-tester"]
     assert BUILTIN_ROLES["planner"].title == "Planner / architect"
     assert [r.name for r in default_team()] == ["planner", "developer", "tester"]
-    assert sorted(l.name for l in default_loops()) == ["test-and-fix",
-                                                      "visual-test-and-fix"]
+    assert sorted(l.name for l in default_loops()) == ["visual-test-and-fix"]
+                                                      
     for loop in default_loops():
         for node in loop.nodes:
             assert node.role in BUILTIN_ROLES, (loop.name, node.role)
@@ -11366,10 +11364,9 @@ def test_a_stored_shipped_loop_still_naming_old_coders_is_rewired(tmp_path):
     (tmp_path / "loops.json").write_text(json.dumps(data))
 
     again = LoopStore(tmp_path / "loops.json")
-    fix = next(n for n in again.get("test-and-fix").nodes if n.id == "n_fix")
     repair = next(n for n in again.get("visual-test-and-fix").nodes
                   if n.id == "n_repair")
-    assert fix.role == "developer" and repair.role == "developer"
+    assert repair.role == "developer"
     assert again.get("my-loop").nodes[0].role == "backend"   # the user's, kept
 
 
@@ -11803,8 +11800,8 @@ def test_the_shipped_defaults_are_data_the_code_loads():
     for raw in agents["agents"]:
         assert BUILTIN_ROLES[raw["name"]].system_prompt == raw["system_prompt"]
 
-    assert [l.name for l in default_loops()] == ["test-and-fix",
-                                                "visual-test-and-fix"]
+    assert [l.name for l in default_loops()] == ["visual-test-and-fix"]
+                                                
     assert "pytest" in ALLOWED_COMMANDS and "timeout" in ALLOWED_COMMANDS
     assert _shipped_settings().git_commits is True
 
@@ -12139,7 +12136,7 @@ def test_continue_from_a_block_picks_the_conversation_back_up(tmp_path, monkeypa
         {"role": "tool", "tool_call_id": "c1", "content": "the source"},
     ]
     session = app.state.store.get(sid)
-    step = Step(role="", loop="test-and-fix", task="t")
+    step = Step(role="", loop="visual-test-and-fix", task="t")
     session.flow = Flow(steps=[step])
     anchor = app.state.bus.emit("model_call", sid, agent="developer",
                                 step_id=step.id, payload={
@@ -12147,19 +12144,19 @@ def test_continue_from_a_block_picks_the_conversation_back_up(tmp_path, monkeypa
                                     "response_text": "I read it; half done.",
                                     "tool_calls": [],
                                 })
-    step.attempts = [Attempt(n=1, node="n_fix", worker_event_id=anchor.id)]
+    step.attempts = [Attempt(n=1, node="n_repair", worker_event_id=anchor.id)]
 
     out = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/1/continue")
     assert out.status_code == 200
     assert out.json()["messages_restored"] == 5
-    assert step.resume_node == "n_fix"
+    assert step.resume_node == "n_repair"
     assert step.resume_messages[:4] == recorded
     # The plain-text reply survived as the conversation's last word.
     assert step.resume_messages[4] == {"role": "assistant",
                                        "content": "I read it; half done."}
 
     # A block with no recorded call is refused, not continued blind.
-    step.attempts.append(Attempt(n=2, node="n_test"))
+    step.attempts.append(Attempt(n=2, node="n_look"))
     step.status = "failed"
     session.status = "idle"
     refused = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/2/continue")
@@ -12174,7 +12171,7 @@ def test_continue_from_a_block_picks_the_conversation_back_up(tmp_path, monkeypa
                                      "tool_calls": [{"name": "read_file",
                                                      "arguments": {"path": "a.ts"}}]})
     assert crashed.id
-    step.attempts.append(Attempt(n=3, node="n_fix"))     # no worker_event_id
+    step.attempts.append(Attempt(n=3, node="n_repair"))     # no worker_event_id
     step.status = "failed"
     session.status = "idle"
     out = client.post(f"/api/sessions/{sid}/steps/{step.id}/blocks/3/continue")
@@ -12505,3 +12502,30 @@ def test_the_user_can_switch_thinking_off_for_a_run(tmp_path, monkeypatch):
     assert calls[1] is None                 # flipped back: the next round thinks
     waits = [e.payload["thinking"] for e in seen if e.type == "model_waiting"]
     assert waits[:2] == [False, True]     # (a memory-nudge round may follow)
+
+
+def test_a_thinking_model_is_taught_to_spend_its_thinking_on_decisions(tmp_path, monkeypatch):
+    """Not "think less" — the measured waste was 50k-character thinks holding
+    complete files, each line generated twice. Thinking backends get the
+    guidance; backends whose thinking trance never touches do not."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    captured = {}
+
+    class _Client:
+        def complete(self, messages, tools=None, **kwargs):
+            captured["prompt"] = messages[1]["content"]
+            return ChatResponse(text="done\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _Client())
+    for kind, expected in (("llamacpp", True), ("anthropic", False)):
+        runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
+                         config=ModelConfig(kind=kind, max_tokens=600,
+                                            context_window=64000),
+                         bus=EventBus(), session_id="s", step_id="st")
+        assert ("## Using your thinking" in captured["prompt"]) is expected
+        assert ("produce code once, in the tool call" in captured["prompt"]) is expected
