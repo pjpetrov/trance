@@ -11013,44 +11013,85 @@ def test_a_requests_screenshots_are_stamped_onto_the_steps_it_creates(tmp_path, 
     assert step["images"] and step["images"][0].endswith(".png")
 
 
-def test_a_seeing_model_gets_the_screenshot_a_blind_one_gets_told(tmp_path, monkeypatch):
+def test_pictures_are_offered_by_name_and_fetched_when_wanted(tmp_path, monkeypatch):
+    """An agent pulls the picture it needs instead of being handed every one
+    on every round. The prompt costs a list of names; view_image brings one
+    into the window, as the message after its tool result — a tool result is
+    text on every OpenAI-compatible backend, so the image cannot ride inside
+    it. A model that cannot see is told, and never offered the tool."""
     from trance.agents.roles import AgentRole
     from trance.agents.runner import run_agent
     from trance.config import ModelConfig
     from trance.events import EventBus
-    from trance.providers.base import ChatResponse
+    from trance.providers.base import ChatResponse, ToolCall
 
-    shots = tmp_path / ".trance" / "shots" / "chat"
-    shots.mkdir(parents=True)
-    (shots / "bug.png").write_bytes(b"\x89PNG fakebytes")
+    assets = tmp_path / ".trance" / "assets"
+    assets.mkdir(parents=True)
+    (assets / "bug.png").write_bytes(b"\x89PNG fakebytes")
+    (assets / "after.png").write_bytes(b"\x89PNG morefake")
 
-    seen = {}
+    seen = {"rounds": []}
 
     class Model:
         def complete(self, messages, tools=None, **kwargs):
-            seen["first"] = messages[1]["content"]
+            seen["rounds"].append([dict(m) for m in messages])
+            seen["tools"] = [t["function"]["name"] for t in (tools or [])]
+            if len(seen["rounds"]) == 1:
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id="c1", name="view_image", arguments={"name": "bug.png"})])
             return ChatResponse(text="done\n\nOUTCOME: SUCCESS", finish_reason="stop")
 
     monkeypatch.setattr("trance.agents.runner.client_for", lambda config: Model())
     role = AgentRole(name="developer", title="F", description="", system_prompt="p",
                      paths=["**"], toolsets=["files"])
 
-    # llamacpp can see: the screenshot arrives as an image block.
     run_agent(role=role, task="fix it", project=tmp_path,
               config=ModelConfig(kind="llamacpp"), bus=EventBus(),
-              session_id="s", step_id="st", images=["chat/bug.png"])
-    first = seen["first"]
-    assert isinstance(first, list)
-    assert any(part.get("type") == "image_url" for part in first if isinstance(part, dict))
-    assert "part of the task" in first[0]["text"]
+              session_id="s", step_id="st", images=["bug.png", "after.png"])
 
-    # claudecode is delegated and handled elsewhere; a text-only kind is told.
+    # Round one: names only, no pixels, and the tool on offer.
+    first = seen["rounds"][0][1]["content"]
+    assert isinstance(first, str)
+    assert "bug.png, after.png" in first and "view_image" in first
+    assert "view_image" in seen["tools"]
+
+    # Round two: the one it asked for is in the window, behind its tool result.
+    second = seen["rounds"][1]
+    tool_result = next(m for m in second if m.get("role") == "tool")
+    assert "Showing bug.png" in tool_result["content"]
+    picture = second[second.index(tool_result) + 1]
+    assert picture["role"] == "user"
+    assert picture["content"][0]["text"] == "bug.png:"
+    assert picture["content"][1]["type"] == "image_url"
+    # Only the one it wanted: the other stays a filename.
+    assert sum(1 for m in second if isinstance(m.get("content"), list)) == 1
+
+    # A model that cannot see is told so, and is not offered a tool it cannot use.
     run_agent(role=role, task="fix it", project=tmp_path,
               config=ModelConfig(kind="mistral"), bus=EventBus(),
-              session_id="s", step_id="st", images=["chat/bug.png"])
-    told = seen["first"]
-    assert isinstance(told, str)
-    assert "cannot be shown images" in told and "chat/bug.png" in told
+              session_id="s", step_id="st", images=["bug.png"])
+    told = seen["rounds"][-1][1]["content"]
+    assert "cannot be shown images" in told and "bug.png" in told
+
+
+def test_view_image_refuses_a_picture_that_is_not_this_tasks(tmp_path):
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.tools import AgentTools
+
+    assets = tmp_path / ".trance" / "assets"
+    assets.mkdir(parents=True)
+    (assets / "mine.png").write_bytes(b"\x89PNG x")
+
+    tools = AgentTools(tmp_path, BUILTIN_ROLES["developer"], assets=["mine.png"])
+    assert "view_image" in [s["function"]["name"] for s in tools.specs()]
+    ok = tools.view_image("mine.png")
+    assert ok.ok and ok.detail == {"kind": "image", "name": "mine.png"}
+    refused = tools.view_image("/etc/passwd")
+    assert not refused.ok and "not one of this task" in refused.text
+    # No pictures, no tool: nothing to offer.
+    assert "view_image" not in [
+        s["function"]["name"]
+        for s in AgentTools(tmp_path, BUILTIN_ROLES["developer"]).specs()]
 
 
 # ==================================== rerunning one block of a loop

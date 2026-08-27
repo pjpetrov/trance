@@ -373,7 +373,7 @@ class ToolOutcome:
 class AgentTools:
     def __init__(self, project: Path, role: AgentRole, graph_tools=None, notify=None,
                  memory=None, approve=None, session_id: str = "", step_id: str = "",
-                 reindex=None, vision_config=None):
+                 reindex=None, vision_config=None, assets=None):
         self.project = Path(project).resolve()
         #: The model that answers `look` — the agent's own. None only when this
         #: is built outside a run; the browser tools still open pages and probe
@@ -391,6 +391,12 @@ class AgentTools:
         self._approve = approve
         self.session_id = session_id
         self.step_id = step_id
+        #: Pictures that travel with this task — the user's attachments and
+        #: what earlier agents photographed. Named in the prompt, fetched by
+        #: `view_image` when the model decides one matters: an agent pulls
+        #: what it needs rather than being handed everything up front, so
+        #: twenty screenshots cost twenty filenames until they are looked at.
+        self.assets: list[str] = list(assets or [])
         #: Re-reads the repo into the graph. The index is a snapshot from before
         #: this step, so an agent asking about a file it just wrote gets nothing.
         self._reindex = reindex
@@ -443,6 +449,17 @@ class AgentTools:
 
     def specs(self) -> list[dict]:
         out: list[dict] = []
+        if self.assets:
+            out.append(_fn(
+                "view_image",
+                "Look at one of the pictures that travel with this task. They are "
+                "listed by name in your instructions; call this with the name of "
+                "the one you want to see and it is put in front of you. Look at a "
+                "picture before reasoning about what it shows — and only at the "
+                "ones you need.",
+                {"name": {"type": "string",
+                          "description": "The file name, exactly as listed in the task."}},
+                ["name"]))
         if "files" in self.role.toolsets:
             out += [
                 _fn("read_file",
@@ -684,6 +701,30 @@ class AgentTools:
 
     # -------------------------------------------------------------- call
 
+    def view_image(self, name: str) -> ToolOutcome:
+        """Put one of the task's pictures in front of the model.
+
+        The image itself cannot ride in a tool result — an OpenAI-compatible
+        tool message is text only — so this answers in words and the runner
+        appends the picture as the next message. The detail is the contract
+        between them.
+        """
+        from .visual import image_path
+
+        wanted = (name or "").strip()
+        known = {asset.rsplit("/", 1)[-1]: asset for asset in self.assets}
+        match = known.get(wanted.rsplit("/", 1)[-1])
+        if match is None:
+            return ToolOutcome(
+                f"Refused: {wanted!r} is not one of this task's pictures. "
+                f"They are: {', '.join(known) or 'none'}.", ok=False)
+        if image_path(self.project, match) is None:
+            return ToolOutcome(
+                f"{match} is listed with this task but is not on disk any more.",
+                ok=False)
+        return ToolOutcome(f"Showing {match} — it follows this message.",
+                           detail={"kind": "image", "name": match})
+
     def call(self, name: str, arguments: dict) -> ToolOutcome:
         handlers = {
             "read_file": self.read_file,
@@ -705,6 +746,7 @@ class AgentTools:
             "check_canvas": self.check_canvas,
             "look": self.look,
             "watch": self.watch,
+            "view_image": self.view_image,
         }
         # A tool the role was not granted must be refused even if the model
         # invents the name — specs() omitting it is not enough on its own.

@@ -237,57 +237,65 @@ def _playbook(project: Path) -> str:
     return text
 
 
-#: How many of a step's screenshots ride into the agent's conversation.
-#: Not a protocol limit — a cost one, and the only cap in trance that has a
-#: reason: a step's images are re-sent on every round of every attempt of
-#: every loop block, so each one is paid for dozens of times in a long turn.
-#: The chat with the orchestrator is a different bargain (sent once per turn)
-#: and is capped far higher.
-MAX_STEP_IMAGES = 6
+def _announce_images(text: str, images: list[str], config) -> str:
+    """Name the task's pictures instead of embedding them.
+
+    They used to all ride in this message, which meant paying for every one on
+    every round of every attempt of every loop block — and needing a cap on
+    how many a person was allowed to attach. An agent fetches instead: the
+    names cost a line, `view_image` brings the one that matters, and twenty
+    screenshots are free until looked at.
+    """
+    from ..vision import VISION_KINDS
+
+    kept = [name for name in images if name]
+    if not kept:
+        return text
+    listed = ", ".join(kept)
+    if (getattr(config, "kind", "") or "llamacpp") not in VISION_KINDS:
+        return (text + f"\n\n## Pictures that travel with this task\n"
+                f"{len(kept)}: {listed}. This model cannot be shown images, so "
+                f"ask the visual tester what they show, or reason from the task "
+                f"text — do not guess at their contents.")
+    return (text + f"\n\n## Pictures that travel with this task\n"
+            f"{len(kept)} — attached by the user, or taken in the browser by an "
+            f"agent before you: {listed}.\n"
+            f"Call `view_image` with a name to see one. Look before reasoning "
+            f"about what a picture shows, and look only at the ones you need.")
 
 
-def _with_user_images(text: str, images: list[str], project: Path, config) -> str | list:
-    """The user's screenshots, in the shape this model can take.
+def _same_image(message: dict, shown: dict):
+    """The message holding this same picture, if it is already in the window."""
+    if message.get("role") != "user" or not isinstance(message.get("content"), list):
+        return None
+    first = message["content"][0] if message["content"] else {}
+    wanted = shown["content"][0]
+    return message if first.get("text") == wanted.get("text") else None
 
-    A model that can see gets them as image blocks after the prompt — the
-    same wire shape the orchestrator and the vision checks already use. One
-    that cannot is told they exist and where they are, because an agent
-    answering about a screenshot it never received is worse than one that
-    says it cannot see.
 
-    The newest MAX_STEP_IMAGES travel: when a user attaches six pictures of
-    one bug, the last ones are the ones that describe it — and the tester's
-    photograph of a failure outranks a chat shot from before the run.
+def _image_message(project, name: str, config) -> dict | None:
+    """The picture itself, as the message that follows its tool result.
+
+    A tool result is text on every OpenAI-compatible backend, so the image
+    cannot ride inside it; it arrives as the next user message instead, which
+    every backend does accept.
     """
     from ..vision import VISION_KINDS, image_block
     from .visual import image_path
 
-    kept = [name for name in images if name][-MAX_STEP_IMAGES:]
-    if not kept:
-        return text
     kind = getattr(config, "kind", "") or "llamacpp"
     if kind not in VISION_KINDS:
-        return (text + f"\n\n[{len(kept)} screenshot(s) travel with this task "
-                f"({', '.join(kept)}) — attached by the user, or taken in the "
-                f"browser by the agent before you — but this model cannot be "
-                f"shown images. Ask the visual tester about them, or reason "
-                f"from the task text.]")
-    blocks: list[dict] = [{"type": "text", "text": (
-        text + f"\n\n{len(kept)} screenshot(s) travel with this task — attached "
-               f"by the user, or taken in the browser by the agent before you; "
-               f"they follow. What they show is part of the task.")}]
-    shown = 0
-    for name in kept:
-        found = image_path(project, name)
-        if found is None:
-            continue
-        try:
-            png = found.read_bytes()
-        except OSError:
-            continue
-        blocks.append(image_block(png, "anthropic" if kind == "anthropic" else "openai"))
-        shown += 1
-    return blocks if shown else text
+        return None
+    found = image_path(project, name)
+    if found is None:
+        return None
+    try:
+        png = found.read_bytes()
+    except OSError:
+        return None
+    return {"role": "user", "content": [
+        {"type": "text", "text": f"{name}:"},
+        image_block(png, "anthropic" if kind == "anthropic" else "openai")]}
 
 
 def _should_ask_to_remember(turn, role, already_asked: bool) -> bool:
@@ -582,7 +590,7 @@ def _run_agent(
             task = (task + f"\n\nScreenshot(s) travel with this task — attached "
                     f"by the user, or taken in the browser by the agent before "
                     f"you: "
-                    + ", ".join(f".trance/shots/{name}" for name in images[-MAX_STEP_IMAGES:])
+                    + ", ".join(images)
                     + ". What they show is part of the task.")
         handed = delegate.run_delegated(
             role=role, task=task, project=project, config=model_config, bus=bus,
@@ -612,7 +620,8 @@ def _run_agent(
     # a model that can see, and that is a property of the agent, not of trance.
     tools = AgentTools(project, role, graph_tools, notify=notify, memory=memory,
                        approve=approve, session_id=session_id, step_id=step_id,
-                       reindex=reindex, vision_config=model_config)
+                       reindex=reindex, vision_config=model_config,
+                       assets=list(images or []))
     if _opened is not None:
         _opened.append(tools)
     specs = tools.specs()
@@ -692,7 +701,7 @@ def _run_agent(
 
     first_user: str | list = "\n\n".join(user_parts)
     if images:
-        first_user = _with_user_images(first_user, images, project, model_config)
+        first_user = _announce_images(first_user, images, model_config)
 
     if resume_messages:
         # Continue, don't restart: the recorded conversation already holds the
@@ -1063,6 +1072,13 @@ def _run_agent(
                 "content": outcome.text,
             }
             messages.append(tool_message)
+            if (outcome.detail or {}).get("kind") == "image":
+                shown = _image_message(project, outcome.detail["name"], model_config)
+                if shown is not None:
+                    # One copy per picture: looking twice re-anchors attention
+                    # without paying for the pixels again.
+                    messages[:] = [m for m in messages if m is not _same_image(m, shown)]
+                    messages.append(shown)
             if key is not None and earlier is None:
                 seen_lookups[key] = tool_message
 

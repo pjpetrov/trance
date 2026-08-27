@@ -24,7 +24,6 @@ from ..agents.orchestrator import POINTS
 from ..agents.approval import ALWAYS, ApprovalBroker, DECISIONS
 from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole, definition_differs
-from ..agents.runner import MAX_STEP_IMAGES
 from ..trace.session_log import SessionLog
 from ..agents.store import (
     CommandStore, DEFAULT_LIST, LoopStore, PROTECTED, RoleStore,
@@ -2275,11 +2274,12 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     #: A pasted screenshot, capped. Four is more than any bug report needs, and
     #: an 8MB image costs more in tokens than it can possibly say.
-    #: Screenshots per chat message. The orchestrator is shown them once per
-    #: turn, not once per round, so this is a generous number on purpose:
-    #: describing a fault often takes several pictures, and four was an
-    #: arbitrary UI number that also silently outran what reached the agents.
-    MAX_CHAT_IMAGES = 12
+    #: Screenshots per chat message. A sanity bound on one request, not a
+    #: budget: agents fetch pictures by name with `view_image`, so attaching
+    #: many costs a list of filenames until one is looked at. The orchestrator
+    #: is the only reader that still sees them all at once, and it reads them
+    #: once per turn rather than once per round.
+    MAX_CHAT_IMAGES = 40
     MAX_CHAT_IMAGE_BYTES = 8_000_000
 
     def _save_chat_images(session, raw: list) -> list[str]:
@@ -2555,7 +2555,10 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             if asked_with:
                 for step in session.flow.steps:
                     if step.id in reply.steps:
-                        step.images = asked_with[-MAX_STEP_IMAGES:]
+                        # Every picture the request arrived with: the agent
+                        # fetches the ones it needs with view_image, so a cap
+                        # here would only hide evidence from it.
+                        step.images = list(asked_with)
             root = Path(session.project_dir).expanduser()
             reply.base = vcs.head(root) if vcs.is_repo(root) else ""
             # Not while it is running. The orchestrator can propose more work

@@ -281,10 +281,10 @@ function Composer(
   const [over, setOver] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
 
-  // Matches MAX_CHAT_IMAGES on the server, which validates for real. The
-  // orchestrator is shown these once per turn, not once per round, so several
-  // pictures of one fault are affordable — describing a bug often takes them.
-  const MAX = 12;
+  // Matches MAX_CHAT_IMAGES on the server, which validates for real. High
+  // because the agents fetch pictures by name rather than being handed them
+  // all: what you attach costs a filename until something looks at it.
+  const MAX = 40;
 
   const take = (files: FileList | File[] | null) => {
     const pictures = [...(files ?? [])].filter((file) => file.type.startsWith("image/"));
