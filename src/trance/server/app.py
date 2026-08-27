@@ -24,13 +24,14 @@ from ..agents.orchestrator import POINTS
 from ..agents.approval import ALWAYS, ApprovalBroker, DECISIONS
 from ..agents.memory import COMPACT_PROMPT, MAX_NOTES, ProjectMemory
 from ..agents.roles import BUILTIN_ROLES, TOOLSETS, AgentRole, definition_differs
+from ..agents.runner import MAX_STEP_IMAGES
 from ..trace.session_log import SessionLog
 from ..agents.store import (
     CommandStore, DEFAULT_LIST, LoopStore, PROTECTED, RoleStore,
     validate as validate_agent,
 )
 from ..agents.tools import ALLOWED_COMMANDS, set_command_lists, set_command_policy
-from ..agents.visual import SHOTS_DIR, available as browser_available
+from ..agents.visual import ASSETS_DIR, SHOTS_DIR, image_path, available as browser_available
 from ..vision import VISION_KINDS, image_block
 from ..config import Config
 import dataclasses
@@ -1164,9 +1165,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         what made that panel unusable the last time payloads grew.
         """
         session = _need(store, session_id)
-        root = _project_of(session)
-        target = _inside(root / SHOTS_DIR, shot)
-        if target is None or not target.is_file() or target.suffix.lower() != ".png":
+        target = image_path(_project_of(session), shot)
+        if target is None or target.suffix.lower() != ".png":
             raise HTTPException(404, f"no such screenshot: {shot}")
         # Shots are written once under a name that includes the step, so they
         # never change and the browser should not keep asking.
@@ -2275,19 +2275,24 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
 
     #: A pasted screenshot, capped. Four is more than any bug report needs, and
     #: an 8MB image costs more in tokens than it can possibly say.
-    MAX_CHAT_IMAGES = 4
+    #: Screenshots per chat message. The orchestrator is shown them once per
+    #: turn, not once per round, so this is a generous number on purpose:
+    #: describing a fault often takes several pictures, and four was an
+    #: arbitrary UI number that also silently outran what reached the agents.
+    MAX_CHAT_IMAGES = 12
     MAX_CHAT_IMAGE_BYTES = 8_000_000
 
     def _save_chat_images(session, raw: list) -> list[str]:
-        """Store pasted images beside the run's other screenshots.
+        """Store what the user attached, under the project's own .trance/assets.
 
-        Under .trance/shots so the endpoint that already serves screenshots
-        serves these too, and so they travel with the project rather than
-        living in a session file as base64.
+        Apart from `shots`, which the agents fill with machine-named frames:
+        these are the pictures a person chose to hand over, and they are worth
+        being able to find. On disk rather than in the session file, so the
+        conversation stays small and the same endpoint serves both stores.
         """
         if not isinstance(raw, list) or not raw:
             return []
-        folder = _project_of(session) / SHOTS_DIR / "chat"
+        folder = _project_of(session) / ASSETS_DIR
         folder.mkdir(parents=True, exist_ok=True)
 
         out: list[str] = []
@@ -2307,8 +2312,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                     f"{MAX_CHAT_IMAGE_BYTES:,}"))
             if not blob.startswith(b"\x89PNG\r\n\x1a\n") and not blob.startswith(b"\xff\xd8"):
                 raise HTTPException(400, "attached images must be PNG or JPEG")
-            name = f"chat/{uuid4().hex[:10]}.png"
-            (_project_of(session) / SHOTS_DIR / name).write_bytes(blob)
+            name = f"{uuid4().hex[:10]}.png"
+            (folder / name).write_bytes(blob)
             out.append(name)
         return out
 
@@ -2321,7 +2326,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         """
         kind = getattr(config.for_orchestrator(), "kind", "") or "llamacpp"
         sees = kind in VISION_KINDS
-        root = _project_of(session) / SHOTS_DIR
+        root = _project_of(session)
 
         history: list[dict] = []
         for message in session.chat:
@@ -2339,8 +2344,8 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             blocks: list[dict] = [{"type": "text", "text": message.content or
                                    "(a screenshot, with nothing written with it)"}]
             for name in images:
-                target = paths.inside(root, name)
-                if target is None or not target.is_file():
+                target = image_path(root, name)
+                if target is None:
                     continue
                 blocks.append(image_block(target.read_bytes(), kind))
             history.append({"role": role, "content": blocks})
@@ -2550,7 +2555,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             if asked_with:
                 for step in session.flow.steps:
                     if step.id in reply.steps:
-                        step.images = asked_with[:3]
+                        step.images = asked_with[-MAX_STEP_IMAGES:]
             root = Path(session.project_dir).expanduser()
             reply.base = vcs.head(root) if vcs.is_repo(root) else ""
             # Not while it is running. The orchestrator can propose more work

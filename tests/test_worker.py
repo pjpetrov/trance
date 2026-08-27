@@ -536,3 +536,31 @@ def test_vllms_reasoning_dialect_streams_like_llamacpps(monkeypatch):
     assert got.reasoning == "We need to respond"
     assert got.text == "hi"
     assert frames and frames[0]["phase"] == "thinking"
+
+
+def test_a_server_without_a_vision_encoder_names_the_flags(monkeypatch):
+    """Measured live: vLLM launched with --language-model-only answers every
+    attached screenshot with a bare 400 ("At most 0 image(s)…"), which reads
+    like trance sent a malformed picture. It is a launch flag."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    import pytest
+
+    from trance.config import ModelConfig
+    from trance.providers.base import BackendError
+    from trance.worker.client import ChatClient
+
+    def refuse(request, timeout=None):
+        raise urllib.error.HTTPError(
+            "http://x", 400, "Bad Request", {},
+            io.BytesIO(b'{"error":{"message":"At most 0 image(s) may be provided '
+                       b'in one prompt.","param":"image"}}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    with pytest.raises(BackendError) as caught:
+        ChatClient(ModelConfig(kind="vllm")).complete([{"role": "user", "content": "hi"}])
+    said = str(caught.value)
+    assert "--language-model-only" in said
+    assert "--limit-mm-per-prompt" in said

@@ -129,6 +129,18 @@ class ChatClient:
                 # partial JSON reaches us — recoverable, not fatal to the step.
                 return ChatResponse(text="", finish_reason="length",
                                     provider_error="truncated_tool_call")
+            if "image(s) may be provided" in (body or ""):
+                # vLLM served without a vision encoder, or with its
+                # per-prompt image limit below what we sent. Measured live:
+                # "--language-model-only" makes the limit 0, so every
+                # screenshot the user attached came back as a bare 400.
+                raise BackendError(
+                    f"{self.endpoint} refused the screenshots: {body[:160]}. "
+                    f"On vLLM, drop --language-model-only (it loads the model "
+                    f"without its vision encoder) and set "
+                    f"--limit-mm-per-prompt '{{\"image\": 8}}' to allow "
+                    f"several pictures in one prompt."
+                ) from exc
             if "enable-auto-tool-choice" in (body or ""):
                 # vLLM without tool calling switched on. Retrying cannot help
                 # and the raw 400 sends people reading trance's request instead

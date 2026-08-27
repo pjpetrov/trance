@@ -27,6 +27,32 @@ PAGE_CANDIDATES = ("index.html", "public/index.html", "dist/index.html",
 #: beside the rest of trance's state and are ignored by the project's git.
 SHOTS_DIR = ".trance/shots"
 
+#: What the *user* hands the team — screenshots pasted into the chat, and
+#: whatever else a request arrives with. Kept apart from `shots`, which the
+#: agents produce: one is evidence given, the other evidence taken, and a
+#: person going to look at their own attachments should not have to search a
+#: thousand machine-named frames for them.
+ASSETS_DIR = ".trance/assets"
+
+
+def image_path(project, name: str):
+    """Where an image by this name lives, whichever store holds it.
+
+    Chat attachments moved from `shots/chat/` to `assets/`; sessions recorded
+    before the move still name the old place, and their pictures must keep
+    working — a conversation whose screenshots go missing is a conversation
+    that can no longer be read.
+    """
+    from pathlib import Path
+
+    from .. import paths as _paths
+
+    for root in (ASSETS_DIR, SHOTS_DIR):
+        found = _paths.inside(Path(project) / root, name)
+        if found is not None and found.is_file():
+            return found
+    return None
+
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 

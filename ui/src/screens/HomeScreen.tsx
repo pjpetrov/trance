@@ -281,13 +281,16 @@ function Composer(
   const [over, setOver] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
 
-  const MAX = 4;
+  // Matches MAX_CHAT_IMAGES on the server, which validates for real. The
+  // orchestrator is shown these once per turn, not once per round, so several
+  // pictures of one fault are affordable — describing a bug often takes them.
+  const MAX = 12;
 
   const take = (files: FileList | File[] | null) => {
     const pictures = [...(files ?? [])].filter((file) => file.type.startsWith("image/"));
     if (!pictures.length) return;
     const room = MAX - images.length;
-    if (room <= 0) return toast.info(`Four screenshots is the limit.`);
+    if (room <= 0) return toast.info(`${MAX} screenshots is the limit.`);
     pictures.slice(0, room).forEach((file) => {
       const reader = new FileReader();
       reader.onload = () => setImages((held) => [
@@ -295,7 +298,7 @@ function Composer(
                    url: String(reader.result) }]);
       reader.readAsDataURL(file);
     });
-    if (pictures.length > room) toast.info("Four screenshots is the limit.");
+    if (pictures.length > room) toast.info(`${MAX} screenshots is the limit.`);
   };
 
   const send = () => {

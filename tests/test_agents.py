@@ -8368,11 +8368,20 @@ def test_a_screenshot_pasted_into_the_chat_reaches_the_orchestrator(tmp_path, mo
     assert content[1]["type"] == "image_url"
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
-    # It is on disk under the shots the UI already serves, not base64 in a
-    # session file.
+    # On disk under .trance/assets — what the user handed over, kept apart
+    # from the machine-named frames the agents take — and served by the same
+    # endpoint, which looks in both stores.
     stored = client.get(f"/api/sessions/{sid}").json()["chat"][0]["images"]
-    assert len(stored) == 1 and stored[0].startswith("chat/")
+    assert len(stored) == 1 and "/" not in stored[0]
+    assert (tmp_path / "proj" / ".trance" / "assets" / stored[0]).is_file()
     assert client.get(f"/api/sessions/{sid}/shot/{stored[0]}").status_code == 200
+
+    # A picture written by an older trance, under shots/chat, still resolves:
+    # a conversation whose screenshots go missing cannot be read back.
+    legacy = tmp_path / "proj" / ".trance" / "shots" / "chat"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "old.png").write_bytes(png())
+    assert client.get(f"/api/sessions/{sid}/shot/chat/old.png").status_code == 200
 
 
 def test_a_model_that_cannot_see_is_told_rather_than_left_blind(tmp_path, monkeypatch):
@@ -11001,7 +11010,7 @@ def test_a_requests_screenshots_are_stamped_onto_the_steps_it_creates(tmp_path, 
         "images": [f"data:image/png;base64,{png}"]}).json()
 
     step = body["flow"]["steps"][0]
-    assert step["images"] and step["images"][0].startswith("chat/")
+    assert step["images"] and step["images"][0].endswith(".png")
 
 
 def test_a_seeing_model_gets_the_screenshot_a_blind_one_gets_told(tmp_path, monkeypatch):

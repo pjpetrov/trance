@@ -237,6 +237,15 @@ def _playbook(project: Path) -> str:
     return text
 
 
+#: How many of a step's screenshots ride into the agent's conversation.
+#: Not a protocol limit — a cost one, and the only cap in trance that has a
+#: reason: a step's images are re-sent on every round of every attempt of
+#: every loop block, so each one is paid for dozens of times in a long turn.
+#: The chat with the orchestrator is a different bargain (sent once per turn)
+#: and is capped far higher.
+MAX_STEP_IMAGES = 6
+
+
 def _with_user_images(text: str, images: list[str], project: Path, config) -> str | list:
     """The user's screenshots, in the shape this model can take.
 
@@ -244,11 +253,16 @@ def _with_user_images(text: str, images: list[str], project: Path, config) -> st
     same wire shape the orchestrator and the vision checks already use. One
     that cannot is told they exist and where they are, because an agent
     answering about a screenshot it never received is worse than one that
-    says it cannot see. Capped at three: each rides every attempt.
+    says it cannot see.
+
+    The newest MAX_STEP_IMAGES travel: when a user attaches six pictures of
+    one bug, the last ones are the ones that describe it — and the tester's
+    photograph of a failure outranks a chat shot from before the run.
     """
     from ..vision import VISION_KINDS, image_block
+    from .visual import image_path
 
-    kept = [name for name in images if name][:3]
+    kept = [name for name in images if name][-MAX_STEP_IMAGES:]
     if not kept:
         return text
     kind = getattr(config, "kind", "") or "llamacpp"
@@ -264,8 +278,11 @@ def _with_user_images(text: str, images: list[str], project: Path, config) -> st
                f"they follow. What they show is part of the task.")}]
     shown = 0
     for name in kept:
+        found = image_path(project, name)
+        if found is None:
+            continue
         try:
-            png = (Path(project) / ".trance" / "shots" / name).read_bytes()
+            png = found.read_bytes()
         except OSError:
             continue
         blocks.append(image_block(png, "anthropic" if kind == "anthropic" else "openai"))
@@ -565,7 +582,7 @@ def _run_agent(
             task = (task + f"\n\nScreenshot(s) travel with this task — attached "
                     f"by the user, or taken in the browser by the agent before "
                     f"you: "
-                    + ", ".join(f".trance/shots/{name}" for name in images[:3])
+                    + ", ".join(f".trance/shots/{name}" for name in images[-MAX_STEP_IMAGES:])
                     + ". What they show is part of the task.")
         handed = delegate.run_delegated(
             role=role, task=task, project=project, config=model_config, bus=bus,
