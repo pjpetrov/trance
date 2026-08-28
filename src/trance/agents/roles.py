@@ -104,6 +104,13 @@ class AgentRole:
     #: which only 144 were distinct.
     tool_rounds: int = 0
     color: str = "#7aa2f7"
+    #: Off means the agent is kept but out of play: the orchestrator cannot
+    #: put it on a plan, no step's check chain runs it, and a step or loop
+    #: node that names it fails saying so rather than running it. Cheaper
+    #: than deleting when the disagreement is "not now", not "not ever" —
+    #: a reviewer that is too much for this project keeps its wiring for
+    #: the next.
+    enabled: bool = True
 
     def may_write(self, rel_path: str) -> bool:
         if not self.paths:

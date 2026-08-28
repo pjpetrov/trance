@@ -469,6 +469,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 added = True
         if added:
             session.team = roles.resolve_team(wanted)
+            session.deleted_agents = roles.deleted
         return added
 
     def refresh_team(session):
@@ -481,6 +482,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         step stays off.
         """
         session.team = stores_of(session).roles.resolve_team(session.team)
+        session.deleted_agents = stores_of(session).roles.deleted
         # Heals sessions saved before the team pull below existed, on the next
         # read rather than on the next edit.
         grew = pull_flow_roles(session)
@@ -826,8 +828,6 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         """
         held = stores_q(session)
         roles = held.roles
-        if name in PROTECTED:
-            raise HTTPException(409, f"{name!r} is a built-in agent type and cannot be deleted")
         if roles.get(name) is None:
             raise HTTPException(404, "no such agent")
 
@@ -1724,6 +1724,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             if name and all(r.name != name for r in session.team) and roles.get(name):
                 session.team.append(roles.get(name))
         session.team = roles.resolve_team(session.team)
+        session.deleted_agents = roles.deleted
 
         touch(session)
         bus.emit("review_sent", session_id, agent="you", payload={
@@ -2522,6 +2523,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 if wanted not in session.requirements:
                     session.requirements.append(wanted)
             session.team = stores_of(session).roles.resolve_team(proposal["team"])
+            session.deleted_agents = stores_of(session).roles.deleted
             # Added to, not replaced. A new plan proposed halfway through used
             # to delete every finished step and its history with it — the
             # orchestrator is proposing what to do next, not editing what

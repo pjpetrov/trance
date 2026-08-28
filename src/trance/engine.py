@@ -288,12 +288,14 @@ class FlowEngine:
                 return
 
             role = self.session.role(node.role) or BUILTIN_ROLES.get(node.role)
-            if role is None:
+            if role is None or not getattr(role, "enabled", True):
                 step.status = "failed"
                 step.summary = (
-                    f"the {step.loop} loop names an agent {node.role!r} that no longer "
-                    f"exists — deleted or renamed after the loop was made. Fix the "
-                    f"loop's node in the Loops editor, or recreate the agent.")
+                    f"the {step.loop} loop names an agent {node.role!r} that is "
+                    + ("disabled — enable it in the Agents editor, or fix the loop's "
+                       "node in the Loops editor." if role is not None else
+                       "no longer there — deleted or renamed after the loop was made. "
+                       "Fix the loop's node in the Loops editor, or recreate the agent."))
                 self._emit("step_failed", step_id=step.id,
                            payload={"reason": step.summary, "message": step.summary})
                 self._halt(step)
@@ -492,6 +494,14 @@ class FlowEngine:
                 f"this step's agent {step.role!r} no longer exists — it was deleted "
                 f"or renamed after the plan was made. Assign another agent to the "
                 f"step, or recreate {step.role!r} in the Agents editor.")
+            self._emit("step_failed", step_id=step.id,
+                       payload={"reason": step.summary, "message": step.summary})
+            return
+        if not getattr(role, "enabled", True):
+            step.status = "failed"
+            step.summary = (
+                f"this step's agent {step.role!r} is disabled. Enable it in the "
+                f"Agents editor, or assign the step to another agent.")
             self._emit("step_failed", step_id=step.id,
                        payload={"reason": step.summary, "message": step.summary})
             return
@@ -959,6 +969,13 @@ class FlowEngine:
             if gate is None:
                 self._emit("warning", step_id=step.id, payload={
                     "message": f"Check {name!r} is not a known agent; skipping it."})
+                continue
+            if not getattr(gate, "enabled", True):
+                # A check is optional in a way a worker is not: the step's
+                # work stands, this one judge is simply off. Said, not silent.
+                self._emit("check_skipped", agent=gate.name, step_id=step.id, payload={
+                    "gate": name,
+                    "message": f"{gate.title} is disabled — skipping this check."})
                 continue
             if not getattr(gate, "verifier", False):
                 self._emit("warning", agent=gate.name, step_id=step.id, payload={

@@ -113,7 +113,10 @@ export function AgentsEditor() {
           onAdd={() => library.add(
             blankAgent(new Set(library.items.map((role) => role.name))))}
           meta={(role) => (
-            <span className="size-2 shrink-0 rounded-full" style={{ background: role.color }} />
+            <>
+              {role.enabled === false && <Badge tone="warn">off</Badge>}
+              <span className="size-2 shrink-0 rounded-full" style={{ background: role.color }} />
+            </>
           )}
         />
 
@@ -265,6 +268,13 @@ export function AgentsEditor() {
             />
 
             <Checkbox
+              label="Enabled"
+              hint="Off keeps the agent but takes it out of play: the orchestrator cannot put it on a plan, its checks are skipped, and a step that still names it fails saying so. For 'not on this project' — delete is for 'not ever'."
+              checked={draft.enabled !== false}
+              onChange={(event) => library.edit({ enabled: event.target.checked })}
+            />
+
+            <Checkbox
               label="Can verify other steps"
               hint="Only agents that can actually inspect the result should be — one with no tools would return a verdict it had no way to have checked."
               checked={draft.verifier}
@@ -321,7 +331,8 @@ export function AgentsEditor() {
                 onClick={() => library.remove(draft.name)}
               >Delete</Button>
               <div className="flex-1" />
-              {draft.protected && <Badge>built-in</Badge>}
+              {draft.protected && <Badge title="Ships with trance. Deletable like any other; a step still naming it fails saying so.">built-in</Badge>}
+              {draft.enabled === false && <Badge tone="warn">disabled</Badge>}
               {(draft.differs?.length ?? 0) > 0 && (
                 <Badge
                   tone="warn"

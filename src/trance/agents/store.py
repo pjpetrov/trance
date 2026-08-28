@@ -22,8 +22,13 @@ from ..loops import Loop
 from .roles import _DEFAULTS, BUILTIN_ROLES, TOOLSETS, AgentRole, definition_differs
 from .tools import ALLOWED_COMMANDS, CommandPolicy
 
-#: Types that ship with trance. They can be edited, but not deleted — deleting
-#: one would break flows that name it, and re-adding it by hand is fiddly.
+#: Types that ship with trance. Once undeletable, on the theory that a flow
+#: naming one would break — but every agent is deletable now, by the user's
+#: rule: "all should be deletable". A deleted built-in leaves a tombstone so
+#: the upgrade path (restore any built-in missing from disk) does not bring
+#: it back; a step that still names it fails saying it was deleted, which is
+#: what deleting a custom agent always did. Kept as the set of names the UI
+#: marks "built-in", for the reset button.
 PROTECTED = frozenset(BUILTIN_ROLES)
 
 
@@ -39,6 +44,10 @@ class RoleStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._roles: dict[str, AgentRole] = {}
+        #: Built-ins the user deleted. Without this the next load would put
+        #: them straight back — restoring a missing built-in is how upgrades
+        #: deliver new agents, and a deletion has to be told apart from that.
+        self._deleted: set[str] = set()
         #: The Default scope is an overlay on shipped: a built-in whose
         #: *definition* was never edited keeps tracking trance's shipped
         #: version, so prompt improvements flow into the defaults instead of
@@ -59,7 +68,7 @@ class RoleStore:
         # means an edit mutates the shipped default in place, and `reset()`
         # would then restore the very edit it is meant to undo.
         for name, role in (seed or BUILTIN_ROLES).items():
-            if name not in self._roles:
+            if name not in self._roles and name not in self._deleted:
                 self._roles[name] = copy.deepcopy(role)
                 # Just seeded from shipped: unedited by construction.
                 self._definition_edited[name] = False
@@ -72,6 +81,7 @@ class RoleStore:
             data = json.loads(self.path.read_text(encoding="utf8"))
         except (OSError, json.JSONDecodeError):
             return
+        self._deleted = {str(n) for n in data.get("deleted", []) if n}
         for item in data.get("agents", []):
             try:
                 role = AgentRole.from_dict(item)
@@ -115,7 +125,10 @@ class RoleStore:
                 item["definition_edited"] = self._definition_edited[role.name]
             rows.append(item)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"agents": rows}, indent=2), encoding="utf8")
+        held = {"agents": rows}
+        if self._deleted:
+            held["deleted"] = sorted(self._deleted)
+        tmp.write_text(json.dumps(held, indent=2), encoding="utf8")
         tmp.replace(self.path)
 
     # ---------------------------------------------------------------- api
@@ -128,6 +141,7 @@ class RoleStore:
 
     def upsert(self, role: AgentRole) -> AgentRole:
         with self._lock:
+            self._deleted.discard(role.name)
             builtin = BUILTIN_ROLES.get(role.name)
             if builtin is not None:
                 # A wiring-only save keeps tracking shipped; a definition edit
@@ -139,11 +153,12 @@ class RoleStore:
         return role
 
     def delete(self, name: str) -> bool:
-        if name in PROTECTED:
-            return False
         with self._lock:
             removed = self._roles.pop(name, None) is not None
             if removed:
+                if name in PROTECTED:
+                    self._deleted.add(name)
+                self._definition_edited.pop(name, None)
                 self._save()
         return removed
 
@@ -183,6 +198,11 @@ class RoleStore:
                 self._definition_edited[name] = bool(definition_differs(role, shipped))
             self._save()
         return role
+
+    @property
+    def deleted(self) -> frozenset[str]:
+        """Built-ins the user deleted here — what a session must not fall back to."""
+        return frozenset(self._deleted)
 
     def resolve_team(self, names_or_roles) -> list[AgentRole]:
         """Refresh a session's team from the library.

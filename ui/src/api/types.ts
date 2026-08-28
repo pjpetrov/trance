@@ -50,6 +50,9 @@ export interface AgentRole {
   backup_tries: number;
   tool_rounds: number;
   color: string;
+  /** Off = kept but out of play: not plannable, its checks skipped, a step
+   *  naming it fails saying so. */
+  enabled?: boolean;
   protected?: boolean;
   /** Definition fields that differ from what a reset would restore — the
    *  Default copy in a session, shipped in the Default scope. */

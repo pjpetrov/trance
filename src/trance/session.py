@@ -88,7 +88,15 @@ class Session:
     # ---------------------------------------------------------------- state
 
     def role(self, name: str) -> AgentRole | None:
-        return next((r for r in self.team if r.name == name), None) or BUILTIN_ROLES.get(name)
+        """This session's copy of an agent, or the shipped one when the team
+        never had it — but never a built-in the library deleted: falling back
+        to shipped there would run an agent the user removed."""
+        held = next((r for r in self.team if r.name == name), None)
+        if held is not None:
+            return held
+        if name in getattr(self, "deleted_agents", ()):
+            return None
+        return BUILTIN_ROLES.get(name)
 
     @property
     def paused(self) -> bool:

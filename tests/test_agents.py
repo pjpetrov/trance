@@ -305,14 +305,18 @@ def test_custom_agent_types_round_trip(tmp_path):
     assert restored.paths == ["migrations/**"] and restored.preset == "cheap"
 
 
-def test_builtins_cannot_be_deleted(tmp_path):
+def test_every_agent_is_deletable_built_in_or_not(tmp_path):
+    """The rule is the user's, in as many words: all should be deletable. A
+    built-in and a custom agent go the same way; what differs is that the
+    built-in leaves a tombstone (see the stays-deleted test)."""
     from trance.agents.roles import AgentRole
     from trance.agents.store import RoleStore
 
     store = RoleStore(tmp_path / "agents.json")
-    assert store.delete("developer") is False
+    assert store.delete("developer") is True
     store.upsert(AgentRole(name="dba", title="D", description="", system_prompt=""))
     assert store.delete("dba") is True
+    assert store.delete("dba") is False            # already gone
 
 
 def test_resolve_team_rebinds_to_the_library(tmp_path):
@@ -12677,3 +12681,95 @@ def test_a_model_setting_changed_mid_turn_applies_on_the_next_round(tmp_path, mo
     changed = next(e for e in seen if e.type == "model_settings_changed")
     assert "max_tokens 600 → 16384" in changed.payload["message"]
     assert changed.payload["round"] == 2
+
+
+def test_a_disabled_agent_is_off_the_plan_and_off_the_check_chain(tmp_path, monkeypatch):
+    """The user's ask: "sometimes the reviewer is overwhelming." Off keeps the
+    agent and its wiring but takes it out of play — the orchestrator cannot
+    put it on a plan or add it as the floor check, and an agent whose own
+    checks name it skips that check, said out loud, rather than running it."""
+    import copy
+
+    from trance.agents import orchestrator
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.flow import Step
+
+    roles = {name: copy.deepcopy(role) for name, role in BUILTIN_ROLES.items()}
+    roles["reviewer"].enabled = False
+
+    # Planning: not described, not in the enum, not added as the floor check.
+    tool = orchestrator.propose_flow_tool([r for r in roles.values()
+                                          if getattr(r, "enabled", True)])
+    step_props = tool["function"]["parameters"]["properties"]["steps"]["items"]["properties"]
+    assert "reviewer" not in step_props["role"]["enum"]
+    floored = orchestrator.ensure_checks(
+        {"steps": [{"role": "developer", "task": "t"}], "team": ["developer"]},
+        roles=list(roles.values()))
+    assert floored["steps"][0].get("check") != "reviewer"
+
+    # Running: the developer's standing checks name the reviewer; it is
+    # skipped with a line saying why, and the step still passes its other
+    # check.
+    engine = _engine(tmp_path, ["developer", "regression", "reviewer"])
+    for held in engine.session.team:
+        if held.name == "reviewer":
+            held.enabled = False
+        if held.name == "developer":              # _engine strips standing checks
+            held.checks = ["reviewer", "regression"]
+    step = Step(role="developer", task="build it")
+    seen = []
+
+    def fake(**kw):
+        seen.append(kw["role"].name)
+        if kw["role"].name == "developer":
+            return _Turn(None, "built\n\nOUTCOME: SUCCESS")
+        return _Turn("PASS", "VERDICT: PASS")
+
+    monkeypatch.setattr("trance.engine.run_agent", fake)
+    engine._execute(step)
+    assert "reviewer" not in seen
+    assert step.status == "done"
+    skipped = [e for e in engine.bus.history(engine.session.id) if e.type == "check_skipped"]
+    assert skipped and "disabled" in skipped[0].payload["message"]
+
+    # And a step that names a disabled worker fails saying so — not silently
+    # run, not silently skipped.
+    worker_off = Step(role="reviewer", task="review it")
+    engine._execute(worker_off)
+    assert worker_off.status == "failed"
+    assert "disabled" in worker_off.summary
+
+
+def test_a_built_in_agent_can_be_deleted_and_stays_deleted(tmp_path):
+    """"All should be deletable." A deleted built-in leaves a tombstone, so the
+    upgrade path that restores any built-in missing from disk — how new agents
+    reach old installs — does not quietly resurrect it. Recreating it by name
+    lifts the tombstone."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import RoleStore
+
+    path = tmp_path / "agents.json"
+    store = RoleStore(path)
+    assert store.delete("reviewer") is True
+    assert store.get("reviewer") is None
+    assert "reviewer" in store.deleted
+
+    again = RoleStore(path)                        # a restart, an upgrade
+    assert again.get("reviewer") is None           # still gone
+    assert again.get("tester") is not None         # the others still topped up
+
+    again.upsert(BUILTIN_ROLES["reviewer"])        # brought back on purpose
+    assert "reviewer" not in again.deleted
+    assert RoleStore(path).get("reviewer") is not None
+
+
+def test_a_session_does_not_fall_back_to_a_deleted_built_in(tmp_path):
+    """Session.role() reaches for the shipped copy of anything its team lacks;
+    a built-in the library deleted must not be reachable that way, or a step
+    naming it would run an agent the user removed."""
+    from trance.session import Session
+
+    session = Session(name="s", project_dir=str(tmp_path), team=[])
+    assert session.role("reviewer") is not None    # shipped fallback, normally
+    session.deleted_agents = frozenset({"reviewer"})
+    assert session.role("reviewer") is None

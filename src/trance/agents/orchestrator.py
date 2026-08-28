@@ -268,6 +268,10 @@ def chat(
     """One orchestrator turn. Returns {'text', 'proposal'|None}."""
     roles = list(roles or BUILTIN_ROLES.values())
     role = next((r for r in roles if r.name == "orchestrator"), BUILTIN_ROLES["orchestrator"])
+    # A disabled agent is not on offer: not described, not in the schema's
+    # enum, not a verifier the floor or the final check may add. From the
+    # planner's side it does not exist.
+    roles = [r for r in roles if getattr(r, "enabled", True)]
     verifiers = [r for r in roles if r.verifier]
     workers = [r for r in roles if r.name != "orchestrator"]
 
@@ -465,6 +469,10 @@ def _normalize(arguments: dict, roles: list) -> dict:
 #: it. The reviewer — the same check the developer carries — reads the diff
 #: and judges whether the claim is true.
 DEFAULT_CHECK = "reviewer"
+def _in_play(roles) -> list:
+    return [r for r in (roles or []) if getattr(r, "enabled", True)]
+
+
 def ensure_checks(proposal: dict, *, roles=None) -> dict:
     """Put the fact check on every planned step that writes files.
 
@@ -478,7 +486,7 @@ def ensure_checks(proposal: dict, *, roles=None) -> dict:
     Everything else the step is checked by comes from its agent, and lands on
     the step when the plan is read. This is only the floor.
     """
-    by_name = {r.name: r for r in (roles or [])}
+    by_name = {r.name: r for r in _in_play(roles)}
     checker = by_name.get(DEFAULT_CHECK)
     if checker is None or not checker.verifier:
         return proposal
@@ -565,7 +573,7 @@ def ensure_final_check(proposal: dict, *, loops=None, roles=None) -> dict:
         return proposal
 
     available = {l.name: l for l in (loops.all() if loops else [])}
-    verifiers = {r.name for r in (roles or []) if r.verifier}
+    verifiers = {r.name for r in _in_play(roles) if r.verifier}
 
     def verifies(step: dict) -> bool:
         """Whether this step actually exercises what was built.
