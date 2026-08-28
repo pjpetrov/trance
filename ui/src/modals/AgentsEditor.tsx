@@ -122,6 +122,14 @@ export function AgentsEditor() {
 
         {draft && (
           <div className="min-h-0 space-y-4 overflow-y-auto p-4">
+            {/* First, because it decides whether anything below matters. */}
+            <Checkbox
+              label="Enabled"
+              hint="Off keeps the agent but takes it out of play: the orchestrator cannot put it on a plan, its checks are skipped, and a step that still names it fails saying so. For 'not on this project' — delete is for 'not ever'."
+              checked={draft.enabled !== false}
+              onChange={(event) => library.edit({ enabled: event.target.checked })}
+            />
+
             {/* Who it is, then what it runs on and what happens when that
                 fails — read down the left column and it is one sentence. */}
             <div className="grid grid-cols-2 gap-3">
@@ -265,13 +273,6 @@ export function AgentsEditor() {
               verifiers={(agents.data?.agents ?? [])
                 .filter((role) => role.verifier && role.name !== draft.name)}
               onChange={(checks) => library.edit({ checks })}
-            />
-
-            <Checkbox
-              label="Enabled"
-              hint="Off keeps the agent but takes it out of play: the orchestrator cannot put it on a plan, its checks are skipped, and a step that still names it fails saying so. For 'not on this project' — delete is for 'not ever'."
-              checked={draft.enabled !== false}
-              onChange={(event) => library.edit({ enabled: event.target.checked })}
             />
 
             <Checkbox
