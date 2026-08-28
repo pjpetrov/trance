@@ -2283,6 +2283,33 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
     MAX_CHAT_IMAGES = 40
     MAX_CHAT_IMAGE_BYTES = 8_000_000
 
+    #: Longest edge a chat screenshot keeps. Browser shots were already capped
+    #: (MAX_SHOT_EDGE, 900px) because a 4K frame costs several times the tokens
+    #: of a small one and shows a vision model nothing extra; pasted ones were
+    #: not, and the orchestrator re-reads every picture in the conversation on
+    #: every turn. Measured on one session: six 2880-wide PNGs, 33MB on disk,
+    #: ~100MB of base64 per turn. At 1600px a screenshot is still legible to
+    #: the pixel for layout questions and a third of the bytes.
+    MAX_CHAT_EDGE = 1600
+
+    def fit_for_model(blob: bytes) -> bytes:
+        """The picture at a size a model can use, as PNG. Untouched when it
+        already fits, or when Pillow cannot read it — a picture kept as it came
+        is better than a picture lost."""
+        try:
+            from PIL import Image
+            import io
+
+            image = Image.open(io.BytesIO(blob))
+            if max(image.size) <= MAX_CHAT_EDGE:
+                return blob
+            image.thumbnail((MAX_CHAT_EDGE, MAX_CHAT_EDGE))
+            held = io.BytesIO()
+            image.save(held, "PNG", optimize=True)
+            return held.getvalue()
+        except Exception:  # noqa: BLE001 — never lose the picture over a resize
+            return blob
+
     def _save_chat_images(session, raw: list) -> list[str]:
         """Store what the user attached, under the project's own .trance/assets.
 
@@ -2314,7 +2341,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             if not blob.startswith(b"\x89PNG\r\n\x1a\n") and not blob.startswith(b"\xff\xd8"):
                 raise HTTPException(400, "attached images must be PNG or JPEG")
             name = f"{uuid4().hex[:10]}.png"
-            (folder / name).write_bytes(blob)
+            (folder / name).write_bytes(fit_for_model(blob))
             out.append(name)
         return out
 

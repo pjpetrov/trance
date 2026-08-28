@@ -12889,3 +12889,37 @@ def test_the_orchestrator_sees_the_pending_plan_and_is_told_it_may_edit_it(tmp_p
     assert "Nothing is pending" in orchestrator.describe_plan(
         Flow(steps=[Step(role="developer", task="x", status="done")]))
     assert orchestrator.describe_plan(Flow()) == ""
+
+
+def test_a_pasted_screenshot_is_stored_at_a_size_a_model_can_use(tmp_path, monkeypatch):
+    """Measured: six 2880-wide PNGs, re-read by the orchestrator on every turn,
+    ~100MB of base64 a turn. Browser shots were already capped; pasted ones
+    are now too, at 1600px on the long edge. Smaller ones are left alone."""
+    import base64
+    import io
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    def png(width, height):
+        held = io.BytesIO()
+        Image.new("RGB", (width, height), (200, 30, 30)).save(held, "PNG")
+        return "data:image/png;base64," + base64.b64encode(held.getvalue()).decode()
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
+                        lambda **_kw: {"text": "ok", "truncated": False, "proposal": None})
+
+    client.post(f"/api/sessions/{sid}/chat",
+                json={"message": "big and small", "images": [png(2880, 1540), png(640, 400)]})
+    stored = client.get(f"/api/sessions/{sid}").json()["chat"][0]["images"]
+    sizes = [Image.open(tmp_path / "proj" / ".trance" / "assets" / n).size for n in stored]
+    assert sizes[0][0] == 1600 and abs(sizes[0][1] - 855) <= 1   # scaled, aspect kept
+    assert sizes[1] == (640, 400)           # already fine, untouched
