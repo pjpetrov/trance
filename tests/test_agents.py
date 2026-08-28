@@ -12848,3 +12848,44 @@ def test_the_orchestrator_is_told_how_pictures_travel(tmp_path, monkeypatch):
                       session_id="s")
     assert "view_image" in seen["system"]
     assert "never ask the user to save a picture to disk" in seen["system"]
+
+
+def test_the_orchestrator_sees_the_pending_plan_and_is_told_it_may_edit_it(tmp_path, monkeypatch):
+    """The user's ask: tune the tasks by chatting. A new proposal already
+    replaces what is pending and keeps what ran — the orchestrator just was
+    never shown the queue, so it had nothing to edit. Now it is, per status,
+    with the rule that the pending list it proposes IS the new pending list."""
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.flow import Flow, Step
+    from trance.providers.base import ChatResponse
+
+    flow = Flow(steps=[
+        Step(role="developer", task="scaffold the app", status="done"),
+        Step(role="developer", task="add the bus stop", status="pending"),
+        Step(role="", loop="visual-test-and-fix", task="check the street", status="pending"),
+    ])
+    seen = {}
+
+    class _Client:
+        def complete(self, messages, tools=None, **kwargs):
+            seen["system"] = messages[0]["content"]
+            return ChatResponse(text="ok")
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: _Client())
+    orchestrator.chat(messages=[{"role": "user", "content": "drop the bus stop for now"}],
+                      project_dir=tmp_path, config=ModelConfig(), bus=EventBus(),
+                      session_id="s", flow=flow)
+    system = seen["system"]
+    assert "## The plan as it stands" in system
+    assert "1 step(s) already done" in system
+    assert "[developer] add the bus stop" in system
+    assert "[visual-test-and-fix] check the street" in system
+    assert "scaffold the app" not in system            # finished work is not re-listed
+    assert "FULL pending list" in system
+
+    # A flow with nothing queued says so, and an empty flow says nothing.
+    assert "Nothing is pending" in orchestrator.describe_plan(
+        Flow(steps=[Step(role="developer", task="x", status="done")]))
+    assert orchestrator.describe_plan(Flow()) == ""

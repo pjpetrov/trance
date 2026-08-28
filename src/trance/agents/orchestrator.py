@@ -264,6 +264,7 @@ def chat(
     roles: list | None = None,
     loops=None,
     settings=None,
+    flow=None,
 ) -> dict:
     """One orchestrator turn. Returns {'text', 'proposal'|None}."""
     roles = list(roles or BUILTIN_ROLES.values())
@@ -320,6 +321,10 @@ def chat(
             + "\n\nPlan around these; they are already built on. If one has to change, "
               "make that an explicit step rather than quietly planning against it."
         )
+    plan = describe_plan(flow)
+    if plan:
+        system += "\n\n" + plan
+
     loop_names = [l.name for l in (loops.all() if loops else [])]
     if loop_names:
         system += ("\n\nLoops you can put on a step instead of an agent:\n"
@@ -643,6 +648,51 @@ def _points(raw) -> int:
     except (TypeError, ValueError):
         return 0
     return min(POINTS, key=lambda p: (abs(p - value), p)) if value > 0 else 0
+
+
+def describe_plan(flow) -> str:
+    """The plan as it stands, for the orchestrator to edit by conversation.
+
+    It could only ever add: a new proposal keeps what has run and replaces
+    what is pending, but the orchestrator was never shown what was pending —
+    so "make step 3 smaller" or "drop the bus stop for now" had nothing to
+    act on, and the user tuned steps by hand in the plan editor instead of
+    by talking. Shown the queue, it re-proposes the queue changed.
+    """
+    steps = list(getattr(flow, "steps", None) or [])
+    if not steps:
+        return ""
+    done = [s for s in steps if s.status in ("done", "skipped")]
+    live = [s for s in steps if s.status in ("running", "verifying")]
+    failed = [s for s in steps if s.status in ("failed", "blocked", "halted")]
+    pending = [s for s in steps if s.status == "pending"]
+
+    def line(step) -> str:
+        who = step.loop or step.role
+        return f"- [{who}] {step.task.strip()[:300]}"
+
+    out = ["## The plan as it stands"]
+    if done:
+        out.append(f"{len(done)} step(s) already done — not yours to re-propose; "
+                   f"a proposal repeating one is dropped.")
+    if live:
+        out.append("Running right now:\n" + "\n".join(line(s) for s in live))
+    if failed:
+        out.append("Failed or halted (a new proposal may retry these as new steps):\n"
+                   + "\n".join(line(s) for s in failed))
+    if pending:
+        out.append("PENDING — queued, not started:\n" + "\n".join(line(s) for s in pending))
+        out.append(
+            "These pending steps are yours to edit through conversation. When the "
+            "user asks to change, reorder, split, merge or drop queued work, "
+            "call propose_flow with the FULL pending list as it should be after "
+            "the change — every pending step you leave out is removed, every one "
+            "you keep must be restated, and new ones go where they belong in the "
+            "order. Do not re-list finished steps. Say in your reply what you "
+            "changed and what you kept.")
+    else:
+        out.append("Nothing is pending: a proposal adds new work after what ran.")
+    return "\n".join(out)
 
 
 def _describe_project(project_dir: Path) -> str:

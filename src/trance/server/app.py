@@ -2495,6 +2495,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 roles=stores_of(session).roles.all(),
                 loops=stores_of(session).loops,
                 settings=stores_of(session).settings.settings,
+                flow=session.flow,
             )
         except BackendError as exc:
             bus.emit("error", session_id, payload={"message": str(exc)})
