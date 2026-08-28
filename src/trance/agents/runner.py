@@ -570,6 +570,11 @@ def _run_agent(
     #: backends that take one). Live, like should_stop — flipping it mid-turn
     #: applies from the next round.
     thinking_off=None,
+    #: Callable returning this agent's model settings, freshly resolved from
+    #: the live registry. Checked each round: a preset edited in the Models
+    #: modal while a turn runs — a bigger reply budget, a different cap, a
+    #: new model id — lands on the very next call instead of the next step.
+    refresh_config=None,
     _opened: list | None = None,
 ) -> AgentTurn:
     model_config = config
@@ -740,6 +745,18 @@ def _run_agent(
         if should_stop and should_stop():
             turn.stop_reason = "cancelled"
             break
+
+        fresh = _refreshed_config(refresh_config, model_config)
+        if fresh is not None:
+            bus.emit("model_settings_changed", session_id, agent=role.name,
+                     step_id=step_id, payload={
+                         "round": round_n, "preset": fresh.preset,
+                         "changes": _config_changes(model_config, fresh),
+                         "message": ("model settings changed mid-turn — applied from "
+                                     "this round: " + _config_changes(model_config, fresh)),
+                     })
+            model_config = fresh
+            client = client_for(fresh)
 
         # A hint typed while the agent is working reaches it on the next round
         # rather than after the step. Noticing a wrong assumption and having to
@@ -1365,6 +1382,34 @@ def _compact_conversation(messages, *, client, config, bus, session_id, role,
             f"checkpoint holds; the next one builds on it)"),
     })
     return compacted
+
+
+#: The settings whose change mid-turn is worth a console line. Everything on
+#: ModelConfig compares, but the key is what the person actually turned.
+_WATCHED = ("model", "base_url", "max_tokens", "timeout_s", "cap", "temperature",
+            "context_window", "kind", "preset")
+
+
+def _refreshed_config(refresh_config, current):
+    """The live settings when they differ from the ones this turn started on."""
+    if refresh_config is None:
+        return None
+    try:
+        fresh = refresh_config()
+    except Exception:              # noqa: BLE001 — a registry hiccup must not end a turn
+        return None
+    if fresh is None or fresh == current:
+        return None
+    return fresh
+
+
+def _config_changes(before, after) -> str:
+    parts = []
+    for name in _WATCHED:
+        was, now = getattr(before, name, None), getattr(after, name, None)
+        if was != now:
+            parts.append(f"{name} {was!r} → {now!r}")
+    return "; ".join(parts) or "(same settings, new object)"
 
 
 def _progress_reporter(client, bus, session_id, *, role, step_id, round_n, config):

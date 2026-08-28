@@ -12631,3 +12631,44 @@ def test_how_to_run_is_told_the_browser_is_on_another_machine(tmp_path, monkeypa
     assert "npm run dev -- --host 0.0.0.0" in prompt
     assert "`-H 0.0.0.0`" in prompt                # next's spelling
     assert "HOST=0.0.0.0" in prompt                 # env-reading tools
+
+
+def test_a_model_setting_changed_mid_turn_applies_on_the_next_round(tmp_path, monkeypatch):
+    """A preset edited in the Models modal while a turn runs used to land at
+    the next step — the turn had snapshotted its settings and built its client
+    once. Each round now re-resolves; the console says what changed."""
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents import runner
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    seen, built = [], []
+    bus = EventBus()
+    bus.subscribe_sync(lambda event: seen.append(event))
+    live = {"max_tokens": 600}
+
+    class _Client:
+        def __init__(self, cfg):
+            self.cfg = cfg
+            built.append(cfg.max_tokens)
+
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            if len(built) == 1 and live["max_tokens"] == 600:
+                live["max_tokens"] = 16384             # the user edits the preset
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id="c1", name="list_files", arguments={})])
+            return ChatResponse(text="ok\n\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _Client(cfg))
+    fresh = lambda: ModelConfig(kind="llamacpp", max_tokens=live["max_tokens"],
+                                context_window=64000, preset="qwen")
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="t", project=tmp_path,
+                     config=fresh(), bus=bus, session_id="s", step_id="st",
+                     refresh_config=fresh)
+
+    # The client was rebuilt with the new budget for round two.
+    assert built[:2] == [600, 16384]
+    changed = next(e for e in seen if e.type == "model_settings_changed")
+    assert "max_tokens 600 → 16384" in changed.payload["message"]
+    assert changed.payload["round"] == 2

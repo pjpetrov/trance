@@ -328,6 +328,8 @@ class FlowEngine:
             node_t0 = time.monotonic()
             turn = run_agent(
                 thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
+                refresh_config=lambda r=role, n=runs[role.name], f=forced:
+                    self._model_for(r, step, n, force_backup=f, quiet=True)[0],
                 # The step's own screenshots plus what the previous block just
                 # photographed — newest last, and the last three win, because
                 # the tester's picture of the failure outranks a chat shot
@@ -542,6 +544,8 @@ class FlowEngine:
             try:
                 turn = run_agent(
                 thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
+                refresh_config=lambda n=loop, f=endpoint_down or step.start_on_backup:
+                    self._model_for(role, step, n, force_backup=f, quiet=True)[0],
                     role=role, task=step.task, project=self.project,
                     images=step.images,
                     config=model_config, bus=self.bus,
@@ -749,6 +753,7 @@ class FlowEngine:
         escalation_t0 = time.monotonic()
         turn = run_agent(
                 thinking_off=lambda: getattr(self.session, 'thinking_disabled', False),
+                refresh_config=lambda: self.config.resolve(self.config.worker, preset=preset),
             role=role, images=step.images,
             task=(
                 f"{step.task}\n\n"
@@ -841,6 +846,7 @@ class FlowEngine:
                 f"again afterwards and the check will be repeated."
             ),
             project=self.project, config=self.config.for_role(fixer), bus=self.bus,
+            refresh_config=lambda: self.config.for_role(fixer),
             session_id=self.session.id, step_id=step.id, history=self.session.history,
             graph_tools=self._graph_tools(fixer),
             should_stop=lambda: self.session.stopping,
@@ -977,6 +983,7 @@ class FlowEngine:
                 role=gate, images=step.images,
                 task=self._gate_task(step, attempt, gate, index, checks),
                 project=self.project, config=self.config.for_role(gate), bus=self.bus,
+                refresh_config=lambda: self.config.for_role(gate),
                 session_id=self.session.id, step_id=step.id, history=self.session.history,
                 graph_tools=self._graph_tools(gate),
                 should_stop=lambda: self.session.stopping,
@@ -1011,6 +1018,7 @@ class FlowEngine:
                     role=gate, images=step.images,
                     task=self._gate_task(step, attempt, gate, index, checks),
                     project=self.project, config=self.config.for_role(gate),
+                    refresh_config=lambda: self.config.for_role(gate),
                     bus=self.bus, session_id=self.session.id, step_id=step.id,
                     history=self.session.history, graph_tools=self._graph_tools(gate),
                     should_stop=lambda: self.session.stopping,
@@ -1277,7 +1285,8 @@ class FlowEngine:
             return step.loop_limit
         return max(1, getattr(role, "total_tries", 2))
 
-    def _model_for(self, role, step: Step, attempt: int, force_backup: bool = False):
+    def _model_for(self, role, step: Step, attempt: int, force_backup: bool = False,
+                   quiet: bool = False):
         """This agent's model, or its backup once it has failed enough times.
 
         The retry loop changes the prompt and the feedback; the model is the one
@@ -1288,7 +1297,7 @@ class FlowEngine:
         after = max(1, int(getattr(role, "tries", 2) or 2))
         backup = getattr(role, "backup_preset", "") or ""
         if not backup:
-            if force_backup:
+            if force_backup and not quiet:
                 # Asked for by a loop route or a re-run button, so silence here
                 # would look like the backup ran and made no difference.
                 self._emit("warning", agent=role.name, step_id=step.id, payload={
@@ -1298,12 +1307,16 @@ class FlowEngine:
         if attempt <= after and not force_backup:
             return self.config.for_role(role), False
         if backup not in self.config.presets:
+            if quiet:
+                return self.config.for_role(role), False
             self._emit("warning", agent=role.name, step_id=step.id, payload={
                 "message": (f"{role.name}'s backup model {backup!r} is not defined — "
                             f"staying on its usual one.")})
             return self.config.for_role(role), False
 
         resolved = self.config.resolve(self.config.worker, preset=backup)
+        if quiet:
+            return resolved, True
         self._emit("model_switched", agent=role.name, step_id=step.id, payload={
             "from": self.config.for_role(role).model, "to": resolved.model,
             "preset": backup, "after": after, "attempt": attempt,
