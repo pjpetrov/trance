@@ -714,7 +714,16 @@ def how_to_run(project: Path, *, config: ModelConfig, bus: EventBus,
         + "Give the command that serves the app for a browser to open — not the "
           "build, not the tests. If the README names one, prefer it over anything "
           "you infer: it is the one the author says works. If this is plain HTML "
-          "and JavaScript with no build step, set static_instead and say so."
+          "and JavaScript with no build step, set static_instead and say so.\n\n"
+          "The browser is on ANOTHER machine: trance is used over the network, so "
+          "a server that listens on localhost only cannot be reached at all. The "
+          "command must bind every interface. Add the tool's own flag — vite: "
+          "`--host 0.0.0.0`; next: `-H 0.0.0.0`; webpack/angular: "
+          "`--host 0.0.0.0`; uvicorn/flask/rails: `--host 0.0.0.0`; python "
+          "http.server: `--bind 0.0.0.0`; Create React App and others that "
+          "read the environment: prefix `HOST=0.0.0.0`. When the command is "
+          "an npm script, pass the flag through: `npm run dev -- --host 0.0.0.0`. "
+          "Say in `why` that you added it."
     )
     messages = [{"role": "system", "content": role.system_prompt},
                 {"role": "user", "content": prompt}]

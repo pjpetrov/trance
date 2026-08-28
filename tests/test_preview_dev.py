@@ -528,3 +528,35 @@ def test_starting_a_new_dev_preview_stops_the_survivor_from_before_a_restart(tmp
 
     survivor.wait(timeout=10)                   # revived, then stopped
     assert survivor.returncode is not None
+
+
+def test_the_dev_server_is_launched_with_host_set_to_every_interface(tmp_path, monkeypatch):
+    """Belt and braces under the prompt: tools that read HOST from the
+    environment bind everywhere without any flag the orchestrator has to
+    remember. A bound-to-localhost dev server is unreachable from every
+    browser trance is actually used from."""
+    import subprocess
+
+    from trance import preview
+
+    seen = {}
+
+    class _Proc:
+        pid = 4242
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def fake_popen(command, **kwargs):
+        seen["env"] = kwargs.get("env") or {}
+        log = tmp_path / "dev-server.log"
+        log.write_text("  ➜  Network: http://192.168.1.5:5173/\n")
+        return _Proc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(preview.DevServer, "stop", lambda self: None)
+    server = preview.run_dev(tmp_path, "npm run dev", wait_s=2, log_dir=tmp_path)
+    assert seen["env"]["HOST"] == "0.0.0.0"
+    assert seen["env"]["PORT"] == str(server.env_port)
+    assert server.port == 5173

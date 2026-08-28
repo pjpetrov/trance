@@ -263,8 +263,13 @@ def run_dev(directory: Path, command: str, *, wait_s: float = 90.0,
     this run is not on.
     """
     chosen = free_port()
+    # HOST for the servers that read it (Create React App, some node
+    # frameworks): trance is browsed from other machines, and a dev server
+    # that binds localhost is unreachable from every one of them. The
+    # orchestrator adds the per-tool flag for those that don't read it; this
+    # covers the rest without a flag anyone has to remember.
     server = _launch_dev(directory, command, wait_s=wait_s, log_dir=log_dir,
-                         env_extra={"PORT": str(chosen)})
+                         env_extra={"PORT": str(chosen), "HOST": "0.0.0.0"})
     server.env_port = chosen
 
     notes = []

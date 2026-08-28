@@ -12605,3 +12605,29 @@ def test_a_server_that_swallows_the_plan_is_called_out(tmp_path, monkeypatch):
     assert out["proposal"] is None
     assert "generated 9,743 tokens" in out["text"]
     assert "--tool-call-parser" in out["text"]
+
+
+def test_how_to_run_is_told_the_browser_is_on_another_machine(tmp_path, monkeypatch):
+    """The command it proposed started the app on localhost, which a browser
+    on another machine cannot reach — trance is used over the network. The
+    prompt now says so and names each tool's own flag for binding everywhere."""
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    (tmp_path / "package.json").write_text('{"scripts": {"dev": "vite"}}')
+    seen = {}
+
+    class _Client:
+        def complete(self, messages, tools=None, **kwargs):
+            seen["prompt"] = messages[-1]["content"]
+            return ChatResponse(text="")
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda cfg: _Client())
+    orchestrator.how_to_run(tmp_path, config=ModelConfig(), bus=EventBus())
+    prompt = seen["prompt"]
+    assert "ANOTHER machine" in prompt
+    assert "npm run dev -- --host 0.0.0.0" in prompt
+    assert "`-H 0.0.0.0`" in prompt                # next's spelling
+    assert "HOST=0.0.0.0" in prompt                 # env-reading tools
