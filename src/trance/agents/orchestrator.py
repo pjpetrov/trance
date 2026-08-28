@@ -265,8 +265,16 @@ def chat(
     loops=None,
     settings=None,
     flow=None,
+    project_images=None,
 ) -> dict:
-    """One orchestrator turn. Returns {'text', 'proposal'|None}."""
+    """One orchestrator turn. Returns {'text', 'proposal'|None}.
+
+    Pictures in the conversation arrive as names, not pixels; `project_images`
+    maps a name to the file, and the model fetches one with `view_image`
+    when it decides it matters. The same bargain the agents get: twenty
+    screenshots cost twenty filenames until one is looked at, and the
+    conversation stops paying for every picture on every turn.
+    """
     roles = list(roles or BUILTIN_ROLES.values())
     role = next((r for r in roles if r.name == "orchestrator"), BUILTIN_ROLES["orchestrator"])
     # A disabled agent is not on offer: not described, not in the schema's
@@ -287,14 +295,16 @@ def chat(
           "whose files no agent owns cannot succeed no matter how many times it runs. "
           "Assign each step to the agent that owns the files it touches, and split a "
           "task that spans two remits into two steps."
-        + "\n\nPictures the user attaches to the chat travel with the work by "
-          "themselves: every screenshot posted since your last plan is put on "
-          "the steps that plan creates, listed by file name, and each agent "
-          "fetches the ones it needs with its view_image tool. So never ask the "
-          "user to save a picture to disk or paste it again, and never say a "
-          "task cannot carry an image — it can, and does. What helps is naming, "
-          "in the task text, which picture shows what (\"the bird's-eye view "
-          "shows the building rows continuous on both sides\")."
+        + "\n\nPictures in this conversation appear as file names where they "
+          "were attached, not as images — call view_image with a name to see "
+          "one, before reasoning about what it shows. They also travel with the "
+          "work by themselves: every screenshot posted since your last plan is "
+          "put on the steps that plan creates, and each agent fetches the ones "
+          "it needs the same way. So never ask the user to save a picture to "
+          "disk or paste it again, and never say a task cannot carry an image — "
+          "it can, and does. What helps is naming, in the task text, which "
+          "picture shows what (\"the bird's-eye view shows the building rows "
+          "continuous on both sides\")."
         + "\n\nDo not choose who checks the work. Every agent carries the checks its "
           "own work needs, set once where the agent is configured, and they are put on "
           "each step for you. A plan that picked a verifier per step picked it from a "
@@ -334,8 +344,32 @@ def chat(
 
     full = [{"role": "system", "content": system}] + messages
 
+    tools = [propose_flow_tool(roles, loop_names)]
+    images = dict(project_images or {})
+    if images:
+        tools.append(view_image_tool())
     client = client_for(config)
-    response = client.complete(full, tools=[propose_flow_tool(roles, loop_names)])
+    response = None
+    # A short look-then-answer loop: each view_image call puts a picture in
+    # the window and asks again. Bounded — a planner that wants to see a
+    # dozen pictures before answering is welcome to, but not forever.
+    for _ in range(MAX_VIEWS + 1):
+        response = client.complete(full, tools=tools)
+        looked = [c for c in response.tool_calls if c.name == "view_image" and not c.malformed]
+        if not looked:
+            break
+        full.append(response.replay(calls=looked))
+        for call in looked:
+            name = str((call.arguments or {}).get("name") or "").strip()
+            found = images.get(name.rsplit("/", 1)[-1])
+            if found is None:
+                full.append({"role": "tool", "tool_call_id": call.id, "name": "view_image",
+                             "content": (f"Refused: {name!r} is not a picture in this "
+                                         f"conversation. They are: {', '.join(images) or 'none'}.")})
+                continue
+            full.append({"role": "tool", "tool_call_id": call.id, "name": "view_image",
+                         "content": f"Showing {name} — it follows this message."})
+            full.append(_picture_message(name, found, config))
 
     bus.emit(
         "model_call", session_id, agent="orchestrator",
@@ -648,6 +682,41 @@ def _points(raw) -> int:
     except (TypeError, ValueError):
         return 0
     return min(POINTS, key=lambda p: (abs(p - value), p)) if value > 0 else 0
+
+
+#: How many pictures a planner may look at before it has to answer.
+MAX_VIEWS = 6
+
+
+def view_image_tool() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "view_image",
+            "description": (
+                "Look at one of the screenshots in this conversation. They are "
+                "named where they were attached; call this with a name and the "
+                "picture is put in front of you. Look before reasoning about "
+                "what a picture shows — and only at the ones you need."),
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string", "description":
+                                        "The file name, exactly as it appears."}},
+                "required": ["name"],
+            },
+        },
+    }
+
+
+def _picture_message(name: str, path: Path, config) -> dict:
+    """The picture itself, as the user message after its tool result — a
+    tool result is text on every OpenAI-compatible backend."""
+    from ..vision import image_block
+
+    kind = getattr(config, "kind", "") or "llamacpp"
+    return {"role": "user", "content": [
+        {"type": "text", "text": f"{name}:"},
+        image_block(Path(path).read_bytes(), "anthropic" if kind == "anthropic" else "openai")]}
 
 
 def describe_plan(flow) -> str:

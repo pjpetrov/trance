@@ -2346,15 +2346,16 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return out
 
     def _chat_history(session) -> list[dict]:
-        """The conversation, with pictures in it where the model can take them.
+        """The conversation, with its pictures named where they were attached.
 
-        A model that cannot see gets told an image was attached rather than
-        having it silently dropped — an orchestrator answering about a
-        screenshot it never received is worse than one that says it cannot.
+        Names, not pixels: the orchestrator used to receive every image of
+        every message on every turn — measured at ~100MB of base64 a turn on
+        one session — and it fetches the one it wants with view_image now,
+        the way the agents do. A model that cannot see is told the pictures
+        exist rather than having them silently dropped.
         """
         kind = getattr(config.for_orchestrator(), "kind", "") or "llamacpp"
         sees = kind in VISION_KINDS
-        root = _project_of(session)
 
         history: list[dict] = []
         for message in session.chat:
@@ -2363,21 +2364,29 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             if not images:
                 history.append({"role": role, "content": message.content})
                 continue
+            listed = ", ".join(images)
             if not sees:
                 history.append({"role": role, "content": (
                     message.content
-                    + f"\n\n[{len(images)} screenshot(s) were attached, but this model "
-                      f"cannot be shown images — ask about them in words.]")})
+                    + f"\n\n[{len(images)} screenshot(s) attached: {listed} — this "
+                      f"model cannot be shown images; ask about them in words.]")})
                 continue
-            blocks: list[dict] = [{"type": "text", "text": message.content or
-                                   "(a screenshot, with nothing written with it)"}]
-            for name in images:
-                target = image_path(root, name)
-                if target is None:
-                    continue
-                blocks.append(image_block(target.read_bytes(), kind))
-            history.append({"role": role, "content": blocks})
+            history.append({"role": role, "content": (
+                (message.content or "(a screenshot, with nothing written with it)")
+                + f"\n\n[{len(images)} screenshot(s) attached: {listed} — "
+                  f"view_image shows one.]")})
         return history
+
+    def _chat_images(session) -> dict:
+        """Every picture the conversation names, by file name, for view_image."""
+        root = _project_of(session)
+        out: dict = {}
+        for message in session.chat:
+            for name in (getattr(message, "images", None) or []):
+                found = image_path(root, name)
+                if found is not None:
+                    out[name.rsplit("/", 1)[-1]] = found
+        return out
 
     #: Fields worth megabytes that a history panel never shows: the prompt that
     #: went out, the reasoning behind it, the whole file that came back. One
@@ -2523,6 +2532,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
                 loops=stores_of(session).loops,
                 settings=stores_of(session).settings.settings,
                 flow=session.flow,
+                project_images=_chat_images(session),
             )
         except BackendError as exc:
             bus.emit("error", session_id, payload={"message": str(exc)})

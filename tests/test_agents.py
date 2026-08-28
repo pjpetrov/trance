@@ -8365,12 +8365,14 @@ def test_a_screenshot_pasted_into_the_chat_reaches_the_orchestrator(tmp_path, mo
             "images": ["data:image/png;base64," + base64.b64encode(png()).decode()]}
     assert client.post(f"/api/sessions/{sid}/chat", json=body).status_code == 200
 
-    # The local default is multimodal, so the image rides the message.
+    # Names, not pixels: the orchestrator is told the picture is there and
+    # fetches it with view_image if it wants it — it no longer receives
+    # every image of every message on every turn.
     content = seen["messages"][-1]["content"]
-    assert isinstance(content, list)
-    assert content[0]["text"] == "the ship does not move"
-    assert content[1]["type"] == "image_url"
-    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert isinstance(content, str)
+    assert content.startswith("the ship does not move")
+    assert "screenshot(s) attached" in content and "view_image shows one" in content
+    assert "image_url" not in content and "base64" not in content
 
     # On disk under .trance/assets — what the user handed over, kept apart
     # from the machine-named frames the agents take — and served by the same
@@ -12923,3 +12925,48 @@ def test_a_pasted_screenshot_is_stored_at_a_size_a_model_can_use(tmp_path, monke
     sizes = [Image.open(tmp_path / "proj" / ".trance" / "assets" / n).size for n in stored]
     assert sizes[0][0] == 1600 and abs(sizes[0][1] - 855) <= 1   # scaled, aspect kept
     assert sizes[1] == (640, 400)           # already fine, untouched
+
+
+def test_the_orchestrator_fetches_a_picture_by_name_when_it_wants_one(tmp_path, monkeypatch):
+    """The user's point, applied to the planner too: why receive every
+    picture on every turn? It gets names, and a view_image tool offered only
+    when there are pictures; a look puts the picture in the window as the
+    message after the tool result, then the planner answers from it."""
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse, ToolCall
+
+    shot = tmp_path / "birds.png"
+    shot.write_bytes(b"\x89PNG fake")
+    rounds = []
+
+    class _Client:
+        def complete(self, messages, tools=None, **kwargs):
+            rounds.append(([dict(m) for m in messages],
+                           [t["function"]["name"] for t in (tools or [])]))
+            if len(rounds) == 1:
+                return ChatResponse(text="", tool_calls=[ToolCall(
+                    id="v1", name="view_image", arguments={"name": "birds.png"})])
+            return ChatResponse(text="The rows are continuous; two buildings are misplaced.")
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: _Client())
+    out = orchestrator.chat(
+        messages=[{"role": "user", "content":
+                   "look from the birds eye\n\n[1 screenshot(s) attached: birds.png — view_image shows one.]"}],
+        project_dir=tmp_path, config=ModelConfig(kind="llamacpp"), bus=EventBus(),
+        session_id="s", project_images={"birds.png": shot})
+
+    assert out["text"].startswith("The rows are continuous")
+    assert "view_image" in rounds[0][1]                 # offered, because pictures exist
+    second = rounds[1][0]
+    tool_result = next(m for m in second if m.get("role") == "tool")
+    assert "Showing birds.png" in tool_result["content"]
+    picture = second[second.index(tool_result) + 1]
+    assert picture["role"] == "user" and picture["content"][1]["type"] == "image_url"
+
+    # No pictures in the conversation: the tool is not on offer at all.
+    rounds.clear()
+    orchestrator.chat(messages=[{"role": "user", "content": "hi"}], project_dir=tmp_path,
+                      config=ModelConfig(kind="llamacpp"), bus=EventBus(), session_id="s")
+    assert "view_image" not in rounds[0][1]
