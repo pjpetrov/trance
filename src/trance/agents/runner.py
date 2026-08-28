@@ -1428,6 +1428,13 @@ def _progress_reporter(client, bus, session_id, *, role, step_id, round_n, confi
         return None
     ident = f"ev_live_{step_id or 'turn'}_{round_n}"
 
+    # What the reply is measured against, so the console can draw how full
+    # the cap is while the model works. Size-capped: tokens against
+    # max_tokens. Time-capped: seconds against the budget — and the token cap
+    # still stands behind it, so both are sent and the UI shows whichever is
+    # closer to cutting the reply.
+    by_time = (getattr(config, "cap", "time") or "time") != "size"
+
     def report(info: dict) -> None:
         phase = str(info.get("phase") or "thinking")
         bus.emit("model_progress", session_id, id=ident, agent=role.name,
@@ -1436,6 +1443,8 @@ def _progress_reporter(client, bus, session_id, *, role, step_id, round_n, confi
                      "round": round_n,
                      "model": config.model,
                      "preset": config.preset,
+                     "cap_tokens": int(config.max_tokens or 0),
+                     "cap_seconds": float(config.timeout_s or 0) if by_time else 0,
                      "message": f"{phase} · {info.get('tokens', 0)} tokens",
                  })
 

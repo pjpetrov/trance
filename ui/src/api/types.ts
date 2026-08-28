@@ -424,6 +424,10 @@ export interface EventPayload {
   tokens?: number;
   elapsed_s?: number;
   tail?: string;
+  /** What the reply is measured against: the token cap, and the time budget
+   *  when the preset cuts by time (0 when it cuts by size). */
+  cap_tokens?: number;
+  cap_seconds?: number;
   /** what /events drops to keep the payload small */
   _omitted?: Record<string, number>;
 }

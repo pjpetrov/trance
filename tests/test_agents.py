@@ -11992,6 +11992,11 @@ def test_a_streaming_generation_narrates_itself_transiently(tmp_path, monkeypatc
     frames = [e for e in seen if e.type == "model_progress"]
     assert len(frames) >= 2
     assert all(f.transient for f in frames)
+    # The frame carries what the reply is measured against, so the console
+    # can draw how full the cap is: the token cap, and the time budget when
+    # the preset cuts by time (this config's default).
+    assert frames[0].payload["cap_tokens"] == 600
+    assert frames[0].payload["cap_seconds"] == 600.0
     assert len({f.id for f in frames[:2]}) == 1          # one line, updated in place
     assert frames[0].payload["message"] == "thinking · 12 tokens"
     assert frames[1].payload["phase"] == "answering"

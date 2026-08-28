@@ -102,6 +102,50 @@ function RunningCommand({ event }: { event: TranceEvent }) {
   );
 }
 
+/** How full the reply cap is, as a ring the size of an icon glyph.
+ *
+ *  "Model working" is one state from the outside — thinking, answering, or
+ *  waiting for the first token — and what a person wants to know across all
+ *  of it is the same thing: how close is this reply to being cut. Two caps
+ *  can cut it, tokens and (when the preset chooses) seconds; the ring shows
+ *  whichever is nearer, and its title says which. Red past 90%. */
+function CapRing({ share, title }: { share: number; title: string }) {
+  const r = 5.5;
+  const c = 2 * Math.PI * r;
+  const filled = Math.max(0, Math.min(1, share));
+  const tone = filled >= 0.9 ? "text-err" : filled >= 0.7 ? "text-warn" : "text-accent";
+  return (
+    <svg viewBox="0 0 14 14" className={cn("inline-block h-3.5 w-3.5 -rotate-90", tone)}
+         role="img" aria-label={title}>
+      <title>{title}</title>
+      <circle cx="7" cy="7" r={r} fill="none" stroke="currentColor"
+              strokeOpacity="0.25" strokeWidth="2" />
+      <circle cx="7" cy="7" r={r} fill="none" stroke="currentColor" strokeWidth="2"
+              strokeDasharray={`${c * filled} ${c}`} strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** The nearer of the two caps, as (share, sentence). */
+function capShare(payload: { tokens?: number; cap_tokens?: number;
+                             elapsed_s?: number; cap_seconds?: number }) {
+  const byTokens = payload.cap_tokens ? (payload.tokens ?? 0) / payload.cap_tokens : 0;
+  const bySeconds = payload.cap_seconds ? (payload.elapsed_s ?? 0) / payload.cap_seconds : 0;
+  if (bySeconds > byTokens) {
+    return {
+      share: bySeconds,
+      title: `${Math.round(bySeconds * 100)}% of the ${payload.cap_seconds}s time budget `
+        + `(${tokens(payload.tokens ?? 0)} of ${tokens(payload.cap_tokens ?? 0)} tokens)`,
+    };
+  }
+  return {
+    share: byTokens,
+    title: `${Math.round(byTokens * 100)}% of the ${tokens(payload.cap_tokens ?? 0)}-token `
+      + `reply cap` + (payload.cap_seconds
+        ? ` (${Math.round(payload.elapsed_s ?? 0)}s of ${payload.cap_seconds}s)` : ""),
+  };
+}
+
 /** The call that has not come back yet, counting while it does not. */
 function WaitingLabel({ event }: { event: TranceEvent }) {
   const [now, setNow] = useState(() => Date.now());
@@ -123,7 +167,7 @@ function WaitingLabel({ event }: { event: TranceEvent }) {
 
 interface Rendered {
   show: boolean;
-  icon: string;
+  icon: ReactNode;
   iconTone?: string;
   label: ReactNode;
   body?: ReactNode;
@@ -204,7 +248,8 @@ function describe(event: TranceEvent, sessionId: string, live: boolean): Rendere
   if (event.type === "model_waiting") {
     if (!live) return HIDDEN;
     return {
-      show: true, icon: "◌", iconTone: "text-accent",
+      show: true, iconTone: "text-accent",
+      icon: <CapRing share={0} title="model working — waiting for the first token" />,
       label: <WaitingLabel event={event} />,
     };
   }
@@ -216,8 +261,10 @@ function describe(event: TranceEvent, sessionId: string, live: boolean): Rendere
     if (!live) return HIDDEN;
     const rate = payload.tokens && payload.elapsed_s
       ? (payload.tokens / payload.elapsed_s).toFixed(1) : null;
+    const cap = capShare(payload);
     return {
-      show: true, icon: "◌", iconTone: "text-accent",
+      show: true, iconTone: "text-accent",
+      icon: <CapRing share={cap.share} title={`model working — ${cap.title}`} />,
       label: (
         <span>
           <span className={payload.phase === "answering" ? "text-ok" : "text-accent"}>
