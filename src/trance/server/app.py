@@ -2551,9 +2551,18 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             # will act on it. The orchestrator saw them; the frontend dev
             # fixing what the picture shows was working from a one-sentence
             # paraphrase of it.
-            asked_with = next(
-                (list(m.images) for m in reversed(session.chat[:-1])
-                 if m.role == "user"), [])
+            # The *request* is every user message since the previous plan,
+            # not only the last one: a picture posted at 15:33 and "they are
+            # in the wrong place" typed at 18:09 are one report, and the
+            # steps proposed from the second must carry the first. Measured:
+            # a bird's-eye view attached two messages back reached nobody.
+            asked_with: list[str] = []
+            for m in reversed(session.chat[:-1]):
+                if m.role != "user" and m.steps:
+                    break                                # the previous plan
+                if m.role == "user":
+                    asked_with = list(m.images) + asked_with
+            asked_with = list(dict.fromkeys(asked_with))
             if asked_with:
                 for step in session.flow.steps:
                     if step.id in reply.steps:

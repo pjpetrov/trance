@@ -12773,3 +12773,78 @@ def test_a_session_does_not_fall_back_to_a_deleted_built_in(tmp_path):
     assert session.role("reviewer") is not None    # shipped fallback, normally
     session.deleted_agents = frozenset({"reviewer"})
     assert session.role("reviewer") is None
+
+
+def test_the_whole_request_since_the_last_plan_stamps_its_pictures_on_the_steps(tmp_path, monkeypatch):
+    """A bird's-eye view attached at 15:33 and "they are in the wrong place"
+    typed at 18:09 are one report; the plan proposed from the second message
+    must carry the first's picture. Only the last user message was read, so
+    the steps got nothing and the orchestrator, asked, invented a save-to-
+    disk workaround for a mechanism it was never told about."""
+    import base64
+
+    from fastapi.testclient import TestClient
+
+    from trance.config import Config
+    from trance.server import app as app_module
+
+    def png():
+        import struct
+        import zlib
+        rows = b"".join(b"\x00" + bytes((255, 0, 0)) * 4 for _ in range(4))
+        def chunk(kind, body):
+            return (struct.pack(">I", len(body)) + kind + body
+                    + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+        return (b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+    config = Config.load(tmp_path / "none.toml")
+    config.runs_dir = str(tmp_path / "runs")
+    client = TestClient(app_module.create_app(config, tmp_path / "sessions"))
+    sid = client.post("/api/sessions",
+                      json={"name": "p", "project_dir": str(tmp_path / "proj")}).json()["id"]
+
+    replies = iter([
+        {"text": "noted", "truncated": False, "proposal": None},            # 15:33
+        {"text": "plan", "truncated": False, "proposal": {                  # 18:09
+            "summary": "s", "team": ["developer"], "requirements": [],
+            "steps": [{"role": "developer", "loop": "", "task": "place the buildings",
+                       "check": None, "checks": [], "on_fail": None,
+                       "max_loops": 0, "points": 2}]}},
+    ])
+    monkeypatch.setattr(app_module.orchestrator_agent, "chat",
+                        lambda **_kw: next(replies))
+
+    shot = "data:image/png;base64," + base64.b64encode(png()).decode()
+    assert client.post(f"/api/sessions/{sid}/chat",
+                       json={"message": "look from the birds eye", "images": [shot]}
+                       ).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/chat",
+                       json={"message": "they are not correctly placed", "images": []}
+                       ).status_code == 200
+
+    steps = client.get(f"/api/sessions/{sid}").json()["flow"]["steps"]
+    assert steps and steps[-1]["images"], "the earlier message's picture must ride"
+    assert steps[-1]["images"][0].endswith(".png")
+
+
+def test_the_orchestrator_is_told_how_pictures_travel(tmp_path, monkeypatch):
+    from trance.agents import orchestrator
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    seen = {}
+
+    class _Client:
+        def complete(self, messages, tools=None, **kwargs):
+            seen["system"] = messages[0]["content"]
+            return ChatResponse(text="ok")
+
+    monkeypatch.setattr(orchestrator, "client_for", lambda config: _Client())
+    orchestrator.chat(messages=[{"role": "user", "content": "hi"}],
+                      project_dir=tmp_path, config=ModelConfig(), bus=EventBus(),
+                      session_id="s")
+    assert "view_image" in seen["system"]
+    assert "never ask the user to save a picture to disk" in seen["system"]
