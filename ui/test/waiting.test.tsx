@@ -52,8 +52,8 @@ describe("the console header", () => {
     // console line per round, and the repeats pushed the work off the screen.
     expect(await screen.findAllByText(/waiting for Qwen3.6-llama.cpp/)).toHaveLength(2);
     // The gauge is up before the answer exists, from an estimate that says so.
-    expect(screen.getByText(/^17.7k\/55.0k~$/)).toBeInTheDocument();
-    expect(screen.getByText("32%")).toBeInTheDocument();
+    expect(screen.getByText(/^17.7k\/64.0k~$/)).toBeInTheDocument();
+    expect(screen.getByText("28%")).toBeInTheDocument();
   });
 
   it("stops waiting once the answer lands", async () => {
@@ -67,8 +67,8 @@ describe("the console header", () => {
 
     renderWithQuery(<RunScreen />);
     // The gauge stays — it is the last reading, and now a reported one.
-    await waitFor(() => expect(screen.getByText("33%")).toBeInTheDocument());
-    expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("28%")).toBeInTheDocument());
+    expect(screen.queryByText(/waiting for/, { selector: "span" })).not.toBeInTheDocument();
     expect(screen.queryByText(/~$/)).not.toBeInTheDocument();
   });
 
@@ -82,8 +82,8 @@ describe("the console header", () => {
     ]);
 
     renderWithQuery(<RunScreen />);
-    await waitFor(() => expect(screen.getByText("32%")).toBeInTheDocument());
-    expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("28%")).toBeInTheDocument());
+    expect(screen.queryByText(/waiting for/, { selector: "span" })).not.toBeInTheDocument();
   });
 
   it("marks the calls that went out with thinking off", async () => {
@@ -114,7 +114,10 @@ describe("the console header", () => {
 
     renderWithQuery(<RunScreen />);
     // Header plus one console line: the first waiting event is history now.
-    await waitFor(() => expect(screen.getAllByText(/waiting for/)).toHaveLength(2));
+    // Spans only: the working ring carries an SVG <title> that says "waiting
+    // for the first token", which is a tooltip, not a line in the console.
+    await waitFor(() =>
+      expect(screen.getAllByText(/waiting for/, { selector: "span" })).toHaveLength(2));
     // And it counts, so a two-minute generation looks like a two-minute
     // generation rather than a frozen page.
     expect(screen.getByText(/^\d+s$/)).toBeInTheDocument();
