@@ -34,7 +34,12 @@ PROTECTED = frozenset(BUILTIN_ROLES)
 
 #: Settings a stored agent inherits from its built-in when the file predates
 #: them. The value that means "not chosen", per field.
-INHERITED_WHEN_UNSET = {"tool_rounds": 0}
+#:
+#: `enabled` is here so that shipping a built-in switched off reaches stores
+#: written before the switch existed: a file with no `enabled` key never made
+#: that choice, so it takes trance's. Once the user touches the switch the key
+#: is on disk and their choice stands, on or off.
+INHERITED_WHEN_UNSET = {"tool_rounds": 0, "enabled": True}
 
 
 class RoleStore:

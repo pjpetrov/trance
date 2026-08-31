@@ -454,6 +454,8 @@ export interface Planning {
   escalation_role: string;
   git_commits: boolean;
   git_auto_init: boolean;
+  /** A step out of tries is continued from where it stopped, not halted. */
+  keep_trying?: boolean;
   /** An agent whose step opens every generated plan. Empty = none. */
   plan_open?: string;
   /** An agent or loop appended when a plan does not already end with it. */

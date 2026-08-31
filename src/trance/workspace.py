@@ -49,6 +49,11 @@ class Settings:
     escalation_role: str = ""
     git_commits: bool = True
     git_auto_init: bool = True
+    #: A step that runs out of tries goes round again instead of halting the
+    #: run. What an unattended run wants: a halt at 3am is a machine that does
+    #: nothing until somebody comes back to it, and almost nothing that stops a
+    #: step is permanent. Off = the old behaviour, halt and wait for a human.
+    keep_trying: bool = True
     #: An agent whose step opens every generated plan — a planner going over
     #: the request before anyone builds. Empty = plans open with whatever the
     #: orchestrator proposed.

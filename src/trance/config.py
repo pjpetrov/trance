@@ -119,6 +119,9 @@ class Config:
     #: Create a repository when the project is not one. A checkpoint needs
     #: somewhere to live, and an empty repo is easier to delete than to explain.
     git_auto_init: bool = True
+    #: Never give up: a step out of tries is continued from where it stopped
+    #: rather than halting the run. See Settings.keep_trying.
+    keep_trying: bool = True
     #: A model preset used for one last attempt when a block has exhausted its
     #: loops. Empty = no escalation, halt as before. A block that has failed the
     #: same way three times is not going to be fixed by a fourth identical try;
@@ -305,6 +308,7 @@ class Config:
             "ask_on_refusal": self.ask_on_refusal,
             "git_commits": self.git_commits,
             "git_auto_init": self.git_auto_init,
+            "keep_trying": self.keep_trying,
             "escalation_preset": self.escalation_preset,
             "escalation_role": self.escalation_role,
             "approval_timeout_s": self.approval_timeout_s,

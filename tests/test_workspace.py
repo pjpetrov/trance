@@ -201,6 +201,14 @@ def test_settings_are_per_project_and_survive_a_restart(tmp_path):
     assert client.get(f"/api/sessions/{game}/settings").json()["git_commits"] is False
     assert client.get(f"/api/sessions/{site}/settings").json()["git_commits"] is True
 
+    # Keep-trying travels the same road: on by default, per project, and the
+    # engine reads it off the Config this project builds.
+    assert client.get(f"/api/sessions/{game}/settings").json()["keep_trying"] is True
+    client.put("/api/config/planning", json={"keep_trying": False},
+               params={"session": game})
+    assert client.get(f"/api/sessions/{game}/settings").json()["keep_trying"] is False
+    assert client.get(f"/api/sessions/{site}/settings").json()["keep_trying"] is True
+
     # A new server, the same folders: the answer has to be the same.
     from fastapi.testclient import TestClient
     from trance.server import app as app_module

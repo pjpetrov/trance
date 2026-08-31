@@ -4,6 +4,7 @@
   "escalation_role": "",
   "git_commits": true,
   "git_auto_init": true,
+  "keep_trying": true,
   "plan_open": "",
   "plan_close": ""
 }

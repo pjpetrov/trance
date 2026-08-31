@@ -85,6 +85,22 @@ export function SettingsPanel() {
         />
       </section>
 
+      <section className="space-y-1">
+        <h3 className="text-sm font-medium">When a step runs out of tries</h3>
+        <p className="text-xs leading-relaxed text-muted">
+          A halt is a machine that does nothing until you come back to it, and almost
+          nothing that stops a step is permanent. Kept on, the step goes round again
+          from where it stopped — its own conversation carried over, fresh tries, and
+          a note saying what it ran into. A step whose agent or loop no longer exists
+          still halts: repeating that is a spin, not a retry.
+        </p>
+        <Checkbox
+          label="Keep trying instead of halting the run"
+          checked={settings.data.keep_trying ?? true}
+          onChange={(event) => save({ keep_trying: event.target.checked })}
+        />
+      </section>
+
       <section className="space-y-2">
         <h3 className="text-sm font-medium">Every plan, always</h3>
         <p className="text-xs leading-relaxed text-muted">

@@ -1056,7 +1056,7 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
             if name and roles.get(name) is None:
                 raise HTTPException(400, f"unknown agent {name!r}")
             changes["escalation_role"] = name
-        for flag in ("git_commits", "git_auto_init"):
+        for flag in ("git_commits", "git_auto_init", "keep_trying"):
             if flag in body:
                 changes[flag] = bool(body[flag])
         for frame in ("plan_open", "plan_close"):

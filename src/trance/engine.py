@@ -248,6 +248,10 @@ class FlowEngine:
 
         #: What the previous block photographed, for the next one to see.
         carry_shots: list[str] = []
+        #: Where the walk got to, and that block's conversation — what a
+        #: continuation re-enters and picks back up.
+        last_turn = None
+        last_node = ""
 
         # "Rerun from this block": re-enter where the user pointed, replaying
         # the handoff that block received the first time — same input, fresh
@@ -354,6 +358,7 @@ class FlowEngine:
             )
             seed_conversation = []         # only the block it was made for
             self._charge(role.name, step, node_t0)
+            last_turn, last_node = turn, node.id
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
             attempt.context = turn.context
@@ -440,12 +445,20 @@ class FlowEngine:
 
         step.status = "failed"
         last = step.attempts[-1] if step.attempts else None
+        keeps = self._keeps_trying()
         self._emit("step_failed", agent=step.role, step_id=step.id, payload={
             "reason": (f"the {step.loop} loop ended without success"
                        + (f" — last: {last.outcome_reason}" if last and last.outcome_reason
                           else "")),
-            "attempts": len(step.attempts), "halts_flow": True, "loop": step.loop,
+            "attempts": len(step.attempts), "halts_flow": not keeps, "loop": step.loop,
         })
+        # A loop continues from the block that stopped it, with fresh visit
+        # budgets — the same thing "rerun from this block" does, decided by the
+        # engine instead of by a user who is not there.
+        if keeps and self._keep_going(
+                step, turn=last_turn, node=last_node,
+                why=(last.outcome_reason if last and last.outcome_reason else "")):
+            return
         self._halt(step)
 
     def _charge(self, name: str, step: Step | None, started: float) -> None:
@@ -516,6 +529,9 @@ class FlowEngine:
         #: "Continue from here": the step's own conversation, picked back up by
         #: the first try this run makes. Consumed on entry.
         seed_conversation, step.resume_messages = list(step.resume_messages), []
+        #: The last turn that actually reached the model — what a continuation
+        #: picks back up. None while every try has died on the endpoint.
+        last_turn = None
 
         for loop in range(1, limit + 1):
             session.wait_if_paused()
@@ -592,6 +608,7 @@ class FlowEngine:
                     break
                 continue
             self._charge(role.name, step, worker_t0)
+            last_turn = turn
             attempt.worker_event_id = turn.model_event_ids[-1] if turn.model_event_ids else None
             attempt.files_written = turn.files_written
             attempt.context = turn.context
@@ -720,13 +737,18 @@ class FlowEngine:
         # A step whose last word was a failed check halts as one that lied: it
         # had its chances to make the report true and did not.
         lied = bool(last and last.outcome == "CHECK_FAILED")
+        keeps = self._keeps_trying()
         self._emit("step_failed", agent=role.name, step_id=step.id, payload={
             "reason": (f"the step never reported success in {limit} tr(y/ies)"
                        + (f" — last: {last.outcome_reason}" if last and last.outcome_reason
                           else "")),
-            "attempts": len(step.attempts), "max_loops": limit, "halts_flow": True,
-            "lied": lied,
+            "attempts": len(step.attempts), "max_loops": limit,
+            "halts_flow": not keeps, "lied": lied,
         })
+        if keeps and self._keep_going(
+                step, turn=last_turn, endpoint_down=endpoint_down,
+                why=(last.outcome_reason if last and last.outcome_reason else feedback)):
+            return
         self._halt(step, lied=lied)
 
     def _escalate(self, step: Step, feedback: str, carry) -> bool:
@@ -874,6 +896,84 @@ class FlowEngine:
             "summary": attempt.fix_summary, "files": turn.files_written,
         })
 
+    #: A breath between continuations, so a step that fails in two seconds is
+    #: not a hot loop for the rest of the night.
+    CONTINUE_PAUSE_S = 5.0
+    #: What a step waits when the *endpoint* was what failed. Nothing an agent
+    #: can do fixes a model that is down; time can, because the usual repair is
+    #: the user restarting it. Grows, and stops growing at five minutes.
+    ENDPOINT_PAUSE_S = (30.0, 60.0, 120.0, 300.0)
+
+    def _keeps_trying(self) -> bool:
+        """Is this run allowed to continue a step instead of halting?"""
+        return bool(getattr(self.config, "keep_trying", False)
+                    and not self.session.stopping)
+
+    def _keep_going(self, step: Step, turn=None, node: str = "",
+                    endpoint_down: bool = False, why: str = "") -> bool:
+        """Send an exhausted step round again rather than halt the run.
+
+        A halt at 3am is a machine that does nothing until somebody comes back
+        and presses a button — and almost nothing that stops a step is
+        permanent: an agent that lost its way, a check that keeps finding the
+        same missing thing, an endpoint that went down and came back. So the
+        step goes back to pending with its own conversation seeded and fresh
+        tries: it picks up where it stopped instead of starting cold against
+        the same wall, and the run is still working when the user returns.
+
+        Never called for a step whose *configuration* cannot work — a deleted
+        agent, a loop that no longer exists. Repeating that is a spin, not a
+        retry, and those halt as they always did.
+        """
+        if not self._keeps_trying():
+            return False
+        step.continues += 1
+        seed = self._resume_conversation(turn) if turn is not None else None
+        if seed:
+            step.resume_messages = seed
+        if node:
+            step.resume_node = node
+        # The reason it stopped, handed to whoever picks the step up. Without
+        # this the next run starts with feedback = "" and walks into the same
+        # wall knowing nothing about the last one.
+        step.steering.append(
+            "This step ran out of tries and is being continued rather than "
+            "stopped — you are picking up your own work, not starting over.\n\n"
+            + (f"How the last pass ended:\n{why}\n\n" if why else "")
+            + "Keep what is already right and fix what is not. If the same "
+              "approach has now failed several times, the approach is the "
+              "thing to change: find out what is actually true before "
+              "changing more code."
+        )
+        wait = 0.0
+        if endpoint_down:
+            ladder = self.ENDPOINT_PAUSE_S
+            wait = ladder[min(step.continues, len(ladder)) - 1]
+        elif self.CONTINUE_PAUSE_S:
+            wait = self.CONTINUE_PAUSE_S
+        step.status = "pending"
+        self._emit("step_continued", agent=step.role or step.loop, step_id=step.id,
+                   payload={
+                       "continues": step.continues, "waiting": wait,
+                       "resumed": bool(seed), "node": node,
+                       "message": (
+                           f"Out of tries on this step — keep trying is on, so it "
+                           f"continues from where it stopped instead of halting "
+                           f"(continuation {step.continues}"
+                           + (", conversation carried over" if seed else "")
+                           + ")."
+                           + (f" Waiting {int(wait)}s first: the model endpoint was "
+                              f"unreachable, and only time fixes that."
+                              if endpoint_down else "")
+                           + " Turn keep-trying off in Settings to have a step halt "
+                             "the run instead."),
+                   })
+        self.on_change()
+        if wait:
+            # Interruptible: Stop must not have to wait out a five-minute pause.
+            self.session._stop.wait(wait)
+        return True
+
     def _halt(self, step: Step, lied: bool = False) -> None:
         """Stop the run: later steps would build on work that is not there."""
         self.session.stop()
@@ -898,12 +998,19 @@ class FlowEngine:
                     "rewind), widen that edge's visits in the Loops editor, or "
                     "change the fixing agent.")
         else:
+            # The number the step actually ran, not `loop_limit` — which is the
+            # step's *override*, and falls back to 2 when the step never named
+            # one. Measured live: a developer with four tries halted saying
+            # "within 2 loop(s)", and the console above it said "try 4 of 4".
+            role = self.session.role(step.role)
+            tries = self._tries_for(role, step) if role is not None else step.loop_limit
             self.session.error = (
-                f"Halted at the {step.role} step: it never reported success within "
-                f"{step.loop_limit} loop(s)."
+                f"Halted at the {step.role} step: it never reported success in "
+                f"{tries} tr{'y' if tries == 1 else 'ies'}."
             )
-            hint = ("Raise the loop limit, change the fixing agent, or edit the step "
-                    "and re-run it.")
+            hint = (f"Give {step.role} more tries in the Agents editor (or this step "
+                    f"its own number), change the fixing agent, or edit the step "
+                    f"and re-run it.")
             # A step asking for files its agent may not write cannot succeed at
             # any loop limit. Say so, and name who can, instead of suggesting
             # the user retry something that is impossible by construction.
@@ -1020,7 +1127,7 @@ class FlowEngine:
             for _ in range(2):
                 if turn.verdict != "UNVERIFIED":
                     break
-                seed = self._checker_resume(turn)
+                seed = self._resume_conversation(turn)
                 if not seed:
                     break
                 self._emit("check_unverified", agent=gate.name, step_id=step.id, payload={
@@ -1098,13 +1205,14 @@ class FlowEngine:
     #: list still there to go look at.
     GATE_DIFF_CHARS = 16_000
 
-    def _checker_resume(self, turn) -> list | None:
-        """The checker's own conversation, from the bus, to continue it.
+    def _resume_conversation(self, turn) -> list | None:
+        """An agent's own conversation, from the bus, so it can be continued.
 
-        The last model call of a verdict turn is the verdict answer itself,
-        so the continued conversation ends with the checker's UNVERIFIED line
-        — it resumes knowing exactly what it already covered and what is
-        left. In-process, so the bus still holds the full messages."""
+        The last model call of a turn is its final answer, so the rebuilt
+        conversation ends with what the agent last said — it resumes knowing
+        exactly what it already covered and what is left, whether that is a
+        checker's UNVERIFIED line or a worker's last report before it ran out
+        of tries. In-process, so the bus still holds the full messages."""
         if not getattr(turn, "model_event_ids", None):
             return None
         wanted = turn.model_event_ids[-1]

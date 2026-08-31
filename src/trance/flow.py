@@ -157,6 +157,10 @@ class Step:
     #: every block of every agent in it — it is one press of the button, and it
     #: is the unit anybody actually means by "what happened last time".
     runs: int = 0
+    #: How many of those runs the engine started by itself, because the step
+    #: ran out of tries and keep-trying is on. Separates "the user pressed
+    #: rerun four times" from "it has been going round on its own all night".
+    continues: int = 0
     #: User steering notes waiting to reach this step's agent.
     steering: list[str] = field(default_factory=list)
     #: Set by "rerun from this block": where the next execution of this loop

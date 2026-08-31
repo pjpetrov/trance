@@ -645,7 +645,7 @@ def test_a_real_verifier_is_still_invoked(tmp_path, monkeypatch):
     from trance.session import Session
 
     session = Session(name="s", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["reviewer"]]
+    session.team = [_on("developer"), _on("reviewer")]
     step = Step(role="developer", task="t", verify_with="reviewer")
     engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), EventBus())
 
@@ -785,8 +785,27 @@ def test_the_refusal_message_lists_what_is_allowed(project):
 
 # ------------------------------------------- block loop: check + fixer
 
+def _on(name: str):
+    """A copy of a shipped agent, switched on.
+
+    The reviewer ships disabled — the user's call, "it only eats time" — and
+    that switch is asserted on the shipped roster itself. A test that puts an
+    agent on a team is naming one it means to see run, so it gets an enabled
+    copy. A copy because BUILTIN_ROLES holds one shared object per agent:
+    flipping the switch in place would leak into every other test in the
+    worker.
+    """
+    import copy
+
+    role = copy.deepcopy(BUILTIN_ROLES[name])
+    role.enabled = True
+    return role
+
+
 def _engine(tmp_path, team, bus=None):
     import copy
+
+    from dataclasses import replace
 
     from trance.config import Config
     from trance.engine import FlowEngine
@@ -802,8 +821,19 @@ def _engine(tmp_path, team, bus=None):
     for name in team:
         role = copy.deepcopy(BUILTIN_ROLES[name])
         role.checks = []
+        # And switched on. The reviewer ships disabled — the user's call, it
+        # "only eats time" — but a test that hands the engine a team is naming
+        # the agents it means to see run. The shipped switch is tested where it
+        # belongs, on the shipped roster.
+        role.enabled = True
         session.team.append(role)
-    return FlowEngine(session, Config.load(tmp_path / "none.toml"), bus or EventBus())
+    # Keep-trying off. It ships *on* — a step out of tries is continued rather
+    # than halted, which is what an unattended run wants — and the tests below
+    # are about why a step ends, not about what the run does next: with it on,
+    # every "and then it halts" here would read "and then it went round again".
+    # The shipped default and the continuing itself have their own tests.
+    config = replace(Config.load(tmp_path / "none.toml"), keep_trying=False)
+    return FlowEngine(session, config, bus or EventBus())
 
 
 class _Turn:
@@ -1026,7 +1056,19 @@ def test_legacy_verify_with_is_read_as_the_check(tmp_path, monkeypatch):
 # ------------------------------------------- orchestrator proposals
 
 def _roles():
-    return list(BUILTIN_ROLES.values())
+    """Every shipped agent, switched on.
+
+    Copies, and enabled: the reviewer ships disabled (see _on), and a test
+    handing the planner a roster means the roster it is planning with.
+    """
+    import copy
+
+    roles = []
+    for role in BUILTIN_ROLES.values():
+        held = copy.deepcopy(role)
+        held.enabled = True
+        roles.append(held)
+    return roles
 
 
 def test_the_proposal_is_not_asked_who_should_check():
@@ -1127,7 +1169,7 @@ def test_the_fact_check_joins_the_team_it_will_check():
 
     out = ensure_checks(_normalize({"summary": "s", "team": ["developer"], "steps": [
         {"role": "developer", "task": "build the API"},
-    ]}, _roles()), roles=list(R.values()))
+    ]}, _roles()), roles=_roles())
     assert out["steps"][0]["checks"] == ["reviewer"]
     assert set(out["team"]) == {"developer", "reviewer"}
 
@@ -4115,7 +4157,7 @@ def test_a_planned_step_that_writes_files_is_fact_checked(tmp_path):
     proposal = {"summary": "s", "team": ["developer"], "steps": [
         {"role": "developer", "loop": "", "task": "build the API", "check": None},
         {"role": "developer", "loop": "", "task": "build the UI", "check": None}]}
-    out = ensure_checks(proposal, roles=list(R.values()))
+    out = ensure_checks(proposal, roles=_roles())
 
     assert [s["checks"] for s in out["steps"]] == [["reviewer"], ["reviewer"]]
     assert out["added_checks"] == 2
@@ -4131,7 +4173,7 @@ def test_nothing_is_checked_where_nothing_is_written(tmp_path):
     proposal = {"summary": "s", "team": [], "steps": [
         {"role": "", "loop": "visual-test-and-fix", "task": "test it", "check": None},
         {"role": "visual-tester", "loop": "", "task": "look at it", "check": None}]}
-    out = ensure_checks(proposal, roles=list(R.values()))
+    out = ensure_checks(proposal, roles=_roles())
 
     assert [s["check"] for s in out["steps"]] == [None, None]
     assert "added_checks" not in out
@@ -4183,9 +4225,16 @@ def test_the_whole_proposal_pipeline_checks_and_verifies(tmp_path, monkeypatch):
                                session_id="s", loops=LoopStore(tmp_path / "l.json"))
 
     steps = result["proposal"]["steps"]
-    assert [s["check"] for s in steps[:2]] == ["reviewer", "reviewer"]
+    # No floor check on a fresh install: the reviewer ships disabled, and a
+    # disabled agent is not planned, not offered and not applied by rule. The
+    # floor returns with it — test_a_planned_step_that_writes_files_is_fact_checked
+    # is the same pipeline with the roster switched on.
+    assert [s["check"] for s in steps[:2]] == [None, None]
+    # The other guarantee does not depend on it: the plan still ends by
+    # testing itself.
     assert steps[-1]["loop"] == "visual-test-and-fix"
-    assert {"developer", "reviewer", "visual-tester"} <= set(result["proposal"]["team"])
+    assert {"developer", "visual-tester"} <= set(result["proposal"]["team"])
+    assert "reviewer" not in result["proposal"]["team"]
 
 
 def test_a_step_keeps_the_window_reading_it_ended_on(tmp_path, monkeypatch):
@@ -7490,7 +7539,7 @@ def test_an_agent_can_carry_checks_of_its_own(tmp_path, monkeypatch):
     frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
                             "checks": ["regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [frontend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["regression"]]
+    session.team = [frontend, _on("reviewer"), _on("regression")]
     step = Step(role="developer", task="add the level select", check="reviewer")
     session.flow = Flow(steps=[step])
 
@@ -7529,7 +7578,7 @@ def test_the_agents_own_order_is_the_one_that_runs(tmp_path, monkeypatch):
     frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
                             "checks": ["reviewer", "regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [frontend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["reviewer"],
+    session.team = [frontend, _on("reviewer"), _on("reviewer"),
                     BUILTIN_ROLES["regression"]]
     # What the orchestrator wrote onto the step: the reviewer, on its own.
     step = Step(role="developer", task="auto-aim at the nearest police car",
@@ -7565,8 +7614,8 @@ def test_a_check_only_this_task_wants_runs_first(tmp_path, monkeypatch):
     frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
                             "checks": ["reviewer", "regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [frontend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["regression"],
-                    BUILTIN_ROLES["reviewer"]]
+    session.team = [frontend, _on("reviewer"), _on("regression"),
+                    _on("reviewer")]
     step = Step.from_dict({"role": "developer", "task": "t", "checks": ["reviewer"]})
     session.flow = Flow(steps=[step])
 
@@ -9231,7 +9280,7 @@ def test_a_check_taken_off_a_step_stays_off(tmp_path, monkeypatch):
     frontend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(),
                             "checks": ["reviewer", "regression"]})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [frontend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["regression"]]
+    session.team = [frontend, _on("reviewer"), _on("regression")]
     step = Step(role="developer", task="t")
     session.flow = Flow(steps=[step])
     seed_checks(session.flow, lambda name: frontend.checks if name == "developer" else [])
@@ -9336,8 +9385,8 @@ def test_a_loop_node_is_checked_by_what_the_node_names(tmp_path, monkeypatch):
 
     asked = []
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["reviewer"],
-                    BUILTIN_ROLES["reviewer"]]
+    session.team = [_on("developer"), _on("reviewer"),
+                    _on("reviewer")]
     step = Step.from_dict({"role": "", "loop": "test-and-fix", "task": "t",
                            "checks": ["reviewer"]})
     session.flow = Flow(steps=[step])
@@ -9990,7 +10039,7 @@ def test_a_checks_time_is_charged_to_the_checker_not_the_worker(tmp_path, monkey
 
     monkeypatch.setattr("trance.engine.run_agent", _gate)
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["reviewer"]]
+    session.team = [_on("developer"), _on("reviewer")]
     step = Step.from_dict({"role": "developer", "task": "t", "checks": ["reviewer"]})
     step.checks_seeded = True
     session.flow = Flow(steps=[step])
@@ -10359,6 +10408,8 @@ def test_a_rejection_names_the_gate_that_objected_and_tells_the_budget_truth(tmp
     """Measured live: the factchecker passed, the reviewer rejected — and
     every message said "factchecker found otherwise" while promising a return
     trip at the exact moment no tries remained, one line before step_failed."""
+    from dataclasses import replace
+
     from trance.agents.roles import AgentRole, BUILTIN_ROLES
     from trance.config import Config
     from trance.engine import FlowEngine
@@ -10380,7 +10431,7 @@ def test_a_rejection_names_the_gate_that_objected_and_tells_the_budget_truth(tmp
     monkeypatch.setattr("trance.engine.run_agent", _ran)
     backend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(), "tries": 1})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [backend, BUILTIN_ROLES["reviewer"], BUILTIN_ROLES["regression"]]
+    session.team = [backend, _on("reviewer"), _on("regression")]
     step = Step.from_dict({"role": "developer", "task": "t",
                            "checks": ["regression"]})
     step.checks_seeded = True
@@ -10389,7 +10440,10 @@ def test_a_rejection_names_the_gate_that_objected_and_tells_the_budget_truth(tmp
     bus = EventBus()
     said = {}
     bus.subscribe_sync(lambda e: said.setdefault(e.type, []).append(e.payload))
-    engine = FlowEngine(session, Config.load(tmp_path / "none.toml"), bus)
+    # Halting, not continuing: this is about what the last rejection *says*,
+    # and keep-trying is tested where it is the subject.
+    engine = FlowEngine(session, replace(Config.load(tmp_path / "none.toml"),
+                                         keep_trying=False), bus)
     monkeypatch.setattr(engine, "_gate_task", lambda *a, **k: "check it")
     monkeypatch.setattr(engine, "_escalate", lambda *a, **k: False)
     engine._execute_agent(step)
@@ -10434,7 +10488,7 @@ def test_a_rejection_with_tries_left_still_promises_the_retry(tmp_path, monkeypa
     monkeypatch.setattr("trance.engine.run_agent", _ran)
     backend = AgentRole(**{**BUILTIN_ROLES["developer"].to_dict(), "tries": 2})
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [backend, BUILTIN_ROLES["reviewer"]]
+    session.team = [backend, _on("reviewer")]
     step = Step.from_dict({"role": "developer", "task": "t", "checks": ["reviewer"]})
     step.checks_seeded = True
     session.flow = Flow(steps=[step])
@@ -10795,7 +10849,7 @@ def test_a_loop_node_runs_its_chain_not_just_one_check(tmp_path, monkeypatch):
             return loop if name == "fix-it" else None
 
     session = Session(id="s1", name="p", project_dir=str(tmp_path))
-    session.team = [BUILTIN_ROLES["developer"], BUILTIN_ROLES["reviewer"],
+    session.team = [_on("developer"), _on("reviewer"),
                     BUILTIN_ROLES["regression"]]
     step = Step(role="", loop="fix-it", task="t")
     session.flow = Flow(steps=[step])
@@ -11860,6 +11914,9 @@ def test_the_shipped_defaults_are_data_the_code_loads():
                                                 
     assert "pytest" in ALLOWED_COMMANDS and "timeout" in ALLOWED_COMMANDS
     assert _shipped_settings().git_commits is True
+    # Never give up: shipped on, so an unattended run keeps working instead of
+    # halting at 3am and waiting to be found.
+    assert _shipped_settings().keep_trying is True
 
 
 def test_a_loop_resets_down_the_same_chain_agents_do(tmp_path):
@@ -12740,6 +12797,177 @@ def test_a_disabled_agent_is_off_the_plan_and_off_the_check_chain(tmp_path, monk
     engine._execute(worker_off)
     assert worker_off.status == "failed"
     assert "disabled" in worker_off.summary
+
+
+def test_the_reviewer_ships_switched_off(tmp_path):
+    """The user's call: "disable the reviewer from everywhere so it doesn't
+    start by default — I am not sure how beneficial it is, it only eats time."
+    Shipped as data, so every fresh install and every new project starts
+    without it, and the floor check it used to apply is applied by nobody."""
+    from trance.agents.orchestrator import ensure_checks
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.store import RoleStore
+
+    assert BUILTIN_ROLES["reviewer"].enabled is False
+    assert all(role.enabled for name, role in BUILTIN_ROLES.items()
+               if name != "reviewer")
+    assert RoleStore(tmp_path / "agents.json").get("reviewer").enabled is False
+
+    # Switched off, not taken away: the wiring that named it is untouched, so
+    # turning it back on is one click rather than a rebuild.
+    assert "reviewer" in BUILTIN_ROLES["developer"].checks
+    floored = ensure_checks({"steps": [{"role": "developer", "task": "t"}],
+                             "team": ["developer"]},
+                            roles=list(BUILTIN_ROLES.values()))
+    assert "added_checks" not in floored
+
+
+def test_an_agents_file_older_than_the_switch_takes_the_shipped_answer(tmp_path):
+    """A store written before `enabled` existed never made that choice, so it
+    takes trance's — which is how shipping the reviewer off reaches somebody
+    who already has projects. A file that says enabled keeps its word."""
+    import json
+
+    from trance.agents.store import RoleStore
+
+    path = tmp_path / "agents.json"
+    RoleStore(path)                                   # seeds a store
+    held = json.loads(path.read_text(encoding="utf8"))
+    for item in held["agents"]:
+        item.pop("enabled", None)                     # an older file
+    path.write_text(json.dumps(held), encoding="utf8")
+    assert RoleStore(path).get("reviewer").enabled is False
+
+    for item in held["agents"]:
+        item["enabled"] = True                        # a choice, not a gap
+    path.write_text(json.dumps(held), encoding="utf8")
+    assert RoleStore(path).get("reviewer").enabled is True
+
+
+def test_a_halt_says_how_many_tries_the_step_actually_had(tmp_path, monkeypatch):
+    """Measured live and asked about: a developer with four tries halted saying
+    "never reported success within 2 loop(s)". `loop_limit` is the step's own
+    *override*, and it falls back to 2 when the step never named one — so the
+    halt reported a number from nowhere."""
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["developer"])         # keep-trying off: it halts
+    assert engine.session.role("developer").total_tries == 4
+    step = Step(role="developer", task="t")
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn(None, "x", outcome=("FAILED", "no")))
+    engine._execute(step)
+
+    assert engine.session.status == "error"
+    assert "in 4 tries" in engine.session.error
+    assert "loop(s)" not in engine.session.error
+
+
+def test_a_step_out_of_tries_goes_round_again_instead_of_halting(tmp_path, monkeypatch):
+    """The user's ask: "make it never give up, always try until the job is
+    done — it might stop without me looking at it and when I come back it has
+    been halted." The step goes back to pending carrying its own conversation
+    and a note about what it ran into, and the run is still working."""
+    from dataclasses import replace
+
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["developer"])
+    engine.config = replace(engine.config, keep_trying=True)
+    engine.CONTINUE_PAUSE_S = 0                       # no waiting in a test
+    monkeypatch.setattr(engine, "_resume_conversation",
+                        lambda turn: [{"role": "user", "content": "where I was"}])
+    step = Step(role="developer", task="t")
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn(None, "x", outcome=("FAILED", "still broken")))
+    engine._execute(step)
+
+    assert step.status == "pending"                   # the run loop picks it up again
+    assert step.continues == 1
+    assert engine.session.status != "error" and not engine.session.error
+    # It resumes rather than starting cold, and is told why it is back.
+    assert step.resume_messages == [{"role": "user", "content": "where I was"}]
+    assert any("still broken" in note for note in step.steering)
+
+    events = engine.bus.history(engine.session.id)
+    failed = next(e for e in events if e.type == "step_failed")
+    assert failed.payload["halts_flow"] is False      # it does not, so it must not say so
+    said = next(e for e in events if e.type == "step_continued").payload
+    assert said["continues"] == 1 and said["resumed"] is True
+    assert "continues from where it stopped" in said["message"]
+    assert "Settings" in said["message"]              # and how to turn it off
+
+
+def test_a_continued_loop_re_enters_the_block_that_stopped_it(tmp_path, monkeypatch):
+    """The same thing "rerun from this block" does, decided by the engine
+    instead of by a user who is not there: fresh visit budgets, starting at
+    the block the walk ended on."""
+    from dataclasses import replace
+
+    from trance.flow import Step
+
+    engine = _loop_engine(tmp_path, ["tester", "developer"], _tf_loop())
+    engine.config = replace(engine.config, keep_trying=True)
+    engine.CONTINUE_PAUSE_S = 0
+    step = Step(role="", loop="test-and-fix", task="t")
+    monkeypatch.setattr("trance.engine.run_agent",
+                        lambda **kw: _Turn(None, "x", outcome=("FAILED", "still broken")
+                                           if kw["role"].name == "tester" else ("SUCCESS", "")))
+    engine._execute(step)
+
+    assert step.status == "pending"
+    assert step.continues == 1
+    assert step.resume_node in {"n_test", "n_fix"}
+    assert engine.session.status != "error"
+
+
+def test_keeping_trying_never_repeats_a_step_that_cannot_work(tmp_path, monkeypatch):
+    """A loop that no longer exists is not a step that needs another go — it is
+    a step nothing can run. Going round on that is a spin, so those halt as
+    they always did, however hard the run is trying."""
+    from dataclasses import replace
+
+    from trance.flow import Step
+
+    engine = _engine(tmp_path, ["developer"])
+    engine.config = replace(engine.config, keep_trying=True)
+    step = Step(role="", loop="a-loop-that-was-deleted", task="t")
+    engine._execute(step)
+
+    assert step.status == "failed" and step.continues == 0
+    assert engine.session.status == "error"
+
+
+def test_a_continuation_waits_when_it_was_the_endpoint_that_failed(tmp_path, monkeypatch):
+    """Nothing an agent can do fixes a model that is down; time can, because
+    the repair is usually the user restarting it. So that continuation waits
+    instead of spending the night asking a dead port the same question."""
+    from dataclasses import replace
+
+    from trance.flow import Step
+    from trance.providers import BackendError
+
+    engine = _engine(tmp_path, ["developer"])
+    engine.config = replace(engine.config, keep_trying=True)
+    engine.ENDPOINT_PAUSE_S = (0.01, 0.02)
+    waited = []
+    monkeypatch.setattr(engine.session._stop, "wait",
+                        lambda seconds: waited.append(seconds))
+
+    def down(**kw):
+        raise BackendError("connection refused")
+
+    monkeypatch.setattr("trance.engine.run_agent", down)
+    step = Step(role="developer", task="t")
+    engine._execute(step)
+
+    assert step.status == "pending" and step.continues == 1
+    assert waited == [0.01]
+    said = next(e for e in engine.bus.history(engine.session.id)
+                if e.type == "step_continued").payload
+    assert "unreachable" in said["message"]
+    # Nothing to resume: no try ever reached the model.
+    assert said["resumed"] is False
 
 
 def test_a_built_in_agent_can_be_deleted_and_stays_deleted(tmp_path):
