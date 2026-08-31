@@ -12999,3 +12999,35 @@ def test_a_step_the_model_forgot_to_assign_goes_to_the_only_worker(tmp_path):
                                    "steps": [{"task": "orphan work", "points": 3}]}, two)
     assert out["steps"] == []
     assert out["dropped_steps"] == ["orphan work"]
+
+
+def test_steering_queued_before_a_continue_reaches_the_continued_turn(tmp_path, monkeypatch):
+    """Measured on a live halt: a punch-list steer queued on the halted step,
+    then continue — the engine took the note off the step and handed it to
+    run_agent, whose resume branch built its messages from the recording and
+    dropped it. The same note typed a minute later, mid-turn, was delivered.
+    A steer riding a pickup lands right after the continuation note."""
+    from trance.agents import runner
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.config import ModelConfig
+    from trance.events import EventBus
+    from trance.providers.base import ChatResponse
+
+    sent = []
+
+    class _Capture:
+        def complete(self, messages, tools=None, cancel_token="", extra_body=None):
+            sent.append(list(messages))
+            return ChatResponse(text="done\\n\\nOUTCOME: SUCCESS")
+
+    monkeypatch.setattr(runner, "client_for", lambda cfg: _Capture())
+    recorded = [{"role": "system", "content": "dev"}, {"role": "user", "content": "build"},
+                {"role": "assistant", "content": "half done"}]
+    runner.run_agent(role=BUILTIN_ROLES["developer"], task="ignored", project=tmp_path,
+                     config=ModelConfig(kind="llamacpp", max_tokens=600, context_window=64000),
+                     bus=EventBus(), session_id="s", step_id="st",
+                     resume_messages=recorded, steering=["fix the 7 assertions, nothing else"])
+    first = sent[0]
+    assert first[:3] == recorded
+    assert "being continued" in first[3]["content"]
+    assert first[4]["role"] == "user" and "fix the 7 assertions" in first[4]["content"]

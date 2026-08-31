@@ -721,6 +721,13 @@ def _run_agent(
             "them. Verify the last thing you did if you are unsure it "
             "finished, then carry on from where it stands — do not start "
             "over. End with OUTCOME: SUCCESS or OUTCOME: FAILED as usual.")})
+        # Steering typed while the step was halted rides the pickup. It used
+        # to be taken off the step and then dropped here — a note queued
+        # before "continue" reached nobody, while the same note typed a
+        # minute later, mid-turn, was delivered. Measured on a live halt.
+        for note in steering or []:
+            messages.append({"role": "user",
+                             "content": f"## Steering from the user (follow this)\n{note}"})
     else:
         messages = [
             {"role": "system", "content": role.system_prompt},
