@@ -12970,3 +12970,32 @@ def test_the_orchestrator_fetches_a_picture_by_name_when_it_wants_one(tmp_path, 
     orchestrator.chat(messages=[{"role": "user", "content": "hi"}], project_dir=tmp_path,
                       config=ModelConfig(kind="llamacpp"), bus=EventBus(), session_id="s")
     assert "view_image" not in rounds[0][1]
+
+
+def test_a_step_the_model_forgot_to_assign_goes_to_the_only_worker(tmp_path):
+    """Measured live: sixteen steps with only `task` and `points`, every one
+    silently dropped, the chat saying "here's the plan" over an empty flow.
+    With one worker on the proposed team the step is its; when that is
+    ambiguous the step is dropped and the drop is reported, never silent."""
+    from trance.agents import orchestrator
+    from trance.agents.roles import BUILTIN_ROLES
+
+    roles = list(BUILTIN_ROLES.values())
+    out = orchestrator._normalize({
+        "team": ["developer", "tester", "visual-tester"],
+        "steps": [{"task": "index.html scaffold", "points": "3"},
+                  {"task": "index.html city grid", "points": 8},
+                  {"agent": "tester", "task": "tests/: the pure logic", "points": 5}],
+    }, roles)
+    assert [s["role"] for s in out["steps"]] == ["developer", "developer", "tester"]
+    assert out["dropped_steps"] == []
+
+    # Two workers could own it: nobody guesses, and the drop is on the record.
+    import copy
+    two = copy.deepcopy(roles)
+    extra = copy.deepcopy(BUILTIN_ROLES["developer"]); extra.name = "frontend"
+    two.append(extra)
+    out = orchestrator._normalize({"team": ["developer", "frontend"],
+                                   "steps": [{"task": "orphan work", "points": 3}]}, two)
+    assert out["steps"] == []
+    assert out["dropped_steps"] == ["orphan work"]

@@ -407,6 +407,13 @@ def chat(
     text = response.text.strip()
     cut_off = response.finish_reason == "length"
 
+    if proposal is not None and proposal.get("dropped_steps"):
+        lost = proposal["dropped_steps"]
+        text += (f"\n\n⚠️ {len(lost)} proposed step(s) named no agent I know and were "
+                 f"dropped: " + "; ".join(f"“{t}”" for t in lost[:5])
+                 + (" …" if len(lost) > 5 else "")
+                 + ". Say which agent should own them and I will propose again.")
+
     # Thousands of tokens generated, almost none returned, no call, no
     # reasoning: the *server* discarded the output — a vLLM tool-call parser
     # that could not read the model's dialect does exactly this. Measured
@@ -459,10 +466,19 @@ def _normalize(arguments: dict, roles: list) -> dict:
     """
     known = {r.name: r for r in roles}
     verifiers = {r.name for r in roles if r.verifier}
-    steps, dropped = [], []
+    steps, dropped, unowned = [], [], []
+
+    # A step the model forgot to assign — measured live: sixteen steps with
+    # only `task` and `points`, every one silently dropped, the chat saying
+    # "here's the plan" over an empty flow. When one worker could own it, it
+    # does; when the answer is ambiguous the step is dropped and *said*.
+    proposed_team = [n for n in (arguments.get("team") or []) if n in known]
+    workers = [n for n in proposed_team if n not in verifiers and n != "orchestrator"] \
+        or [r.name for r in roles if not r.verifier and r.name != "orchestrator"]
+    sole_worker = workers[0] if len(workers) == 1 else None
 
     for raw in arguments.get("steps") or []:
-        role = raw.get("role")
+        role = raw.get("role") or raw.get("agent") or raw.get("owner")
         loop = (raw.get("loop") or "").strip()
         task = (raw.get("task") or "").strip()
         if not task:
@@ -470,7 +486,11 @@ def _normalize(arguments: dict, roles: list) -> dict:
         if loop:
             role = ""
         elif role not in known or role == "orchestrator":
-            continue
+            if not role and sole_worker:
+                role = sole_worker
+            else:
+                unowned.append(task[:80])
+                continue
 
         # Whatever it named, it does not decide this. Checks belong to the
         # agent — one place, visible, edited by a person — and a model asked to
@@ -507,7 +527,7 @@ def _normalize(arguments: dict, roles: list) -> dict:
 
     return {
         "summary": arguments.get("summary", ""), "team": team, "steps": steps,
-        "dropped_checks": dropped,
+        "dropped_checks": dropped, "dropped_steps": unowned,
     }
 
 
