@@ -407,6 +407,46 @@ def test_brief_states_the_absence_of_permissions_too():
     assert "docs/**" in planner
 
 
+def test_the_agent_is_told_the_directory_it_is_already_in(tmp_path):
+    """"Why does the model do `cd ... && npm test`? The cd should be unneeded."
+    It is: run_command sets cwd to the project (or the role's workdir) itself.
+    But both places that could say so said "the project root" — a phrase, not a
+    path — while the agent reads absolute paths all day in the output it gets
+    back, so it supplied the directory itself on every call. Naming it, and
+    saying it is already there, removes the reason.
+
+    It matters beyond the wasted tokens: a role pinned to a subdirectory by
+    `workdir` is pinned by cwd, and a cd to the project root walks straight
+    back out of it."""
+    import copy
+
+    from trance.agents.roles import BUILTIN_ROLES
+    from trance.agents.tools import AgentTools, permissions_brief
+
+    project = tmp_path / "game"
+    (project / "backend").mkdir(parents=True)
+
+    dev = copy.deepcopy(BUILTIN_ROLES["developer"])
+    brief = permissions_brief(dev, project)
+    assert f"in {project} " in brief
+    assert "already in that directory" in brief and "do not cd" in brief
+
+    # A workdir role is told its own subdirectory, not the project root.
+    pinned = copy.deepcopy(dev)
+    pinned.workdir = "backend"
+    assert f"in {project / 'backend'} " in permissions_brief(pinned, project)
+
+    # And the tool's own description agrees with the cwd it will really use.
+    spec = next(f for f in AgentTools(project, dev).specs()
+                if f["function"]["name"] == "run_command")
+    described = spec["function"]["description"]
+    assert str(project) in described
+    assert "do not cd" in described
+
+    # Callers without a project still get a usable brief rather than a crash.
+    assert "run commands" in permissions_brief(dev)
+
+
 def test_brief_reflects_a_custom_agents_actual_permissions():
     from trance.agents.tools import permissions_brief
 

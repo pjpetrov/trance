@@ -664,7 +664,8 @@ def _run_agent(
            "that others must match is yours to record.)"))
     # Derived from the tool layer, so what the agent is told always matches what
     # the tool layer will actually allow.
-    user_parts.append("## Your permissions (enforced by the system)\n" + permissions_brief(role))
+    user_parts.append("## Your permissions (enforced by the system)\n"
+                      + permissions_brief(role, project))
     if (model_config.kind or "") in THINKING_TOGGLE_KINDS:
         # Not "think less" — the thinking is where this model's quality comes
         # from. The waste worth steering away from is specific and measured:

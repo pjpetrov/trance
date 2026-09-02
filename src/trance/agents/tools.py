@@ -526,7 +526,15 @@ class AgentTools:
                 {"command_id": {"type": "string"}}, ["command_id"]))
             out.append(_fn(
                 "run_command",
-                f"Run a command in {self.role.workdir or 'the project root'}. "
+                # The absolute path, not "the project root". The agent reads
+                # absolute paths all day in the output it gets back — a stack
+                # trace names one on every line — and with only a phrase here
+                # it pins the directory itself: `cd /abs/project && npm test`,
+                # every time. That is wasted, and worse than wasted for a role
+                # with a workdir, because the cd walks straight back out of the
+                # subdirectory this pinned it to.
+                f"Run a command in {self.command_cwd}. You are already in that "
+                f"directory — do not cd, and do not prefix the command with a path. "
                 + (f"Pipes, redirects and && are supported. " if self.shell_enabled
                    else "One plain command per call — no pipes or redirects. ")
                 + f"Allowed programs: {', '.join(sorted(self.allowed_commands))}. "
@@ -1792,7 +1800,7 @@ def _render_stat(s: dict) -> str:
     return f"{s['path']}: exists, {s['size_bytes']} bytes, {s['lines']} lines — {state}"
 
 
-def permissions_brief(role: AgentRole) -> str:
+def permissions_brief(role: AgentRole, project: "Path | str | None" = None) -> str:
     """Render the agent's *enforced* permissions, for its own prompt.
 
     Generated from the same constants the tool layer enforces with — the remit
@@ -1800,6 +1808,10 @@ def permissions_brief(role: AgentRole) -> str:
     prompt text drifts from the code and then the agent is told one thing while
     the tool boundary does another; deriving it means the description is wrong
     only if the enforcement is.
+
+    `project` is the directory commands actually run in, named here so the
+    agent does not have to guess it. Optional so a caller with no project on
+    hand still gets the rest of the brief.
     """
     lines: list[str] = []
 
@@ -1859,12 +1871,20 @@ def permissions_brief(role: AgentRole) -> str:
     if "commands" in role.toolsets:
         allowed = sorted(getattr(role, "commands", None)
                          or command_list(getattr(role, "command_list", "")).allowed)
-        where = f"in {role.workdir}" if getattr(role, "workdir", "") else "in the project root"
+        # Named, not described. "in the project root" left the agent to supply
+        # the path itself, and it did: `cd /abs/project && npm test` on every
+        # call. Saying where it already is removes the reason.
+        sub = (getattr(role, "workdir", "") or "").strip()
+        cwd = (Path(project) / sub) if (project and sub) else (
+            Path(project) if project else None)
+        where = (f"in {cwd}" if cwd is not None
+                 else (f"in {sub}" if sub else "in the project root"))
         role_shell = getattr(role, "shell", None)
         listed = command_list(getattr(role, "command_list", ""))
         shell_on = listed.shell if role_shell is None else bool(role_shell)
         lines.append(
-            f"You may run commands {where}, limited to these programs: " + ", ".join(allowed)
+            f"You may run commands {where} — you are already in that directory, so "
+            f"do not cd into it. Limited to these programs: " + ", ".join(allowed)
             + (". Pipes, redirects and && work, and every program in the line is checked "
                "against that list." if shell_on
                else ". One plain command per call — pipes and redirects are not available.")
