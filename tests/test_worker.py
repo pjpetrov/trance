@@ -352,6 +352,81 @@ def _sse(lines):
     return _Stream()
 
 
+def test_a_streamed_call_reports_where_the_time_went(monkeypatch):
+    """The wall clock of one call is two different things, and only a stream
+    can tell them apart: the wait before the first token is the server reading
+    the prompt, everything after is the model writing. A slow frame before the
+    first token is prefill; the same delay after it is decode."""
+    import time
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.worker.client import ChatClient
+
+    FRAMES = [
+        'data: {"choices":[{"delta":{"content":"one"}}]}\n',
+        'data: {"choices":[{"delta":{"content":" two"}}]}\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
+        'data: {"usage":{"prompt_tokens":900,"completion_tokens":2}}\n',
+        "data: [DONE]\n",
+    ]
+
+    class _Slow:
+        """Frames that arrive with real pauses between them. Lazily, which is
+        the whole point: a stream materialised up front has already spent its
+        time before the reader sees a byte of it."""
+
+        headers = _sse([]).headers
+
+        def __iter__(self):
+            for n, line in enumerate(FRAMES):
+                if n == 0:
+                    time.sleep(0.20)      # the server reading the prompt
+                elif n == 1:
+                    time.sleep(0.05)      # the model writing
+                yield line.encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def capture(request, timeout=None):
+        return _Slow()
+
+    monkeypatch.setattr(urllib.request, "urlopen", capture)
+    got = ChatClient(ModelConfig()).complete([{"role": "user", "content": "hi"}])
+
+    assert got.text == "one two"
+    # The long wait was before anything arrived, so it is reading, not writing.
+    assert got.prefill_ms >= 190
+    assert got.decode_ms >= 40
+    assert got.prefill_ms > got.decode_ms
+
+
+def test_a_call_that_produced_nothing_is_all_reading(monkeypatch):
+    """No token ever arrived, so none of the wait bought any output. Filing it
+    as generation would flatter the generation rate with time that produced
+    nothing."""
+    import urllib.request
+
+    from trance.config import ModelConfig
+    from trance.worker.client import ChatClient
+
+    def capture(request, timeout=None):
+        return _sse([
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
+            'data: {"usage":{"prompt_tokens":40,"completion_tokens":0}}\n',
+            "data: [DONE]\n",
+        ])
+
+    monkeypatch.setattr(urllib.request, "urlopen", capture)
+    got = ChatClient(ModelConfig()).complete([{"role": "user", "content": "hi"}])
+    assert got.decode_ms == 0.0
+    assert got.prefill_ms >= 0.0
+
+
 def test_streamed_chunks_reassemble_into_one_response(monkeypatch):
     """Streaming changes when we see the reply, not what anyone receives:
     reasoning, text, tool calls and usage come out exactly as they would have

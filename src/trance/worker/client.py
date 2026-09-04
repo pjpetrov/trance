@@ -225,6 +225,13 @@ class ChatClient:
           connection is the cut: llama.cpp stops generating on disconnect.
         """
         started = time.monotonic()
+        #: When the first generated token arrived. Everything before it is the
+        #: server reading the prompt — prefill — and everything after is the
+        #: model writing. One number splits a call into the two halves that
+        #: behave completely differently: prefill scales with how much context
+        #: was sent and is what a cache hit removes, decode scales with how
+        #: much was written and is what the tokens-per-second figure is about.
+        first_at: float | None = None
         # The preset chooses what cuts a long reply. Capped by size, the wall
         # clock never cuts: the server's max_tokens is the only limit, and the
         # idle timeout alone guards against a server gone silent.
@@ -266,6 +273,11 @@ class ChatClient:
                 if choice.get("finish_reason"):
                     finish = choice["finish_reason"]
                 delta = choice.get("delta") or {}
+                if first_at is None and (delta.get("content")
+                                         or delta.get("reasoning_content")
+                                         or delta.get("reasoning")
+                                         or delta.get("tool_calls")):
+                    first_at = time.monotonic()
                 # llama.cpp streams the think as `reasoning_content`; vLLM's
                 # reasoning parser streams the same thing as `reasoning`.
                 thought = delta.get("reasoning_content") or delta.get("reasoning")
@@ -319,10 +331,15 @@ class ChatClient:
                  "function": {"name": slot["name"],
                               "arguments": "".join(slot["arguments"])}}
                 for index, slot in sorted(tool_calls.items())]
+        ended = time.monotonic()
         return {
             "choices": [{"message": message,
                          "finish_reason": "time" if cut else (finish or "stop")}],
             "usage": usage,
+            # Split at the first token. A call that produced nothing at all is
+            # all prefill: the wait was real and it bought no output.
+            "_prefill_ms": round(((first_at or ended) - started) * 1000, 1),
+            "_decode_ms": round((ended - (first_at or ended)) * 1000, 1),
         }
 
 
@@ -506,4 +523,8 @@ def _parse(body: dict) -> ChatResponse:
         reasoning=reasoning,
         # Kept whole, deliberately: see ChatResponse.replay().
         raw_message=message,
+        # Present only on the streamed path, which is the only one that can
+        # see where the prompt stopped being read and the reply started.
+        prefill_ms=float(body.get("_prefill_ms") or 0.0),
+        decode_ms=float(body.get("_decode_ms") or 0.0),
     )

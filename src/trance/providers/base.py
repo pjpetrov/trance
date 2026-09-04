@@ -110,6 +110,12 @@ class ChatResponse:
     #: The assistant message to append to the conversation, in whatever shape
     #: the provider expects to receive back.
     raw_message: dict = field(default_factory=dict)
+    #: How the call's wall clock divides: reading the prompt, then writing the
+    #: reply. Only a streamed call can tell them apart — it is the arrival of
+    #: the first token that separates them — so both are 0 from a provider
+    #: that answers in one piece, and a 0 means "not measured", not "instant".
+    prefill_ms: float = 0.0
+    decode_ms: float = 0.0
 
     def replay(self, *, text: str | None = None, calls=None) -> dict:
         """This turn as a message to send back on the next request.

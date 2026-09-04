@@ -16,7 +16,7 @@ import { useUi } from "@/store/ui";
 import { cn } from "@/lib/cn";
 import { duration, tokens } from "@/lib/format";
 import { Dot, Empty, Panel, PanelHeader, Spinner } from "@/components/ui/primitives";
-import type { ModelSpend, Usage } from "@/api/types";
+import type { ModelSpend, TimeSplit, ToolTime, Usage } from "@/api/types";
 
 /** `base`, creeping forward one second at a time while `running`.
  *
@@ -92,6 +92,8 @@ export function StatsScreen() {
         <Effort agents={session.data?.agent_seconds ?? {}} activeAgent={active?.agent}
                 accruing={accruing}
                 runSeconds={session.data?.run_seconds ?? 0} />
+
+        <Where split={here.data?.time} tools={here.data?.tools} />
 
         <Spend
           title="By model, this session"
@@ -189,6 +191,90 @@ function Effort(
           </tbody>
         </table>
       </div>
+    </Panel>
+  );
+}
+
+/** Where the clock went, as opposed to who spent it.
+ *
+ *  A model call is two very different things end to end. Reading the prompt
+ *  scales with how much context was sent and is what a cache hit removes;
+ *  writing the reply scales with how much was written and is what "tokens per
+ *  second" is usually about. On a long agentic step, with 40k of conversation
+ *  going back every round, the reading can cost more than the writing — and
+ *  before this it was invisible, filed under "the model was slow".
+ *
+ *  Tool time is the third thing entirely: a test suite, an npm install, a
+ *  browser burst. It is the agent's own hands, and it used to be indexed as
+ *  model time simply because the run clock was the only clock.
+ */
+function Where({ split, tools }: { split?: TimeSplit; tools?: ToolTime }) {
+  if (!split || split.measured_ms <= 0) return null;
+
+  const rows: { key: string; label: string; ms: number; hint: string }[] = [
+    { key: "prefill", label: "reading the context", ms: split.prefill_ms,
+      hint: "From sending the request to the first token back: the server "
+          + "reading the prompt. Grows with the conversation, and a prefix "
+          + "cache hit is what makes it collapse." },
+    { key: "decode", label: "generating the reply", ms: split.decode_ms,
+      hint: "First token to last: the model actually writing. This is the "
+          + "half that tokens-per-second describes." },
+    { key: "tools", label: "running tools", ms: split.tool_ms,
+      hint: `${(tools?.calls ?? 0).toLocaleString()} calls — tests, installs, `
+          + "commands, browser work. The agent's own hands, not the model." },
+  ];
+  if (split.other_ms > 0) {
+    rows.push({ key: "other", label: "everything else", ms: split.other_ms,
+      hint: "The rest of the session clock: indexing, git, orchestration "
+          + "between steps — and any call from a backend that does not "
+          + "stream, which cannot be split at its first token." });
+  }
+
+  const total = rows.reduce((sum, row) => sum + row.ms, 0);
+  const most = Math.max(...rows.map((row) => row.ms), 1);
+  if (total <= 0) return null;
+
+  return (
+    <Panel>
+      <PanelHeader
+        title="Where the time went, this session"
+        subtitle="the same clock as above, cut by what it was doing rather than by who"
+      />
+      <div className="overflow-x-auto p-2">
+        <table className="w-full text-sm">
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.key} className="border-t border-line/60 first:border-t-0">
+                <td className="relative px-2 py-1.5">
+                  <span
+                    className={cn("absolute inset-y-0.5 left-0 rounded-[--radius]",
+                                  row.key === "other" ? "bg-fg/10" : "bg-accent/15")}
+                    style={{ width: `${Math.round((row.ms / most) * 100)}%` }}
+                    aria-hidden
+                  />
+                  <span
+                    className={cn("relative font-code text-xs",
+                                  row.key === "other" && "text-muted")}
+                    title={row.hint}
+                  >{row.label}</span>
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">
+                  {duration(row.ms / 1000)}
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-muted">
+                  {Math.round((row.ms / total) * 100)}%
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="px-3 pb-2 text-xs leading-relaxed text-muted">
+        Reading and generating are measured per call, split where the first
+        token arrived; a backend that answers in one piece cannot be split and
+        falls into everything else. Tool time is the wall clock of the calls
+        the agents made themselves.
+      </p>
     </Panel>
   );
 }

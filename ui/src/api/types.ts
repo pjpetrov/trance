@@ -610,13 +610,41 @@ export interface ModelSpend {
   /** Generation rate over the calls that reported a duration — what the
    *  machine sustains end to end, prompt processing included. 0 = untimed. */
   tokens_per_second?: number;
+  /** The same wall clock split at the first token: reading the prompt, then
+   *  writing the reply. Only streamed calls report it, so these need not sum
+   *  to duration_ms and 0 means unmeasured, not instant. */
+  prefill_ms?: number;
+  decode_ms?: number;
+  /** Generation rate with the prompt reading taken out — how fast it writes
+   *  once it has started, as opposed to end to end. */
+  decode_tokens_per_second?: number;
   total: number;
+}
+
+/** Wall clock inside the tools the agents ran themselves. */
+export interface ToolTime {
+  calls: number;
+  duration_ms: number;
+  by_name: Record<string, { calls: number; duration_ms: number }>;
+}
+
+/** Where a run's time actually went. The first three are measured; other_ms
+ *  is the remainder of the session clock and is named as one. */
+export interface TimeSplit {
+  prefill_ms: number;
+  decode_ms: number;
+  tool_ms: number;
+  measured_ms: number;
+  worked_ms: number;
+  other_ms: number;
 }
 
 export interface Usage {
   models: ModelSpend[];
   total: number;
   calls: number;
+  tools?: ToolTime;
+  time?: TimeSplit;
 }
 
 export interface ReviewChanges {

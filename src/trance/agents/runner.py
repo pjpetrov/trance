@@ -380,6 +380,10 @@ class AgentTurn:
     files_written: list[str] = field(default_factory=list)
     remit_violations: list[str] = field(default_factory=list)
     tool_calls: int = 0
+    #: Wall clock spent inside those calls — the tests, the installs, the
+    #: browser bursts. Counted here so "working time" can be told apart from
+    #: "model time", which are not the same number and never were.
+    tool_ms: float = 0.0
     usage: dict = field(default_factory=dict)
     rounds: int = 0
     stop_reason: str = "stop"
@@ -890,6 +894,11 @@ def _run_agent(
                 "preset": model_config.preset,
                 "base_url": model_config.base_url,
                 "duration_ms": elapsed_ms,
+                # The same wall clock, split where the first token arrived:
+                # reading the prompt, then writing the reply. Zero from a
+                # backend that does not stream — unmeasured, not instant.
+                "prefill_ms": response.prefill_ms,
+                "decode_ms": response.decode_ms,
                 # Full fidelity — this is the whole point of the inspector.
                 "messages": messages,
                 "response_text": response.text,
@@ -1055,8 +1064,11 @@ def _run_agent(
                 messages.append({"role": "tool", "tool_call_id": call.id,
                                  "name": call.name, "content": outcome.text})
                 continue
+            tool_started = time.time()
             outcome = tools.call(call.name, call.arguments)
+            tool_ms = round((time.time() - tool_started) * 1000, 1)
             turn.tool_calls += 1
+            turn.tool_ms += tool_ms
             turn.files_written += outcome.files_written
             if outcome.remit_violation:
                 turn.remit_violations.append(outcome.remit_violation)
@@ -1073,6 +1085,10 @@ def _run_agent(
                     "result_tokens": outcome.tokens,
                     "remit_violation": outcome.remit_violation,
                     "detail": outcome.detail,
+                    # A test suite, an npm install or a browser burst is not
+                    # free, and none of it was counted anywhere before: the
+                    # run clock held it, and it looked like model time.
+                    "duration_ms": tool_ms,
                 },
             )
             if (outcome.detail or {}).get("kind") == "memory" and outcome.detail.get("stored"):

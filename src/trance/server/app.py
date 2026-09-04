@@ -1797,16 +1797,23 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         rows.sort(key=lambda row: -row["total"])
         return {"models": rows,
                 "total": sum(row["total"] for row in rows),
-                "calls": sum(row["calls"] for row in rows)}
+                "calls": sum(row["calls"] for row in rows),
+                "tools": ledger.tools_lifetime(),
+                "time": _time_split(rows, ledger.tools_lifetime())}
 
     @app.get("/api/sessions/{session_id}/usage")
     def session_usage(session_id: str):
         """What this run has asked of each model."""
         _need(store, session_id)
         rows = ledger.for_session(session_id)
+        tools = ledger.tools_for_session(session_id)
+        session = store.get(session_id)
         return {"models": rows,
                 "total": sum(r["total"] for r in rows),
-                "calls": sum(r["calls"] for r in rows)}
+                "calls": sum(r["calls"] for r in rows),
+                "tools": tools,
+                "time": _time_split(rows, tools,
+                                    worked_s=getattr(session, "run_seconds", 0.0))}
 
     def _loop_for_review(session) -> str:
         held = stores_of(session)
@@ -3302,6 +3309,32 @@ def create_app(config: Config | None = None, sessions_dir: Path | None = None) -
         return JSONResponse({"error": str(exc)}, status_code=502)
 
     return app
+
+
+def _time_split(rows: list[dict], tools: dict, worked_s: float = 0.0) -> dict:
+    """Where the wall clock went: reading prompts, writing replies, running things.
+
+    Three measured numbers and one derived. Prefill and decode come from the
+    streamed calls, split at the first token; tool time is the wall clock of
+    the calls the agents made with their own hands. `other_ms` is whatever the
+    session clock holds beyond those three — indexing, git, the engine's own
+    work, and any call from a backend that does not stream — and it is a
+    remainder, not a measurement, so it is named as one and never negative.
+    """
+    prefill = sum(int(r.get("prefill_ms") or 0) for r in rows)
+    decode = sum(int(r.get("decode_ms") or 0) for r in rows)
+    tool = int(tools.get("duration_ms") or 0)
+    measured = prefill + decode + tool
+    worked = int(max(0.0, worked_s) * 1000)
+    return {
+        "prefill_ms": prefill,
+        "decode_ms": decode,
+        "tool_ms": tool,
+        "measured_ms": measured,
+        # Only meaningful for a session, where a clock has been running.
+        "worked_ms": worked,
+        "other_ms": max(0, worked - measured) if worked else 0,
+    }
 
 
 def _need(store: SessionStore, session_id: str):

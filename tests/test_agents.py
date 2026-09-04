@@ -7000,11 +7000,77 @@ def test_usage_is_counted_per_model_definition(tmp_path):
     assert run[1] == {"model": "Sonnet", "calls": 2, "input_tokens": 2000,
                       "output_tokens": 450, "cache_read_tokens": 0, "total": 2450,
                       "duration_ms": 0, "timed_output_tokens": 0,
-                      "tokens_per_second": 0.0}
+                      "tokens_per_second": 0.0,
+                      # Nothing here was streamed, so the split is unmeasured.
+                      "prefill_ms": 0, "decode_ms": 0,
+                      "decode_tokens_per_second": 0.0}
 
     # Lifetime spans sessions; the run does not.
     assert ledger.lifetime()["Sonnet"]["total"] == 2460
     assert [r["model"] for r in ledger.for_session("s2")] == ["Sonnet"]
+
+
+def test_the_clock_is_split_into_reading_writing_and_running(tmp_path):
+    """"How much time went to tool calls, and how much was the model — and of
+    the model, how much was ingesting the context versus generating."
+
+    Three different things were all filed as one number before. Reading the
+    prompt grows with the conversation and is what a cache hit removes;
+    writing the reply is what tokens-per-second describes; a test suite is
+    neither, and used to look like model time because the run clock was the
+    only clock."""
+    from trance.server.app import _time_split
+    from trance.usage import UsageLedger
+
+    ledger = UsageLedger(tmp_path / "usage.json")
+    ledger.record("s1", "local", {"prompt_tokens": 40000, "completion_tokens": 300},
+                  duration_ms=30000, prefill_ms=22000, decode_ms=8000)
+    ledger.record_tool("s1", "run_command", 45000)
+    ledger.record_tool("s1", "read_file", 120)
+
+    row = ledger.for_session("s1")[0]
+    assert row["prefill_ms"] == 22000 and row["decode_ms"] == 8000
+    # End to end against once-it-started: on a long context these are not the
+    # same number, and which one is "the speed" depends on the question.
+    assert row["tokens_per_second"] == 10.0
+    assert row["decode_tokens_per_second"] == 37.5
+
+    tools = ledger.tools_for_session("s1")
+    assert tools["calls"] == 2 and tools["duration_ms"] == 45120
+    # Slowest first, so "what is taking the time" has a name.
+    assert list(tools["by_name"]) == ["run_command", "read_file"]
+
+    split = _time_split(ledger.for_session("s1"), tools, worked_s=100.0)
+    assert (split["prefill_ms"], split["decode_ms"], split["tool_ms"]) == (22000, 8000, 45120)
+    assert split["measured_ms"] == 75120
+    # The remainder of the session clock — indexing, git, unstreamed calls —
+    # and a remainder is never negative, however the three parts land.
+    assert split["other_ms"] == 100000 - 75120
+    assert _time_split([], {"duration_ms": 0}, worked_s=1.0)["other_ms"] == 1000
+
+    # A ledger written before any of this existed reads as unmeasured, which
+    # is the honest answer for a call nobody timed that way.
+    again = UsageLedger(tmp_path / "usage.json")
+    assert again.for_session("s1")[0]["prefill_ms"] == 22000
+    assert again.tools_for_session("s1")["duration_ms"] == 45120
+
+
+def test_a_tool_call_that_never_ran_is_not_timed(tmp_path):
+    """Only the calls that actually ran. A malformed call the tool layer
+    refused took no time, and counting it would dilute the average with a
+    zero that means "never happened" rather than "was instant"."""
+    from trance.events import Event
+    from trance.usage import UsageLedger
+
+    ledger = UsageLedger(tmp_path / "usage.json")
+    for payload in ({"name": "run_command", "duration_ms": 5000},
+                    {"name": "(unfinished)", "ok": False},          # no duration
+                    {"name": "read_file", "duration_ms": 0}):       # refused
+        ledger.on_event(Event(type="tool_call", session_id="s", payload=payload))
+
+    tools = ledger.tools_for_session("s")
+    assert tools["calls"] == 1 and tools["duration_ms"] == 5000
+    assert list(tools["by_name"]) == ["run_command"]
 
 
 def test_both_spellings_of_usage_are_understood(tmp_path):
@@ -7018,7 +7084,9 @@ def test_both_spellings_of_usage_are_understood(tmp_path):
                                       "output_tokens": 6, "cache_read_tokens": 0,
                                       "total": 46, "duration_ms": 0,
                                       "timed_output_tokens": 0,
-                                      "tokens_per_second": 0.0}
+                                      "tokens_per_second": 0.0,
+                                      "prefill_ms": 0, "decode_ms": 0,
+                                      "decode_tokens_per_second": 0.0}
 
     # A call that reported nothing still happened.
     ledger.record("s", "a", {})
