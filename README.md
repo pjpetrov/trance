@@ -6,13 +6,15 @@ clicks, screenshots — and a vision model judges what is actually on screen.
 Every frame it saw, every question it asked, every key it decided to press is
 in the history, openable and checkable.
 
-![The visual tester's history: presses, the frame it saw, the verdict](docs/screens/gta2-history.png)
+![The visual tester's history: presses, the frames it filmed, the reading](docs/screens/gta3-history.png)
 
-*Straight from the run history: the tester presses D, W, E — "the screen
-changed" measured per press — then asks the vision model "is the player now
-driving a vehicle?", with the frame it captured and the answer underneath.
-Game, tests and verdicts all from a local Qwen3.6-27B (64k context) on one
-RTX 3090.*
+*Straight from the run history: the tester presses W — "the screen changed"
+measured per press — then **watches**, filming six frames over 120 animation
+frames and sending them to the vision model as one sequence: "does the player
+character's pose change (legs/arms swinging)?" The answer is underneath, and
+it is a defect — the clock advances, the camera moves, and the legs never
+swing. Game, tests and verdicts all from a local Qwen3 27B (120k context) on
+one RTX 3090.*
 
 Built around one constraint: **keep the context small**, so ordinary local
 models can work on real codebases. A 33KB file is ~8,400 tokens; the function
@@ -58,11 +60,13 @@ trance serve            # http://localhost:8080
 
 ## Screens
 
-What one chat request turned into — the sentence you typed, the plan it
-became, and the commits it produced, diffs and all. The audit trail from
-"make the map more interesting" to `src/city.js`:
+What one chat request turned into — the sentence you typed, the assumptions
+the orchestrator committed to before building, the plan it became, and the
+commits it produced, diffs and all. The audit trail from "let's make the
+attack when the person is close to another one, like punching" to
+`js/character.js`:
 
-![What came of this: request, plan, commits](docs/screens/gta2-request.png)
+![What came of this: request, plan, commits](docs/screens/commits.png)
 
 Statistics — where the time and tokens actually went: working time charged per
 agent, tokens per model with the cached share called out, all of it live while
