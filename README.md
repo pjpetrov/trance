@@ -314,20 +314,22 @@ loop), **look** — one screenshot, one question to a vision model — and
 for the questions a single picture cannot answer — does it move, flicker,
 snap back. The console plays the burst back as a flick-book.
 
-**A real session.** A GTA2-style game, every line written, tested and
-visually judged by a **local Qwen3.6-27B (64k context) served by llama.cpp on
-a single RTX 3090** — no API, no cloud. The history card at the top of this
-README is the tester driving that game. And when the game is broken, the same
-rigor cuts the other way. Here is the frame it captured and its reading of
-it — DESCRIBE what is there, answer each CHECK with the evidence, then the
-verdict:
+**A real session.** A GTA3-style city explorer — driving, missions, a day and
+night cycle, a crowd on the pavement — every line written, tested and visually
+judged by a **local Qwen3 27B (120k context) on a single RTX 3090** — no API,
+no cloud. The history card at the top of this README is the tester driving
+that game. Here is a frame it captured and its reading of it — DESCRIBE what
+is there, answer each CHECK with the evidence, then the verdict:
 
-![The frame the tester analyzed, and its reading](docs/screens/gta2-analysis.png)
+![The frame the tester analyzed, and its reading](docs/screens/gta3-analysis.png)
 
-And the same step's ending: the failure routed back, the loop refusing to
-call it done —
+And the same rigor cutting the other way, later in the same step. The panel
+says the depot is 201 m off, so the tester asks what the player can actually
+see — and answers its own check **NO**, with the evidence for it: the minimap
+has an orange pip, and there is no marker anywhere in the world to walk
+towards. A missing thing, found by asking about it:
 
-![The tester's verdict, evidence per check](docs/screens/gta2-console.png)
+![A check answered no, with the evidence for it](docs/screens/gta3-checks.png)
 
 `open_page` starts the project's **own dev server** behind the page when it
 needs one (a Vite app served statically dies on its first import), with a
